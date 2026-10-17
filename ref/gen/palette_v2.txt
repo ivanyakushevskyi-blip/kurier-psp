@@ -1,0 +1,26 @@
+#26262E outline
+#4B505B asphalt
+#5F6570 asphalt light
+#E6E6DC lane marking
+#A99E90 sidewalk
+#CBC4B6 curb / paving light
+#5C9A3A grass
+#84B54C grass light
+#A7A55A dry grass
+#9A7853 dirt
+#2E6A2B tree dark
+#4C8E36 tree
+#D6A82C tree yellow
+#D2702A tree orange
+#D0532F roof red
+#9C3B23 roof red dark
+#7A5642 roof brown
+#8C929B roof gray
+#5A606A roof gray dark
+#CDD1D5 roof light
+#4F8A69 roof green
+#3F66B3 roof blue
+#3E70A8 water
+#B5533D running track
+#4E9A44 sports field
+#6B707A parking lot
