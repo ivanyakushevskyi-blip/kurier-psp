@@ -1,6 +1,7 @@
 // КУР'ЄР: ХМЕЛЬНИЦЬКИЙ - PSP homebrew prototype
 // Real Khmelnytskyi centre (OpenStreetMap) rendered to pixel art by tools/*.py
-// Map is stored as zlib-compressed 64x64 chunks, decompressed on demand into an LRU cache.
+// Map lives in MAP.BIN next to EBOOT: zlib-compressed 64x64 chunks (pixels + collision bits),
+// streamed from the memory stick into an LRU cache with prefetch around the camera.
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,32 +47,68 @@ typedef uint8_t u8;
 static u8 fb[SW * SH];
 static int tick;
 
-/* ================= map chunk cache ================= */
-#define NCACHE 110
-static u8 cache[NCACHE][CS * CS];
+/* ================= map chunk cache (MAP.BIN) ================= */
+#define NCHUNK (NCX * NCY)
+#define CSB (CS * CS / 8)
+#define NCACHE 200
+static u8 cache[NCACHE][CS * CS + CSB];
 static int cache_key[NCACHE];
 static unsigned cache_used[NCACHE];
-static int16_t slot_of[NCX * NCY];
+static int16_t slot_of[NCHUNK];
 static unsigned ctick;
+static uint32_t moff[NCHUNK + 1];
+static FILE *mapf;
+static char map_path[512] = "MAP.BIN";
+static int map_err;                       /* 1 = немає файлу, 2 = не той файл */
+static u8 zbuf[8192];
+static int loads_frame;
+static const u8 empty_chunk[CS * CS + CSB];
 
+static int map_open(void) {
+    mapf = fopen(map_path, "rb");
+    if (!mapf) { map_err = 1; return 0; }
+    char mg[4]; uint32_t h[3];
+    if (fread(mg, 1, 4, mapf) != 4 || memcmp(mg, "KHM1", 4) || fread(h, 4, 3, mapf) != 3 || h[0] != NCX || h[1] != NCY || h[2] != CS ||
+        fread(moff, 4, NCHUNK + 1, mapf) != NCHUNK + 1 || moff[NCHUNK] != MAPBIN_SIZE) { map_err = 2; fclose(mapf); mapf = NULL; return 0; }
+    return 1;
+}
 static void cache_init(void) {
-    for (int i = 0; i < NCX * NCY; i++) slot_of[i] = -1;
+    for (int i = 0; i < NCHUNK; i++) slot_of[i] = -1;
     for (int i = 0; i < NCACHE; i++) { cache_key[i] = -1; cache_used[i] = 0; }
 }
-static const u8 *chunk(int cx, int cy) {
-    int k = cy * NCX + cx;
-    int s = slot_of[k];
-    if (s >= 0) { cache_used[s] = ++ctick; return cache[s]; }
+static int chunk_load(int k) {
     int best = 0;
     for (int i = 0; i < NCACHE; i++) {
         if (cache_key[i] < 0) { best = i; break; }
         if (cache_used[i] < cache_used[best]) best = i;
     }
     if (cache_key[best] >= 0) slot_of[cache_key[best]] = -1;
-    uLongf len = CS * CS;
-    uncompress(cache[best], &len, assets_bin + CHUNK_OFF[k], CHUNK_OFF[k + 1] - CHUNK_OFF[k]);
+    uint32_t n = moff[k + 1] - moff[k];
+    uLongf len = CS * CS + CSB;
+    if (!mapf || n > sizeof zbuf || fseek(mapf, (long)moff[k], SEEK_SET) || fread(zbuf, 1, n, mapf) != n ||
+        uncompress(cache[best], &len, zbuf, n) != Z_OK)
+        memset(cache[best], 0, sizeof cache[best]);
     cache_key[best] = k; slot_of[k] = (int16_t)best; cache_used[best] = ++ctick;
-    return cache[best];
+    loads_frame++;
+    return best;
+}
+static const u8 *chunk(int cx, int cy) {
+    if (cx < 0 || cy < 0 || cx >= NCX || cy >= NCY) return empty_chunk;
+    int k = cy * NCX + cx;
+    int s = slot_of[k];
+    if (s < 0) s = chunk_load(k);
+    cache_used[s] = ++ctick;
+    return cache[s];
+}
+/* підвантаження наперед: кільце чанків навколо екрана, не більше кількох за кадр */
+static void prefetch(int ox, int oy, float dx, float dy) {
+    int cx0 = ox / CS - 2, cx1 = (ox + SW) / CS + 2, cy0 = oy / CS - 2, cy1 = (oy + SH) / CS + 2;
+    if (dx > 0.3f) cx1++; if (dx < -0.3f) cx0--; if (dy > 0.3f) cy1++; if (dy < -0.3f) cy0--;
+    for (int cy = cy0; cy <= cy1 && loads_frame < 4; cy++) for (int cx = cx0; cx <= cx1 && loads_frame < 4; cx++) {
+        if (cx < 0 || cy < 0 || cx >= NCX || cy >= NCY) continue;
+        int k = cy * NCX + cx;
+        if (slot_of[k] < 0) chunk_load(k);
+    }
 }
 static u8 map_px(int x, int y) {
     if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return 0;
@@ -90,11 +127,13 @@ static void draw_map(int ox, int oy) {
 }
 
 /* ================= collision + minimap ================= */
-static u8 solidb[SOLID_RAW];
 static u8 minib[MINI_W * MINI_H];
+static u8 bigb[BIG_W * BIG_H];
 static int is_solid(int x, int y) {
     if (x < 6 || y < 6 || x >= MAP_W - 6 || y >= MAP_H - 6) return 1;
-    return (solidb[y * SOLID_STRIDE + (x >> 3)] >> (x & 7)) & 1;
+    const u8 *c = chunk(x / CS, y / CS) + CS * CS;
+    int lx = x % CS, ly = y % CS;
+    return (c[ly * (CS / 8) + (lx >> 3)] >> (lx & 7)) & 1;
 }
 
 /* ================= drawing ================= */
@@ -183,12 +222,14 @@ static void otext8(int x, int y, int sc, u8 col, u8 oc, const char *s) {
 static void otext8_c(int cx, int y, int sc, u8 col, u8 oc, const char *s) { otext8(cx - tw8(s, sc) / 2, y, sc, col, oc, s); }
 
 /* ================= game state ================= */
-enum { S_TITLE, S_PLAY, S_PAUSE };
+enum { S_TITLE, S_PLAY, S_PAUSE, S_BIGMAP };
 enum { O_NONE, O_PICK, O_LOAD, O_DROP };
 static int state = S_TITLE;
 static float px_, py_, ang, vel;
 static float camx, camy;
 static int bump;
+static int freecam;                       /* L: огляд міста без машини */
+static float fcx, fcy;
 static int ostate = O_NONE, owait = 90, otimer, olimit, shop_i = -1, addr_i = -1, pay, load_t;
 static int money, deliveries, late;
 static char toast[48]; static int toast_t; static u8 toast_c;
@@ -279,8 +320,8 @@ static void update_player(unsigned btn, int lx) {
     if (btn & PSP_CTRL_RIGHT) steer = 1;
     if (abs(lx - 128) > 32) steer = (lx - 128) / 96.0f;
     if (steer > 1) steer = 1; if (steer < -1) steer = -1;
-    int gas = (btn & (PSP_CTRL_CROSS | PSP_CTRL_RTRIGGER)) != 0;
-    int brake = (btn & (PSP_CTRL_SQUARE | PSP_CTRL_LTRIGGER)) != 0;
+    int gas = (btn & PSP_CTRL_CROSS) != 0;
+    int brake = (btn & PSP_CTRL_SQUARE) != 0;
     int off = OFFROAD[map_px((int)px_, (int)py_)];
     float vmax = off ? 0.55f : 1.0f;
     if (gas && vel < vmax) vel += vel < 0 ? 0.04f : 0.017f;
@@ -305,6 +346,19 @@ static void update_camera(int snap) {
     if (camx > MAP_W - SW) camx = MAP_W - SW; if (camy > MAP_H - SH) camy = MAP_H - SH;
 }
 
+static void update_freecam(unsigned btn, int lx, int ly) {
+    float dx = 0, dy = 0;
+    if (btn & PSP_CTRL_LEFT) dx = -1; if (btn & PSP_CTRL_RIGHT) dx = 1;
+    if (btn & PSP_CTRL_UP) dy = -1; if (btn & PSP_CTRL_DOWN) dy = 1;
+    if (abs(lx - 128) > 30) dx = (lx - 128) / 100.0f;
+    if (abs(ly - 128) > 30) dy = (ly - 128) / 100.0f;
+    float sp = (btn & PSP_CTRL_CROSS) ? 9.0f : 3.0f;
+    fcx += dx * sp; fcy += dy * sp;
+    if (fcx < SW / 2) fcx = SW / 2; if (fcy < SH / 2) fcy = SH / 2;
+    if (fcx > MAP_W - SW / 2) fcx = MAP_W - SW / 2; if (fcy > MAP_H - SH / 2) fcy = MAP_H - SH / 2;
+    camx = fcx - SW / 2; camy = fcy - SH / 2;
+}
+
 static void update_street(void) {
     if (++street_t < 15) return;
     street_t = 0;
@@ -312,8 +366,9 @@ static void update_street(void) {
     for (int i = 0; i < NSEGS; i++) {
         float x0 = SEGS[i][0], y0 = SEGS[i][1], x1 = SEGS[i][2], y1 = SEGS[i][3];
         float dx = x1 - x0, dy = y1 - y0, L = dx * dx + dy * dy;
-        float t = L > 0 ? ((px_ - x0) * dx + (py_ - y0) * dy) / L : 0; if (t < 0) t = 0; if (t > 1) t = 1;
-        float ex = x0 + dx * t - px_, ey = y0 + dy * t - py_, d = ex * ex + ey * ey;
+        float qx = freecam ? fcx : px_, qy = freecam ? fcy : py_;
+        float t = L > 0 ? ((qx - x0) * dx + (qy - y0) * dy) / L : 0; if (t < 0) t = 0; if (t > 1) t = 1;
+        float ex = x0 + dx * t - qx, ey = y0 + dy * t - qy, d = ex * ex + ey * ey;
         if (d < bd) { bd = d; bi = SEGS[i][4]; }
     }
     if (bi >= 0) street_i = bi;
@@ -330,7 +385,8 @@ static void draw_minimap(float tx, float ty, int have_t, u8 tcol) {
     const int MX = 364, MY = 6, MW = 110, MH = 82;
     rect(MX - 2, MY - 2, MW + 4, MH + 4, C_ink_0);
     rect(MX - 1, MY - 1, MW + 2, MH + 2, C_white_1);
-    int ox = (int)(px_ / MINI_S) - MW / 2, oy = (int)(py_ / MINI_S) - MH / 2;
+    float qx = freecam ? fcx : px_, qy = freecam ? fcy : py_;
+    int ox = (int)(qx / MINI_S) - MW / 2, oy = (int)(qy / MINI_S) - MH / 2;
     if (ox < 0) ox = 0; if (oy < 0) oy = 0;
     if (ox > MINI_W - MW) ox = MINI_W - MW; if (oy > MINI_H - MH) oy = MINI_H - MH;
     for (int y = 0; y < MH; y++) memcpy(fb + (MY + y) * SW + MX, minib + (oy + y) * MINI_W + ox, MW);
@@ -340,7 +396,7 @@ static void draw_minimap(float tx, float ty, int have_t, u8 tcol) {
         rect(MX + (int)mx - 2, MY + (int)my - 2, 5, 5, C_ink_0);
         rect(MX + (int)mx - 1, MY + (int)my - 1, 3, 3, tcol);
     }
-    int pxm = MX + (int)(px_ / MINI_S) - ox, pym = MY + (int)(py_ / MINI_S) - oy;
+    int pxm = MX + (int)(qx / MINI_S) - ox, pym = MY + (int)(qy / MINI_S) - oy;
     rect(pxm - 2, pym - 2, 5, 5, C_ink_0);
     rect(pxm - 1, pym - 1, 3, 3, (tick / 8) % 2 ? C_red_3 : C_white_2);
     pset(pxm + (int)roundf(cosf(ang) * 4), pym + (int)roundf(sinf(ang) * 4), C_white_2);
@@ -425,11 +481,32 @@ static void draw_world(void) {
     if (bump > 0) { ox += (rand() % 5) - 2; oy += (rand() % 5) - 2; if (ox < 0) ox = 0; if (oy < 0) oy = 0;
         if (ox > MAP_W - SW) ox = MAP_W - SW; if (oy > MAP_H - SH) oy = MAP_H - SH; }
     draw_map(ox, oy);
+    if (freecam) {
+        int cx = SW / 2, cy = SH / 2;
+        rect(cx - 7, cy, 5, 1, C_white_2); rect(cx + 3, cy, 5, 1, C_white_2);
+        rect(cx, cy - 7, 1, 5, C_white_2); rect(cx, cy + 3, 1, 5, C_white_2);
+        return;
+    }
     float sx = px_ - ox, sy = py_ - oy;
     shadow_ell(sx + 2, sy + 3, 10, 6);
     int fi = (int)floorf(ang / (2 * PI_F) * SPR_N + 0.5f);
     fi = ((fi % SPR_N) + SPR_N) % SPR_N;
     blit(assets_bin + SPR_OFF + fi * SPR_SZ * SPR_SZ, SPR_SZ, SPR_SZ, (int)sx - SPR_SZ / 2, (int)sy - SPR_SZ / 2);
+}
+
+static void draw_bigmap(void) {
+    memset(fb, C_ink_0, sizeof fb);
+    int ox = (SW - BIG_W) / 2, oy = (SH - BIG_H) / 2;
+    for (int y = 0; y < BIG_H; y++) memcpy(fb + (oy + y) * SW + ox, bigb + y * BIG_W, BIG_W);
+    float qx = freecam ? fcx : px_, qy = freecam ? fcy : py_;
+    int mx = ox + (int)(qx / BIG_S), my = oy + (int)(qy / BIG_S);
+    if (ostate == O_PICK || ostate == O_LOAD) { int tx = ox + SHOPS[shop_i].x / BIG_S, ty = oy + SHOPS[shop_i].y / BIG_S; rect(tx - 2, ty - 2, 5, 5, C_ink_0); rect(tx - 1, ty - 1, 3, 3, C_green_3); }
+    if (ostate == O_DROP) { int tx = ox + ADDRS[addr_i].x / BIG_S, ty = oy + ADDRS[addr_i].y / BIG_S; rect(tx - 2, ty - 2, 5, 5, C_ink_0); rect(tx - 1, ty - 1, 3, 3, C_yellow_3); }
+    rect(mx - 3, my - 3, 7, 7, C_ink_0);
+    rect(mx - 2, my - 2, 5, 5, (tick / 8) % 2 ? C_red_3 : C_white_2);
+    text8(6, 6, 1, C_white_2, "КАРТА");
+    text8(6, SH - 22, 1, C_white_0, "SELECT: НАЗАД");
+    text8(6, SH - 10, 1, C_white_0, "(C) OSM");
 }
 
 static void draw_frame(void) {
@@ -445,12 +522,28 @@ static void draw_frame(void) {
         otext8_c(SW / 2, 140, 1, C_yellow_3, C_ink_0, "ЗАБЕРИ ЗАМОВЛЕННЯ - ДОВЕЗИ ВЧАСНО");
         if ((tick / 30) % 2) otext8_c(SW / 2, 196, 2, C_white_2, C_ink_0, "НАТИСНИ СТАРТ");
         otext8_c(SW / 2, 232, 1, C_white_1, C_ink_0, "X: ГАЗ   КВАДРАТ: ГАЛЬМО / НАЗАД");
-        otext8_c(SW / 2, 246, 1, C_white_1, C_ink_0, "СТРІЛКИ АБО СТІК: КЕРМО   СТАРТ: ПАУЗА");
+        otext8_c(SW / 2, 246, 1, C_white_1, C_ink_0, "СТІК: КЕРМО  L: ОГЛЯД  SELECT: КАРТА");
         otext8_c(SW / 2, 262, 1, C_white_0, C_ink_0, "КАРТА: (C) OPENSTREETMAP CONTRIBUTORS");
         if (money) { snprintf(b, sizeof b, "ЗАРОБЛЕНО: %d ГРН  ДОСТАВОК: %d", money, deliveries); otext8_c(SW / 2, 172, 1, C_green_3, C_ink_0, b); }
         return;
     }
+    if (map_err) {
+        memset(fb, C_ink_0, sizeof fb);
+        otext8_c(SW / 2, 90, 2, C_red_3, C_ink_0, map_err == 1 ? "НЕМАЄ ФАЙЛУ MAP.BIN" : "MAP.BIN НЕ ВІД ЦІЄЇ ВЕРСІЇ");
+        otext8_c(SW / 2, 130, 1, C_white_2, C_ink_0, "ПОКЛАДИ MAP.BIN ПОРУЧ З EBOOT.PBP");
+        otext8_c(SW / 2, 146, 1, C_white_1, C_ink_0, "PSP/GAME/KURIERKHM/");
+        return;
+    }
+    if (state == S_BIGMAP) { draw_bigmap(); return; }
     draw_world();
+    if (freecam) {
+        draw_minimap(0, 0, 0, 0);
+        if (street_i >= 0) otext8_c(244, 10, 1, C_white_2, C_ink_0, STREETS[street_i]);
+        panel(0, SH - 18, SW, 18);
+        text8(8, SH - 13, 1, C_yellow_3, "ОГЛЯД МІСТА");
+        text8(118, SH - 13, 1, C_white_1, "СТІК: РУХ  X: ШВИДКО  L: ДО МАШИНИ");
+        return;
+    }
     if (ostate == O_PICK || ostate == O_LOAD) draw_target(SHOPS[shop_i].x, SHOPS[shop_i].y, assets_bin + ICON_SHOP, C_green_2, C_green_0);
     else if (ostate == O_DROP) draw_target(ADDRS[addr_i].x, ADDRS[addr_i].y, assets_bin + ICON_HOME, C_yellow_2, C_yellow_0);
     if (ostate == O_PICK || ostate == O_LOAD) draw_minimap(SHOPS[shop_i].x, SHOPS[shop_i].y, 1, C_green_3);
@@ -474,30 +567,40 @@ static void game_init(void) {
     update_camera(1);
 }
 
-static void game_update(unsigned btn, unsigned pressed, int lx) {
+static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
     tick++;
+    loads_frame = 0;
     if (toast_t > 0) toast_t--;
     if (bump > 0) bump--;
+    if (map_err) return;
     if (state == S_TITLE) {
         if (pressed & (PSP_CTRL_START | PSP_CTRL_CROSS)) { state = S_PLAY; game_init(); owait = 60; }
         return;
     }
+    if (state == S_BIGMAP) { if (pressed & (PSP_CTRL_SELECT | PSP_CTRL_START | PSP_CTRL_CIRCLE)) state = S_PLAY; return; }
     if (state == S_PAUSE) {
         if (pressed & PSP_CTRL_START) state = S_PLAY;
         if (pressed & PSP_CTRL_SELECT) { ostate = O_NONE; owait = 20; state = S_PLAY; }
         return;
     }
     if (pressed & PSP_CTRL_START) { state = S_PAUSE; return; }
-    update_player(btn, lx);
-    update_camera(0);
-    update_orders();
+    if (pressed & PSP_CTRL_SELECT) { state = S_BIGMAP; return; }
+    if (pressed & PSP_CTRL_LTRIGGER) {
+        freecam = !freecam;
+        if (freecam) { fcx = camx + SW / 2; fcy = camy + SH / 2; vel = 0; }
+        else update_camera(1);
+    }
+    if (freecam) update_freecam(btn, lx, ly);
+    else { update_player(btn, lx); update_camera(0); update_orders(); }
     update_street();
+    prefetch((int)camx, (int)camy, freecam ? 0 : cosf(ang) * vel, freecam ? 0 : sinf(ang) * vel);
 }
 
 static void assets_init(void) {
     cache_init();
-    uLongf l = SOLID_RAW; uncompress(solidb, &l, assets_bin + SOLID_OFF, SOLID_ZLEN);
-    l = MINI_W * MINI_H; uncompress(minib, &l, assets_bin + MINI_OFF, MINI_ZLEN);
+    map_open();
+    uLongf l = MINI_W * MINI_H; uncompress(minib, &l, assets_bin + MINI_OFF, MINI_ZLEN);
+    l = BIG_W * BIG_H; uncompress(bigb, &l, assets_bin + BIG_OFF, BIG_ZLEN);
 }
 
 /* ================= platform ================= */
@@ -545,7 +648,8 @@ int main(int argc, char **argv) {
 
     if (argc > 0 && argv[0]) {
         const char *sl = strrchr(argv[0], '/');
-        if (sl) { size_t n = (size_t)(sl - argv[0]) + 1; if (n < 480) { memcpy(save_path, argv[0], n); strcpy(save_path + n, "save.dat"); } }
+        if (sl) { size_t n = (size_t)(sl - argv[0]) + 1; if (n < 480) { memcpy(save_path, argv[0], n); strcpy(save_path + n, "save.dat");
+                                                               memcpy(map_path, argv[0], n); strcpy(map_path + n, "MAP.BIN"); } }
     }
     load_save();
     assets_init();
@@ -557,7 +661,7 @@ int main(int argc, char **argv) {
         sceCtrlPeekBufferPositive(&pad, 1);
         unsigned pressed = pad.Buttons & ~old;
         old = pad.Buttons;
-        game_update(pad.Buttons, pressed, pad.Lx);
+        game_update(pad.Buttons, pressed, pad.Lx, pad.Ly);
         draw_frame();
         flip();
     }
@@ -579,11 +683,13 @@ int main(int argc, char **argv) {
     srand(5);
     snprintf(save_path, sizeof save_path, "%s/save_host.dat", dir);
     remove(save_path);
+    snprintf(map_path, sizeof map_path, "%s", argc > 2 ? argv[2] : "build/MAP.BIN");
     assets_init();
+    if (map_err) { printf("MAP.BIN error %d\n", map_err); return 1; }
     /* title */
-    for (int i = 0; i < 40; i++) { game_update(0, 0, 128); }
+    for (int i = 0; i < 40; i++) { game_update(0, 0, 128, 128); }
     draw_frame(); snprintf(nm, sizeof nm, "%s/f_title.ppm", dir); dump(nm);
-    game_update(0, PSP_CTRL_START, 128);
+    game_update(0, PSP_CTRL_START, 128, 128);
     /* simple autopilot toward the current target */
     int shots = 0, stuck = 0; float lastx = 0, lasty = 0;
     for (int f = 0; f < 9000; f++) {
@@ -606,13 +712,22 @@ int main(int argc, char **argv) {
             else { px_ = tx; py_ = ty; }
             vel = 0; stuck = 0;
         }
-        game_update(btn, 0, lx);
+        game_update(btn, 0, lx, 128);
         draw_frame();
         if ((f == 200 || f == 900 || (ostate == O_LOAD && load_t == 30) || (ostate == O_DROP && otimer == olimit - 300) || (toast_t == 140 && strstr(toast, "ГРН"))) && shots < 8) {
             snprintf(nm, sizeof nm, "%s/f_play%d.ppm", dir, shots++); dump(nm);
         }
     }
-    game_update(0, PSP_CTRL_START, 128); draw_frame();
+    game_update(0, PSP_CTRL_SELECT, 128, 128); draw_frame();
+    snprintf(nm, sizeof nm, "%s/f_bigmap.ppm", dir); dump(nm);
+    game_update(0, PSP_CTRL_SELECT, 128, 128);
+    game_update(0, PSP_CTRL_LTRIGGER, 128, 128);
+    int maxl = 0;
+    for (int f = 0; f < 400; f++) { game_update(PSP_CTRL_CROSS, 0, 255, 60); draw_frame(); if (loads_frame > maxl) maxl = loads_frame; }
+    snprintf(nm, sizeof nm, "%s/f_freecam.ppm", dir); dump(nm);
+    printf("max chunk loads per frame in fast free camera: %d\n", maxl);
+    game_update(0, PSP_CTRL_LTRIGGER, 128, 128);
+    game_update(0, PSP_CTRL_START, 128, 128); draw_frame();
     snprintf(nm, sizeof nm, "%s/f_pause.ppm", dir); dump(nm);
     printf("money=%d deliveries=%d late=%d shots=%d cache=%d\n", money, deliveries, late, shots, NCACHE);
     return 0;

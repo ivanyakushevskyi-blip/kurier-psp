@@ -30,23 +30,24 @@ def put(b):
     return off
 
 
-# ---- map chunks
+# ---- map chunks -> окремий файл MAP.BIN поруч з EBOOT (карта завелика для вбудовування)
+#      формат: "KHM1", u32 NCX, u32 NCY, u32 CS, u32 off[NCX*NCY+1] (від початку файлу), далі zlib(пікселі CS*CS + біти твердості CS*CS/8)
+import struct
+sbits = np.packbits(solid.astype(np.uint8), axis=1, bitorder='little')     # (H, W/8)
 chunks = []
 for cy in range(NCY):
     for cx in range(NCX):
-        chunks.append(zlib.compress(img[cy * CS:(cy + 1) * CS, cx * CS:(cx + 1) * CS].tobytes(), 9))
-coffs = []
-base = put(b'')
-for c in chunks:
-    coffs.append(put(c))
-coffs.append(len(blob))
+        pxl = img[cy * CS:(cy + 1) * CS, cx * CS:(cx + 1) * CS].tobytes()
+        sb = sbits[cy * CS:(cy + 1) * CS, cx * CS // 8:(cx + 1) * CS // 8].tobytes()
+        chunks.append(zlib.compress(pxl + sb, 9))
+hdr = 16 + 4 * (len(chunks) + 1)
+offs = [hdr]
+for c in chunks: offs.append(offs[-1] + len(c))
+with open(os.path.join(BUILD, 'MAP.BIN'), 'wb') as f:
+    f.write(b'KHM1' + struct.pack('<3I', NCX, NCY, CS) + struct.pack('<%dI' % len(offs), *offs))
+    for c in chunks: f.write(c)
 csizes = [len(c) for c in chunks]
-
-# ---- collision bits
-sb = np.packbits(solid.astype(np.uint8), axis=1, bitorder='little')   # (H, W/8)
-SOLID_OFF = put(zlib.compress(sb.tobytes(), 9))
-SOLID_ZLEN = len(blob) - SOLID_OFF
-SOLID_RAW = sb.size
+MAPBIN_SIZE = offs[-1]
 
 # ---- minimap (1/8): average colour -> nearest palette entry
 pal = np.array(PAL, np.float32)
@@ -54,17 +55,39 @@ rgb = pal[np.clip(img, 0, len(PAL) - 1)]
 MS = 8
 mh, mw = H // MS, W // MS
 avg = rgb.reshape(mh, MS, mw, MS, 3).mean(axis=(1, 3))
-solid_frac = solid.reshape(mh, MS, mw, MS).mean(axis=(1, 3))
-cand = sorted(set(R['asph'] + R['pave'] + R['grass'] + R['leaf'] + R['water'] + R['conc'] + R['dirt'] + R['roofG'] + R['roofR'] + R['ballast']))
+playz = np.load(os.path.join(BUILD, 'play.npy'))
+bsolid = solid & playz
+solid_frac = bsolid.reshape(mh, MS, mw, MS).mean(axis=(1, 3))
+cand = sorted(set(R['asph'] + R['pave'] + R['grass'] + R['grassY'] + R['leaf'] + R['leafY'] + R['leafO'] + R['water'] + R['conc'] + R['dirt'] + R['roofG'] + R['roofR'] + R['roofO'] + R['roofW'] + R['roofB'] + R['ballast'] + R['track']))
 cp = pal[cand]
 best = np.zeros((mh, mw), np.uint8)
 for y in range(mh):
     d = ((avg[y][:, None, :] - cp[None]) ** 2).sum(-1)
     best[y] = np.array(cand, np.uint8)[d.argmin(-1)]
 best[solid_frac > 0.5] = R['roofG'][1]
+outside = playz[MS // 2::MS, MS // 2::MS][:mh, :mw] == 0
+best_lit = best.copy()
+best[outside] = np.array(dark_lut(), np.uint8)[best[outside]]
 mini = best
 MINI_OFF = put(zlib.compress(mini.tobytes(), 9))
 MINI_ZLEN = len(blob) - MINI_OFF
+
+# ---- велика карта (SELECT): 1/32 від повної
+BS_ = 32
+bh, bw = H // BS_, W // BS_
+mm = best_lit[:bh * 4, :bw * 4]
+big = mm[::4, ::4].copy()
+# дороги/дахи краще видно, якщо брати мінімальну яскравість у блоці 4x4 (тонкі вулиці не губляться)
+lum = pal[np.clip(mm, 0, len(PAL) - 1)].mean(-1).reshape(bh, 4, bw, 4)
+idx = lum.reshape(bh, 4, bw, 4).transpose(0, 2, 1, 3).reshape(bh, bw, 16).argmin(-1)
+mmb = mm.reshape(bh, 4, bw, 4).transpose(0, 2, 1, 3).reshape(bh, bw, 16)
+roadish = np.isin(mmb, R['asph'])
+big = np.where(roadish.sum(-1) >= 4, R['asph'][1], mmb[:, :, 5]).astype(np.uint8)
+DK = np.array(dark_lut(), np.uint8)
+ob = outside[2::4, 2::4][:bh, :bw]
+big[ob] = DK[DK[big[ob]]]
+BIG_OFF = put(zlib.compress(big.tobytes(), 9))
+BIG_ZLEN = len(blob) - BIG_OFF
 
 # ---- sprites
 fr = sprites.scooter_frames()
@@ -106,8 +129,8 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('extern const uint8_t assets_bin[];\n')
     f.write('#define MAP_W %d\n#define MAP_H %d\n#define CS %d\n#define NCX %d\n#define NCY %d\n' % (W, H, CS, NCX, NCY))
     f.write('#define MPP %.3ff\n' % md['M'])
-    f.write('static const uint32_t CHUNK_OFF[%d] = {%s};\n' % (len(coffs), ','.join(map(str, coffs))))
-    f.write('#define SOLID_OFF %d\n#define SOLID_ZLEN %d\n#define SOLID_RAW %d\n#define SOLID_STRIDE %d\n' % (SOLID_OFF, SOLID_ZLEN, SOLID_RAW, sb.shape[1]))
+    f.write('#define MAPBIN_SIZE %d\n' % MAPBIN_SIZE)
+    f.write('#define BIG_OFF %d\n#define BIG_ZLEN %d\n#define BIG_W %d\n#define BIG_H %d\n#define BIG_S %d\n' % (BIG_OFF, BIG_ZLEN, bw, bh, BS_))
     f.write('#define MINI_OFF %d\n#define MINI_ZLEN %d\n#define MINI_W %d\n#define MINI_H %d\n#define MINI_S %d\n' % (MINI_OFF, MINI_ZLEN, mw, mh, MS))
     f.write('#define SPR_OFF %d\n#define SPR_SZ %d\n#define SPR_N %d\n#define ICON_SHOP %d\n#define ICON_HOME %d\n#define ICON_SZ 16\n' % (SPR_OFF, sprites.SZ, sprites.NROT, ICON_SHOP, ICON_HOME))
     f.write('#define SPAWN_X %d\n#define SPAWN_Y %d\n' % tuple(md['spawn']))
@@ -126,7 +149,7 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('static const uint8_t DARK[256] = {%s};\n' % ','.join(map(str, dark_lut())))
     # surface classes for driving: 1 = off-road (grass, dirt)
     off = [0] * 256
-    for k in ('grass', 'dirt'):
+    for k in ('grass', 'grassY', 'dirt'):
         for i in R[k]: off[i] = 1
     f.write('static const uint8_t OFFROAD[256] = {%s};\n' % ','.join(map(str, off)))
 
@@ -140,5 +163,5 @@ with open(os.path.join(OUT, 'assets_data.c'), 'w') as f:
     for i in range(0, len(blob), 40):
         f.write(','.join(str(b) for b in blob[i:i + 40]) + ',\n')
     f.write('};\n')
-print('blob MB %.2f  map chunks MB %.2f  max chunk %d  shops %d addrs %d glyphs %d' % (
+print('MAP.BIN MB %.2f  ' % (MAPBIN_SIZE / 1e6) + 'blob MB %.2f  map chunks MB %.2f  max chunk %d  shops %d addrs %d glyphs %d' % (
     len(blob) / 1e6, sum(csizes) / 1e6, max(csizes), len(md['shops']), len(md['addrs']), len(glyphs)))
