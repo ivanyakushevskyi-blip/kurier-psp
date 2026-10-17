@@ -506,7 +506,7 @@ static void draw_bigmap(void) {
     rect(mx - 2, my - 2, 5, 5, (tick / 8) % 2 ? C_red_3 : C_white_2);
     text8(6, 6, 1, C_white_2, "КАРТА");
     text8(6, SH - 22, 1, C_white_0, "SELECT: НАЗАД");
-    text8(6, SH - 10, 1, C_white_0, "(C) OSM");
+    text8(6, SH - 10, 1, C_white_0, "(C) OSM, MICROSOFT BUILDING FOOTPRINTS");
 }
 
 static void draw_frame(void) {

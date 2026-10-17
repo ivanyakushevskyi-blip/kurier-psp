@@ -67,7 +67,8 @@ def data():
         import citygen as CG
         nodes, ntags, ways = CG.load('data/osm_v2')
         _CACHE.update(w=ways, n=ntags, nodes=nodes, B=json.load(open('build/buildings.json'))['buildings'],
-                      SAT=(json.load(open('build/sat_houses.json')) if os.path.exists('build/sat_houses.json') else []) +
+                      SAT=(json.load(open('build/ms_buildings.json')) if os.path.exists('build/ms_buildings.json') else
+                           json.load(open('build/sat_houses.json')) if os.path.exists('build/sat_houses.json') else []) +
                           (json.load(open('build/manual_buildings.json')) if os.path.exists('build/manual_buildings.json') else []))
         # ручні кольори дахів ключових будівель (data/roof_overrides.json, точки в сітці 0,32 м)
         if os.path.exists('data/roof_overrides.json'):
