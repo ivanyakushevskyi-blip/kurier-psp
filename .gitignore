@@ -1,0 +1,11 @@
+build/
+dist/
+src/assets_data.c
+src/assets.h
+src/assets.bin
+src/pal_ids.h
+src/*.o
+src/*.elf
+src/*.SFO
+src/EBOOT.PBP
+__pycache__/
