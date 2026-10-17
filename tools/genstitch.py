@@ -18,7 +18,7 @@ def load(name):
 def warp(img, H, box):
     x0, y0, W, Hh = box
     T = np.array([[1, 0, -x0], [0, 1, -y0], [0, 0, 1]], float)
-    w = cv2.warpPerspective(img, T @ H, (W, Hh), flags=cv2.INTER_LINEAR)
+    w = cv2.warpPerspective(img, T @ H, (W, Hh), flags=cv2.INTER_NEAREST)
     m = cv2.warpPerspective(np.full(img.shape[:2], 255, np.uint8), T @ H, (W, Hh), flags=cv2.INTER_NEAREST)
     m = cv2.erode(m, np.ones((5, 5), np.uint8)) > 0                    # без розмитих країв картинки
     return w, m
@@ -57,14 +57,19 @@ def refine_geometry(base, bm, img, im):
     return img2, im2
 
 
-def match_colors(base, bm, img, im):
-    ov = bm & im
-    if ov.sum() < 2000: return img
-    A = img[ov].astype(np.float32); B = base[ov].astype(np.float32)
-    X = np.c_[A, np.ones(len(A))]
-    M, *_ = np.linalg.lstsq(X, B, rcond=None)                          # 4x3 афінна корекція кольору
-    out = np.c_[img.reshape(-1, 3).astype(np.float32), np.ones(img.shape[0] * img.shape[1])] @ M
-    return np.clip(out, 0, 255).reshape(img.shape).astype(np.uint8)
+def lab_stats(img):
+    L = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(np.float32)
+    return L.mean(0), L.std(0)
+
+
+def normalize_colors(img, target):
+    """Вся частина цілком під спільну «температуру» міста (середнє і розкид по LAB).
+    Порівнювати лише спільну смугу не можна: там генератор малює ті самі об'єкти по-різному,
+    і корекція то «сіріє», то перенасичує всю частину."""
+    m, s = lab_stats(img); tm, ts = target
+    L = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
+    L = (L - m) * np.clip(ts / (s + 1e-3), 0.85, 1.2) + tm
+    return cv2.cvtColor(np.clip(L, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
 
 
 def seam_merge(base, bm, img, im):
@@ -95,6 +100,9 @@ def seam_merge(base, bm, img, im):
 
 def stitch(names):
     items = [load(n) for n in names]
+    st = [lab_stats(i) for i, _ in items]
+    target = (np.mean([m for m, _ in st], 0), np.mean([v for _, v in st], 0))
+    items = [(normalize_colors(i, target), H) for i, H in items]
     cs = []
     for img, H in items:
         h, w = img.shape[:2]
@@ -107,7 +115,6 @@ def stitch(names):
         print('  +', n)
         w, m = warp(img, H, box)
         w, m = refine_geometry(base, bm, w, m)
-        w = match_colors(base, bm, w, m)
         base, bm = seam_merge(base, bm, w, m)
     return base, bm, (x0, y0)
 
