@@ -4,7 +4,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pal import PAL, R, dark_lut
+from palgame import PAL, R, dark_lut, MAP_START, MAP_COLORS, offroad
+import citydraw as CD
 import sprites
 
 BUILD = sys.argv[1]
@@ -58,13 +59,13 @@ avg = rgb.reshape(mh, MS, mw, MS, 3).mean(axis=(1, 3))
 playz = np.load(os.path.join(BUILD, 'play.npy'))
 bsolid = solid & playz
 solid_frac = bsolid.reshape(mh, MS, mw, MS).mean(axis=(1, 3))
-cand = sorted(set(R['asph'] + R['pave'] + R['grass'] + R['grassY'] + R['leaf'] + R['leafY'] + R['leafO'] + R['water'] + R['conc'] + R['dirt'] + R['roofG'] + R['roofR'] + R['roofO'] + R['roofW'] + R['roofB'] + R['ballast'] + R['track']))
+cand = list(range(MAP_START, MAP_START + len(MAP_COLORS)))
+ASPH_IDS = [MAP_START + k for k, c in enumerate(MAP_COLORS) if tuple(c) in [tuple(a) for a in CD.ASPH]]
 cp = pal[cand]
 best = np.zeros((mh, mw), np.uint8)
 for y in range(mh):
     d = ((avg[y][:, None, :] - cp[None]) ** 2).sum(-1)
     best[y] = np.array(cand, np.uint8)[d.argmin(-1)]
-best[solid_frac > 0.5] = R['roofG'][1]
 outside = playz[MS // 2::MS, MS // 2::MS][:mh, :mw] == 0
 best_lit = best.copy()
 best[outside] = np.array(dark_lut(), np.uint8)[best[outside]]
@@ -81,8 +82,8 @@ big = mm[::4, ::4].copy()
 lum = pal[np.clip(mm, 0, len(PAL) - 1)].mean(-1).reshape(bh, 4, bw, 4)
 idx = lum.reshape(bh, 4, bw, 4).transpose(0, 2, 1, 3).reshape(bh, bw, 16).argmin(-1)
 mmb = mm.reshape(bh, 4, bw, 4).transpose(0, 2, 1, 3).reshape(bh, bw, 16)
-roadish = np.isin(mmb, R['asph'])
-big = np.where(roadish.sum(-1) >= 4, R['asph'][1], mmb[:, :, 5]).astype(np.uint8)
+roadish = np.isin(mmb, ASPH_IDS)
+big = np.where(roadish.sum(-1) >= 4, ASPH_IDS[0] if ASPH_IDS else mmb[:, :, 5], mmb[:, :, 5]).astype(np.uint8)
 DK = np.array(dark_lut(), np.uint8)
 ob = outside[2::4, 2::4][:bh, :bw]
 big[ob] = DK[DK[big[ob]]]
@@ -90,7 +91,7 @@ BIG_OFF = put(zlib.compress(big.tobytes(), 9))
 BIG_ZLEN = len(blob) - BIG_OFF
 
 # ---- sprites
-fr = sprites.scooter_frames()
+fr = sprites.car_frames()
 SPR_OFF = put(b''.join(f.tobytes() for f in fr))
 ICON_SHOP = put(sprites.icon('shop').tobytes())
 ICON_HOME = put(sprites.icon('home').tobytes())
@@ -132,7 +133,7 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('#define MAPBIN_SIZE %d\n' % MAPBIN_SIZE)
     f.write('#define BIG_OFF %d\n#define BIG_ZLEN %d\n#define BIG_W %d\n#define BIG_H %d\n#define BIG_S %d\n' % (BIG_OFF, BIG_ZLEN, bw, bh, BS_))
     f.write('#define MINI_OFF %d\n#define MINI_ZLEN %d\n#define MINI_W %d\n#define MINI_H %d\n#define MINI_S %d\n' % (MINI_OFF, MINI_ZLEN, mw, mh, MS))
-    f.write('#define SPR_OFF %d\n#define SPR_SZ %d\n#define SPR_N %d\n#define ICON_SHOP %d\n#define ICON_HOME %d\n#define ICON_SZ 16\n' % (SPR_OFF, sprites.SZ, sprites.NROT, ICON_SHOP, ICON_HOME))
+    f.write('#define SPR_OFF %d\n#define SPR_SZ %d\n#define SPR_N %d\n#define ICON_SHOP %d\n#define ICON_HOME %d\n#define ICON_SZ 16\n' % (SPR_OFF, sprites.CAR_SZ, sprites.NROT, ICON_SHOP, ICON_HOME))
     f.write('#define SPAWN_X %d\n#define SPAWN_Y %d\n' % tuple(md['spawn']))
     f.write('typedef struct { int16_t x, y; const char *name; const char *kind; } Poi;\n')
     f.write('static const Poi SHOPS[] = {\n%s};\n' % ',\n'.join('{%d,%d,%s,%s}' % (s['x'], s['y'], cstr(s['name']), cstr(s['kind'])) for s in md['shops']))
@@ -148,9 +149,7 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('static const uint32_t PALETTE[256] = {%s};\n' % ','.join('0x%08X' % v for v in pal32))
     f.write('static const uint8_t DARK[256] = {%s};\n' % ','.join(map(str, dark_lut())))
     # surface classes for driving: 1 = off-road (grass, dirt)
-    off = [0] * 256
-    for k in ('grass', 'grassY', 'dirt'):
-        for i in R[k]: off[i] = 1
+    off = offroad()
     f.write('static const uint8_t OFFROAD[256] = {%s};\n' % ','.join(map(str, off)))
 
 with open(os.path.join(OUT, 'pal_ids.h'), 'w') as f:

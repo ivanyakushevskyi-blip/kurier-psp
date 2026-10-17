@@ -253,7 +253,7 @@ static void new_order(void) {
     for (int t = 0; t < 80; t++) {
         int i = rand() % NSHOPS;
         float d = dist(px_, py_, SHOPS[i].x, SHOPS[i].y);
-        if (d > 250 && d < 1700) { best = i; break; }
+        if (d > 160 && d < 1100) { best = i; break; }
         if (best < 0 || d < dist(px_, py_, SHOPS[best].x, SHOPS[best].y)) best = i;
     }
     shop_i = best;
@@ -261,7 +261,7 @@ static void new_order(void) {
     for (int t = 0; t < 120; t++) {
         int i = rand() % NADDRS;
         float d = dist(SHOPS[shop_i].x, SHOPS[shop_i].y, ADDRS[i].x, ADDRS[i].y);
-        if (d > 800 && d < 2900) { ab = i; break; }
+        if (d > 500 && d < 1850) { ab = i; break; }
         if (ab < 0) ab = i;
     }
     addr_i = ab;
@@ -306,7 +306,7 @@ static void update_orders(void) {
 
 static int hit(float x, float y, float a) {
     float c = cosf(a), s = sinf(a);
-    static const float P[][2] = { { 0, 0 }, { 9, 0 }, { -9, 0 }, { 5, 4 }, { 5, -4 }, { -6, 4 }, { -6, -4 } };
+    static const float P[][2] = { { 0, 0 }, { 10, 0 }, { -10, 0 }, { 9, 4 }, { 9, -4 }, { -9, 4 }, { -9, -4 } };   /* Golf ~20x9 пікс */
     for (int i = 0; i < 7; i++) {
         float lx = P[i][0], ly = P[i][1];
         if (is_solid((int)(x + lx * c - ly * s), (int)(y + lx * s + ly * c))) return 1;
@@ -323,7 +323,7 @@ static void update_player(unsigned btn, int lx) {
     int gas = (btn & PSP_CTRL_CROSS) != 0;
     int brake = (btn & PSP_CTRL_SQUARE) != 0;
     int off = OFFROAD[map_px((int)px_, (int)py_)];
-    float vmax = off ? 0.55f : 1.0f;
+    float vmax = off ? 0.4f : 0.75f;
     if (gas && vel < vmax) vel += vel < 0 ? 0.04f : 0.017f;
     if (brake) vel -= vel > 0.02f ? 0.045f : 0.012f;
     if (!gas && !brake) { vel *= 0.984f; if (fabsf(vel) < 0.006f) vel = 0; }
@@ -488,7 +488,7 @@ static void draw_world(void) {
         return;
     }
     float sx = px_ - ox, sy = py_ - oy;
-    shadow_ell(sx + 2, sy + 3, 10, 6);
+    shadow_ell(sx + 2, sy + 2, 11, 6);
     int fi = (int)floorf(ang / (2 * PI_F) * SPR_N + 0.5f);
     fi = ((fi % SPR_N) + SPR_N) % SPR_N;
     blit(assets_bin + SPR_OFF + fi * SPR_SZ * SPR_SZ, SPR_SZ, SPR_SZ, (int)sx - SPR_SZ / 2, (int)sy - SPR_SZ / 2);

@@ -66,7 +66,8 @@ def data():
     if 'w' not in _CACHE:
         import citygen as CG
         nodes, ntags, ways = CG.load('data/osm_v2')
-        _CACHE.update(w=ways, n=ntags, nodes=nodes, B=json.load(open('build/buildings.json'))['buildings'])
+        _CACHE.update(w=ways, n=ntags, nodes=nodes, B=json.load(open('build/buildings.json'))['buildings'],
+                      SAT=json.load(open('build/sat_houses.json')) if os.path.exists('build/sat_houses.json') else [])
     return _CACHE
 
 
@@ -296,7 +297,7 @@ def render(x0, y0, W, H):
 
     # ---------- будинки
     blds = []
-    for i, b in enumerate(D['B']):
+    for i, b in enumerate(D['B'] + D['SAT']):
         pts = [to(p) for p in b['q']]
         if not visible(pts, 30): continue
         blds.append((i, b, pts))

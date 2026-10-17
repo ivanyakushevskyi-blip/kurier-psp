@@ -5,7 +5,7 @@ from PIL import Image, ImageDraw
 from scipy import ndimage as ndi
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pal import PAL, R
+from palgame import PAL, R
 
 SS = 4
 SZ = 40          # sprite canvas (1x)
@@ -97,6 +97,40 @@ def scooter_frames():
     return frames
 
 
+CAR_SZ = 28
+
+
+def draw_golf():
+    """VW Golf V хетчбек, сріблястий, вид згори, ніс на схід. ~20 x 9 пікс (гра 0,5 м/пікс, машина збільшена)."""
+    S = CAR_SZ * SS
+    im = Image.new('RGBA', (S, S), (0, 0, 0, 0)); d = ImageDraw.Draw(im)
+    c = S / 2
+    def P(x, y): return (c + x * SS, c + y * SS)
+    def rr(x0, y0, x1, y1, ci, r=0): d.rounded_rectangle([P(x0, y0), P(x1, y1)], radius=r * SS, fill=col(ci))
+    sv, gl, ti = R['silver'], R['glass'], R['tire']
+    rr(-7.5, -5.0, -3.5, 5.0, ti[0], 0.8); rr(4.0, -5.0, 8.0, 5.0, ti[0], 0.8)          # колеса
+    rr(-10, -4.4, 10, 4.4, sv[1], 2.2)                                                    # кузов
+    rr(-9.6, -4.0, 9.6, 4.0, sv[2], 2.0)
+    rr(4.2, -3.9, 9.4, 3.9, sv[3], 1.6)                                                   # капот
+    d.polygon([P(1.6, -3.4), P(4.4, -3.8), P(4.4, 3.8), P(1.6, 3.4)], fill=col(gl[1]))     # лобове
+    rr(-6.2, -3.3, 1.8, 3.3, sv[3], 0.8)                                                  # дах
+    rr(-5.6, -2.6, 1.2, 2.6, sv[4], 0.6)
+    d.polygon([P(-8.6, -3.2), P(-6.4, -3.4), P(-6.4, 3.4), P(-8.6, 3.2)], fill=col(gl[0]))  # заднє скло
+    for sg in (-1, 1):
+        d.polygon([P(-6.0, sg * 3.6), P(1.6, sg * 3.6), P(1.0, sg * 4.2), P(-5.6, sg * 4.2)], fill=col(gl[1]))   # бокові вікна
+        rr(2.2, sg * 4.3 - 0.5, 3.2, sg * 4.3 + 0.5, R['ink'][1], 0.3)                     # дзеркала
+    rr(9.2, -3.6, 9.9, -2.0, R['yellow'][3], 0.2); rr(9.2, 2.0, 9.9, 3.6, R['yellow'][3], 0.2)   # фари
+    rr(-10.0, -3.6, -9.4, -2.2, R['red'][2], 0.2); rr(-10.0, 2.2, -9.4, 3.6, R['red'][2], 0.2)   # ліхтарі
+    return im
+
+
+def car_frames():
+    base = draw_golf()
+    allowed = sum((R[k] for k in ('silver', 'glass', 'tire', 'ink', 'yellow', 'red')), [])
+    S = CAR_SZ * SS
+    return [quantise(base.rotate(-i * 360.0 / NROT, resample=Image.BICUBIC, center=(S / 2, S / 2)), allowed) for i in range(NROT)]
+
+
 def icon(kind):
     """14x14 map icon: 'shop' (bag) or 'home' (house)"""
     S = 16 * SS
@@ -116,6 +150,12 @@ def icon(kind):
     allowed = sum((R[k] for k in ('green', 'yellow', 'white', 'red', 'box', 'ink')), [])
     return quantise(im, allowed)
 
+
+if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] == 'car':
+    fr = car_frames()
+    pal = np.array(PAL + [(255, 0, 255)] * (256 - len(PAL)), np.uint8); pal[0] = (255, 0, 255)
+    sheet = np.hstack([fr[k * 4] for k in range(8)])
+    Image.fromarray(pal[sheet]).resize((sheet.shape[1] * 8, sheet.shape[0] * 8), Image.NEAREST).save(sys.argv[2]); sys.exit()
 
 if __name__ == '__main__':
     fr = scooter_frames()
