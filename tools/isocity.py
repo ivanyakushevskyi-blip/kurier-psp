@@ -163,12 +163,17 @@ def draw_building(canvas, ghost, sty, grad, b, ox, oy, seed):
     return S, (cx0, cy0)
 
 
-def render_window(cx, cy, w, h):
+def render_window(cx, cy, w, h, base=None):
+    """base: готова піксель-арт підкладка в координатах карти (напр. перемальований генератором знімок)."""
     x0, y0 = cx - w // 2, cy - h // 2
     M = 80                                                  # запас для стилізації
     sat = np.load('build/sat_map.npy', mmap_mode='r')
     raw = np.ascontiguousarray(sat[y0 - M:y0 + h + M, x0 - M:x0 + w + M])
-    sty = stylize(raw)
+    if base is not None:
+        raw = np.ascontiguousarray(base[y0 - M:y0 + h + M, x0 - M:x0 + w + M])
+        sty = raw.copy()
+    else:
+        sty = stylize(raw)
     gray = cv2.cvtColor(cv2.GaussianBlur(raw, (3, 3), 0), cv2.COLOR_BGR2GRAY).astype(np.float32)
     grad = np.hypot(cv2.Sobel(gray, cv2.CV_32F, 1, 0), cv2.Sobel(gray, cv2.CV_32F, 0, 1))
     canvas = sty.copy()
@@ -189,6 +194,7 @@ def render_window(cx, cy, w, h):
     for S, (ax, ay) in masks:
         covered[ay:ay + S.shape[0], ax:ax + S.shape[1]] |= S
     hole = (ghost & ~covered).astype(np.uint8)
+    if base is not None: hole[:] = 0
     ground = cv2.inpaint(sty, hole, 5, cv2.INPAINT_TELEA) if hole.any() else sty
     # 2) тіні будинків на землю (на схід-північний схід) і самі будинки
     canvas = ground.copy()
