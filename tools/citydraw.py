@@ -67,7 +67,14 @@ def data():
         import citygen as CG
         nodes, ntags, ways = CG.load('data/osm_v2')
         _CACHE.update(w=ways, n=ntags, nodes=nodes, B=json.load(open('build/buildings.json'))['buildings'],
-                      SAT=json.load(open('build/sat_houses.json')) if os.path.exists('build/sat_houses.json') else [])
+                      SAT=(json.load(open('build/sat_houses.json')) if os.path.exists('build/sat_houses.json') else []) +
+                          (json.load(open('build/manual_buildings.json')) if os.path.exists('build/manual_buildings.json') else []))
+        # ручні кольори дахів ключових будівель (data/roof_overrides.json, точки в сітці 0,32 м)
+        if os.path.exists('data/roof_overrides.json'):
+            for o in json.load(open('data/roof_overrides.json')):
+                for b in _CACHE['B'] + _CACHE['SAT']:
+                    if cv2.pointPolygonTest(np.array(b['q'], np.float32), tuple(map(float, o['pt'])), False) >= 0:
+                        b['roof'] = o['roof']
     return _CACHE
 
 
@@ -141,6 +148,14 @@ def render(x0, y0, W, H):
     ycls[exg > 6] = 1
     ycls[(r > bl + 28) & (exg <= 6) & (ch > 34) & (mx > 110)] = 2
     ycls[dark] = 0
+    _bm = Image.new('L', (W, H), 0); _d = ImageDraw.Draw(_bm)
+    for b in D['B'] + D['SAT']:
+        P = [to(p) for p in b['q']]
+        if visible(P, 30): _d.polygon(P, fill=1)
+    for w, pts in ways:
+        hw = w['t'].get('highway')
+        if hw in ROAD_W and w['t'].get('area') != 'yes': _d.line(pts, fill=1, width=int(ROAD_W[hw] / MPP) + 2)
+    ycls[cv2.dilate(np.array(_bm, np.uint8), np.ones((5, 5), np.uint8)) > 0] = 0
     if (ycls == 0).any():
         _, (iy, ix) = ndi.distance_transform_edt(ycls == 0, return_indices=True); ycls = ycls[iy, ix]
     oh = np.stack([cv2.blur((ycls == k).astype(np.float32), (9, 9)) for k in (1, 2, 3)])
@@ -251,6 +266,19 @@ def render(x0, y0, W, H):
         while v < hw - 0.5:
             dm.line([(cx - uy * v - ux * 3, cy + ux * v - uy * 3), (cx - uy * v + ux * 3, cy + ux * v + uy * 3)], fill=1, width=2); v += 3
     img[(np.array(mk) > 0) & road] = MARK
+    # розмітка паркувань
+    for w, pts in ways:
+        if not (w['closed'] and w['t'].get('amenity') == 'parking' and len(pts) >= 4): continue
+        P = np.array(pts, np.float32)
+        m = np.zeros((H, W), np.uint8); cv2.fillPoly(m, [np.round(P).astype(np.int32)], 1)
+        m = cv2.erode(m, np.ones((5, 5), np.uint8)).astype(bool) & (cls == G_PARK)
+        (cx, cy), (rw, rh), ang = cv2.minAreaRect(P); a = math.radians(ang)
+        ux, uy = (math.cos(a), math.sin(a)) if rw >= rh else (-math.sin(a), math.cos(a))
+        along = xx * ux + yy * uy; across = -xx * uy + yy * ux
+        c_across = -cx * uy + cy * ux
+        band = (np.abs(((across - c_across) % 22) - 11) > 2)          # ряди місць по ~5 м, проїзд між рядами
+        stripe = (np.floor(along) % 5 == 0) & band
+        img[m & stripe] = (178, 180, 182)
     # бігова доріжка: поле всередині стадіону -> «овал» навколо поля
     stad = [np.array(p, np.float32) for w, p in ways if w['closed'] and w['t'].get('leisure') == 'stadium']
     for w, pts in ways:

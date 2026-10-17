@@ -53,7 +53,14 @@ def main():
         v = px.max(1)
         lit = px[v > 70]                                                       # без тіней
         use = lit if len(lit) >= max(6, 0.15 * len(px)) else px
-        med = np.median(use, 0)
+        # кольоровий дах (зелений, синій, червоний) частково в тіні дає сіру медіану:
+        # беремо найнасиченішу освітлену частину, якщо вона помітно кольорова
+        chroma = use.max(1) - use.min(1)
+        top = use[chroma >= np.percentile(chroma, 60)]
+        if len(top) >= 6 and np.median(top.max(1) - top.min(1)) > 28:
+            med = np.median(top, 0)
+        else:
+            med = np.median(use, 0)
         b['roof'] = med[::-1].round().astype(int).tolist()                     # RGB
         b['roof_lit_frac'] = float(len(lit) / len(px))
     # 2) напрям тіні: калібрування на будинках з поверховістю

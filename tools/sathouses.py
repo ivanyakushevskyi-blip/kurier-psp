@@ -37,27 +37,30 @@ def detect(sx0, sy0, sw, sh, osm_mask=None, road_mask=None, debug=None):
         n, lab, st, cen = cv2.connectedComponentsWithStats(m, 4)
         for i in range(1, n):
             A = st[i, cv2.CC_STAT_AREA] * SRC * SRC
-            if A < 12 or A > 400: continue
+            if A < 12 or A > 6000: continue
             ys, xs = np.nonzero(lab == i)
             pts = np.c_[xs, ys].astype(np.float32)
             rect = cv2.minAreaRect(pts); (rw, rh) = rect[1]
             if min(rw, rh) < 7: continue                                  # < 2,2 м
             sol = len(xs) / max(rw * rh, 1)
             asp = max(rw, rh) / max(min(rw, rh), 1)
-            if sol < 0.72 or asp > 4: continue
+            big = A > 400
+            if sol < (0.8 if big else 0.72) or asp > (6 if big else 4): continue
             c = rgb[ys, xs].mean(0)
             warm = c[0] > c[2] + 18
             # тінь з північного боку
             x0, x1 = xs.min(), xs.max(); y0 = ys.min()
             band = dark[max(0, y0 - 14):max(0, y0 - 2), x0:x1 + 1]
             shf = band.mean() if band.size else 0
-            if not (shf > 0.3 or (warm and sol > 0.82 and shf > 0.1)): continue
+            if big:
+                if shf < 0.35: continue
+            elif not (shf > 0.3 or (warm and sol > 0.82 and shf > 0.1)): continue
             if used[ys, xs].mean() > 0.3: continue
             used[ys, xs] = True
             box = cv2.boxPoints(rect)
             q_ = [(float(x + sx0), float(y + sy0)) for x, y in box] + [(float(box[0][0] + sx0), float(box[0][1] + sy0))]
-            out.append(dict(q=q_, t={'building': 'house', 'src': 'sat'}, area=round(A, 1),
-                            roof=[int(c[0]), int(c[1]), int(c[2])], h=5.0, h_src='sat', detail=True))
+            out.append(dict(q=q_, t={'building': 'yes' if big else 'house', 'src': 'sat'}, area=round(A, 1),
+                            roof=[int(c[0]), int(c[1]), int(c[2])], h=12.0 if big else 5.0, h_src='sat', detail=True))
     if debug is not None:
         v = a.copy()
         for o in out:
@@ -107,3 +110,53 @@ if __name__ == '__main__':
     else:
         sx0, sy0, sw, sh = map(int, sys.argv[1:5])
         print(len(detect(sx0, sy0, sw, sh, debug=sys.argv[5])), 'дахів')
+
+
+def detect_big(sx0, sy0, sw, sh, osm_mask, road_mask, debug=None):
+    """Великі будівлі, яких немає в OSM: «забудована» маска (не зелень, не тінь, гладка), без OSM і доріг,
+    зв'язні області 300–8000 м² з тінню з північного боку. Контур — спрощений полігон."""
+    sat = np.load('build/sat_map.npy', mmap_mode='r')
+    a = np.ascontiguousarray(sat[sy0:sy0 + sh, sx0:sx0 + sw])
+    sm = cv2.bilateralFilter(a, 7, 30, 5)
+    rgb = sm[..., ::-1].astype(np.float32)
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    exg = 2 * g - r - b
+    dark = cv2.GaussianBlur(a, (0, 0), 1.5).max(-1) < 64
+    gray = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    tex = cv2.GaussianBlur(np.abs(cv2.Laplacian(cv2.GaussianBlur(gray, (3, 3), 0), cv2.CV_32F)), (0, 0), 3)
+    built = (exg < 12) & ~dark & (tex < 11)
+    built &= ~cv2.dilate(osm_mask.astype(np.uint8), np.ones((7, 7), np.uint8)).astype(bool)
+    built &= ~cv2.dilate(road_mask.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+    m = cv2.morphologyEx(built.astype(np.uint8), cv2.MORPH_OPEN, np.ones((7, 7), np.uint8))
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    n, lab, st, _ = cv2.connectedComponentsWithStats(m, 4)
+    out = []
+    for i in range(1, n):
+        A = st[i, cv2.CC_STAT_AREA] * SRC * SRC
+        if A < 300 or A > 8000: continue
+        comp = (lab == i).astype(np.uint8)
+        cs, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cnt = max(cs, key=cv2.contourArea)
+        hull = cv2.convexHull(cnt)
+        sol = cv2.contourArea(cnt) / max(cv2.contourArea(hull), 1)
+        rect = cv2.minAreaRect(cnt); rectf = cv2.contourArea(cnt) / max(rect[1][0] * rect[1][1], 1)
+        if sol < 0.82 or rectf < 0.6: continue
+        # тінь з північного боку: смуга над верхнім краєм
+        ys, xs = np.nonzero(comp)
+        top = {}
+        for x, y in zip(xs, ys):
+            if x not in top or y < top[x]: top[x] = y
+        sh_ = [dark[max(0, y - 12):max(0, y - 2), x].mean() if y > 3 else 0 for x, y in top.items()]
+        if np.mean(sh_) < 0.4: continue
+        poly = cv2.approxPolyDP(cnt, 2.5, True)[:, 0, :].astype(float)
+        c = rgb[ys, xs].mean(0)
+        q_ = [(float(x + sx0), float(y + sy0)) for x, y in poly]; q_.append(q_[0])
+        out.append(dict(q=q_, t={'building': 'yes', 'src': 'sat_big'}, area=round(A, 1),
+                        roof=[int(c[0]), int(c[1]), int(c[2])], h=12.0, h_src='sat', detail=True))
+    if debug is not None:
+        v = a.copy()
+        for o in out:
+            P = np.array(o['q'], np.float32) - [sx0, sy0]
+            cv2.polylines(v, [np.round(P).astype(np.int32)], True, (0, 255, 255), 2)
+        cv2.imwrite(debug, v)
+    return out
