@@ -6,6 +6,7 @@
 python3 -I tools/genstitch.py <out.png> name1 name2 ...   (ref/gen/<name>.jpg|png + build/gen/<name>.npz)
 """
 import sys, os, glob
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np, cv2
 from scipy.interpolate import RBFInterpolator
 
@@ -118,10 +119,69 @@ def stitch(names):
     return base, bm, (x0, y0)
 
 
+# ---------------------------------------------------------------- зшивання по кварталах
+def stitch_blocks(names):
+    """Кожен квартал (простір між осями вулиць з OSM) береться цілком з однієї частини.
+    Розрізи йдуть лише по осях вулиць: будинки й дерева ніколи не ріжуться і не змішуються."""
+    import citygen as CG
+    from PIL import Image, ImageDraw
+    items = [load(n) for n in names]
+    st = [lab_stats(i) for i, _ in items]
+    target = (np.mean([m for m, _ in st], 0), np.mean([v for _, v in st], 0))
+    items = [(normalize_colors(i, target), H) for i, H in items]
+    cs = []
+    for img, H in items:
+        h, w = img.shape[:2]
+        cs.append(cv2.perspectiveTransform(np.float32([[[0, 0], [w, 0], [w, h], [0, h]]]), H)[0])
+    allc = np.vstack(cs)
+    x0, y0 = np.floor(allc.min(0)).astype(int); x1, y1 = np.ceil(allc.max(0)).astype(int)
+    box = (x0, y0, x1 - x0, y1 - y0); W, Hh = box[2], box[3]
+    warped = [warp(i, H, box) for i, H in items]
+    # осі вулиць
+    _, _, ways = CG.load('data/osm_v2')
+    im = Image.new('L', (W, Hh), 0); dr = ImageDraw.Draw(im)
+    for wy in ways:
+        hw = wy['t'].get('highway')
+        if hw in ('primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'primary_link', 'secondary_link', 'tertiary_link') and wy['t'].get('tunnel') != 'yes' and wy['t'].get('area') != 'yes':
+            dr.line([(x - x0, y - y0) for x, y in wy['pts']], fill=1, width=3)
+    roads = np.array(im, bool)
+    nb, lab = cv2.connectedComponents((~roads).astype(np.uint8), connectivity=4)
+    # «впевнене» покриття кожної частини (без 30 px біля краю картинки)
+    conf = [cv2.erode(m.astype(np.uint8), np.ones((61, 61), np.uint8)) > 0 for _, m in warped]
+    centers = [c.mean(0) - [x0, y0] for c in cs]
+    choice = np.full(nb, -1, np.int32)
+    ys, xs = np.nonzero(lab > 0)
+    labs = lab[ys, xs]
+    cnt = np.bincount(labs, minlength=nb).astype(np.float64)
+    cx = np.bincount(labs, xs, minlength=nb) / np.maximum(cnt, 1); cy = np.bincount(labs, ys, minlength=nb) / np.maximum(cnt, 1)
+    best = np.full(nb, -1.0)
+    for k, c in enumerate(conf):
+        cov = np.bincount(labs, c[ys, xs], minlength=nb) / np.maximum(cnt, 1)
+        d = np.hypot(cx - centers[k][0], cy - centers[k][1])
+        score = cov * 10000 - d                      # спершу повне покриття, потім ближче до центру частини
+        upd = score > best
+        best[upd] = score[upd]; choice[upd] = k
+    owner = choice[lab]
+    # пікселі на осях вулиць — до найближчого кварталу
+    _, (iy, ix) = __import__('scipy.ndimage', fromlist=['x']).distance_transform_edt(roads, return_indices=True)
+    owner = owner[iy, ix]
+    out = np.zeros((Hh, W, 3), np.uint8); have = np.zeros((Hh, W), bool)
+    for k, (w, m) in enumerate(warped):
+        sel = (owner == k) & m
+        out[sel] = w[sel]; have |= sel
+    # де обрана частина не покриває — будь-яка інша, що покриває
+    for k, (w, m) in enumerate(warped):
+        sel = ~have & m
+        out[sel] = w[sel]; have |= sel
+    return out, have, (x0, y0)
+
+
 if __name__ == '__main__':
     out = sys.argv[1]
-    img, m, (x0, y0) = stitch(sys.argv[2:])
+    img, m, (x0, y0) = stitch_blocks(sys.argv[2:])
     img[~m] = 0
     cv2.imwrite(out, img)
     np.save(os.path.splitext(out)[0] + '_xy.npy', np.array([x0, y0]))
     print('saved', out, img.shape, 'at map', x0, y0)
+
+
