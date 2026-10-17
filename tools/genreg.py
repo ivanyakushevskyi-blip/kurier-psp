@@ -66,7 +66,9 @@ def register(gen_path, q_path, out_dir='build/gen'):
         d = np.linalg.norm(db[idx] - da[i], axis=1); o = np.argsort(d)
         if len(o) == 1 or d[o[0]] < 0.9 * d[o[1]]: pairs.append((i, idx[o[0]]))
     P2 = P[[a for a, b in pairs]]; Q2 = Q[[b for a, b in pairs]]
-    Hg, inl = cv2.findHomography(P2, Q2, cv2.RANSAC, 10); inl = inl.ravel().astype(bool)
+    # лише подібність (зсув, поворот, масштаб): кола лишаються колами, будинки не перекошуються
+    A, inl = cv2.estimateAffinePartial2D(P2, Q2, ransacReprojThreshold=10, maxIters=20000); inl = inl.ravel().astype(bool)
+    Hg = np.vstack([A, [0, 0, 1]])
     r0 = np.linalg.norm(cv2.perspectiveTransform(P2[inl][None], H0)[0] - Q2[inl], axis=1)
     r1 = np.linalg.norm(cv2.perspectiveTransform(P2[inl][None], Hg)[0] - Q2[inl], axis=1)
     mpp = 0.32 * np.sqrt(abs(np.linalg.det(Hg[:2, :2])))

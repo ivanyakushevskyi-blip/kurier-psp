@@ -114,7 +114,6 @@ def stitch(names):
     for n, (img, H) in zip(names[1:], items[1:]):
         print('  +', n)
         w, m = warp(img, H, box)
-        w, m = refine_geometry(base, bm, w, m)
         base, bm = seam_merge(base, bm, w, m)
     return base, bm, (x0, y0)
 
