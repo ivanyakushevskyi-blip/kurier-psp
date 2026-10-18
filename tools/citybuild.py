@@ -43,16 +43,7 @@ def render_block(args):
     return bx, by, img[M:M + h, M:M + w].copy(), c[M:M + h, M:M + w].copy(), trees
 
 
-def main(nproc=2):
-    print('map', W, H, flush=True)
-    margin = zone('margin')
-    rgb = np.empty((H, W, 3), np.uint8); rgb[:] = CD.OUT
-    cls = np.zeros((H, W), np.uint8)
-    jobs = []
-    for by in range(0, H, B):
-        for bx in range(0, W, B):
-            if margin[max(0, by - M):by + B + M, max(0, bx - M):bx + B + M].any(): jobs.append((bx, by))
-    print('blocks', len(jobs), flush=True)
+def render_all(jobs, rgb, cls, nproc):
     trees = []
     CD.data()                                    # кеш OSM/будинків до розгалуження процесів
     if nproc > 1:
@@ -70,9 +61,53 @@ def main(nproc=2):
     for x, y, rr, kind in sorted(trees, key=lambda t: (t[1], t[0])):
         CD.draw_tree(rgb, x, y, rr, kind, random.Random(x * 7919 + y))
     print('trees', len(trees), flush=True)
-    del trees
+
+
+BAR_RED, BAR_WHITE = (200, 56, 44), (236, 236, 230)
+
+
+def barriers(rgb, cls, play):
+    """Межа зони на дорогах: червоно-білий бетонний блок поперек проїзду (смуга 5 пікс уздовж межі).
+    Лише там, де дорога перетинає межу; де дорога йде вздовж межі — нічого (довгі смуги відкидаються)."""
+    dist = cv2.distanceTransform(play.astype(np.uint8), cv2.DIST_L2, 3)
+    road = cv2.dilate((cls == G_ROAD).astype(np.uint8), np.ones((5, 5), np.uint8))
+    band = (road > 0) & (dist > 0) & (dist <= 6)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(band.astype(np.uint8), connectivity=8)
+    ok = np.zeros(n, bool)
+    ok[1:] = (st[1:, cv2.CC_STAT_AREA] >= 20) & (st[1:, cv2.CC_STAT_AREA] <= 420) & \
+             (np.maximum(st[1:, cv2.CC_STAT_WIDTH], st[1:, cv2.CC_STAT_HEIGHT]) <= 70)
+    keep = ok[lab]; del lab, band
+    for r0 in range(0, H, 1024):
+        sl = slice(r0, r0 + 1024)
+        d = dist[sl]; kp = keep[sl]
+        yy, xx = np.mgrid[r0:r0 + d.shape[0], 0:W]
+        red = ((xx + yy) // 6) % 2 == 0
+        blk = rgb[sl]
+        inner = kp & (d > 1) & (d <= 5)
+        blk[inner & red] = BAR_RED; blk[inner & ~red] = BAR_WHITE
+        blk[kp & ((d <= 1) | (d > 5))] = CD.OUT
+    print('barriers', int(ok.sum()), flush=True)
+
+
+def main(nproc=2):
+    print('map', W, H, flush=True)
+    margin = zone('margin')
+    rgb = np.empty((H, W, 3), np.uint8); rgb[:] = CD.OUT
+    cls = np.zeros((H, W), np.uint8)
+    jobs = []
+    for by in range(0, H, B):
+        for bx in range(0, W, B):
+            if margin[max(0, by - M):by + B + M, max(0, bx - M):bx + B + M].any(): jobs.append((bx, by))
+    print('blocks', len(jobs), flush=True)
+    if os.environ.get('REUSE') == '1' and os.path.exists('build/rgb_cache.npy'):
+        rgb = np.load('build/rgb_cache.npy'); cls = np.load('build/cls_cache.npy')    # лише пост-обробка (межа, палітра, mapdata)
+    else:
+        render_all(jobs, rgb, cls, nproc)
+        np.save('build/rgb_cache.npy', rgb); np.save('build/cls_cache.npy', cls)
     # поза запасом — темне тло
     rgb[~margin] = CD.OUT
+    play = zone('play')
+    barriers(rgb, cls, play)
     # ---- зіткнення: будинки OSM + MS + ручні, вода; поза ігровою зоною — стіна
     D = CD.data()
     solid = np.zeros((H, W), np.uint8)
@@ -80,7 +115,6 @@ def main(nproc=2):
         P = np.array(b['q']) * K
         cv2.fillPoly(solid, [np.round(P).astype(np.int32)], 1)
     solid = solid.astype(bool) | (cls == G_WATER)
-    play = zone('play')
     solid |= ~play
     # ---- палітра карти: лічильник 24-бітних кольорів
     import palgame
@@ -108,6 +142,12 @@ def main(nproc=2):
     mp_ = np.empty((H, W), np.uint8)
     for r0 in range(0, H, 512): mp_[r0:r0 + 512] = lut24[key(rgb[r0:r0 + 512])]
     del lut24
+    # поза ігровою зоною — неяскраво приглушено (той самий колір ×0,72, найближчий у палітрі)
+    pc = pal_cols.astype(np.float32)
+    dim = np.arange(256, dtype=np.uint8)
+    for k, c in enumerate(pc): dim[palgame.MAP_START + k] = palgame.MAP_START + int(((pc - c * 0.72) ** 2).sum(1).argmin())
+    for r0 in range(0, H, 512):
+        o = ~play[r0:r0 + 512]; blk = mp_[r0:r0 + 512]; blk[o] = dim[blk[o]]
     np.save('build/map.npy', mp_); np.save('build/solid.npy', solid); np.save('build/play.npy', play)
     del mp_
     mapdata(D, cls, solid, play)
