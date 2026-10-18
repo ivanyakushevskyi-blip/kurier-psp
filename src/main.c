@@ -1275,6 +1275,9 @@ int main(int argc, char **argv) {
         printf("water: found %d, drowned %d, money %d -> %d\n", found, drowned, m0, money);
         int a = 0; for (int k = -3; k <= 3; k++) a += is_solid(6974 + k * 2, 7638);
         printf("arch on Podilska solid samples: %d/7\n", a);
+        evac = 0; health = 100; px_ = 6974; py_ = 7638; stop_car(); update_camera(1); state = S_PLAY;
+        for (int f = 0; f < 3; f++) game_update(0, 0, 128, 128);
+        px_ = 6974; py_ = 7638; draw_frame(); snprintf(nm, sizeof nm, "%s/f_arch.ppm", dir); dump(nm);
     }
     /* пам'ятка: підвезти до першої (каланча), дочекатися таблички */
     if (NLM > 0) {
