@@ -27,6 +27,10 @@ def load_osm(osm_dir):
             seen.add(w.get('id'))
             ways.append(([nd.get('ref') for nd in w.iter('nd')], {x.get('k'): x.get('v') for x in w.iter('tag')}))
     def xy(n): la, lo = nodes[n]; return ((lo - LON0) * MLON, -(la - LAT0) * MLAT)
+    import osmmp
+    for role, ring, t, rid in osmmp.rings(osm_dir):
+        if role == 'outer':
+            tt = dict(t); tt.pop('type', None); ways.append((ring, tt))
     return [([xy(n) for n in nds if n in nodes], t) for nds, t in ways]
 
 

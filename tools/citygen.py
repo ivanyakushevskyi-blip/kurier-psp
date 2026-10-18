@@ -55,6 +55,15 @@ def load(d):
         pts = [px(*nodes[i]) for i in ids]
         if len(pts) >= 2:
             out.append(dict(id=wid, nds=ids, pts=pts, t=tags, closed=(nds[0] == nds[-1] and len(nds) > 3)))
+    # мультиполігони: зовнішні кільця — як звичайні замкнені області з тегами відношення,
+    # внутрішні (острів, двір) — з тегом _inner (малюються поверх як «діра»)
+    import osmmp
+    for k, (role, ring, t, rid) in enumerate(osmmp.rings(d)):
+        ids = [i for i in ring if i in nodes]
+        if len(ids) < 4: continue
+        tt = dict(t) if role == 'outer' else {'_inner': '1', '_of': ','.join(f'{a}={b}' for a, b in t.items())}
+        tt.pop('type', None)
+        out.append(dict(id='r%s_%d' % (rid, k), nds=ids, pts=[px(*nodes[i]) for i in ids], t=tt, closed=True))
     return nodes, ntags, out
 
 

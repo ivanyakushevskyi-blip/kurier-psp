@@ -121,7 +121,7 @@ def render(x0, y0, W, H, tree_out=None):
         if visible(pts): ways.append((w, pts))
 
     # ---------- класи землі
-    G_YARD, G_GRASS, G_WATER, G_SIDE, G_ROAD, G_PATH, G_PED, G_RAIL, G_DIRT, G_PITCH, G_TRACK, G_PARK, G_PAVED, G_WOOD = range(1, 15)
+    G_YARD, G_GRASS, G_WATER, G_SIDE, G_ROAD, G_PATH, G_PED, G_RAIL, G_DIRT, G_PITCH, G_TRACK, G_PARK, G_PAVED, G_WOOD, G_SAND = range(1, 16)
     im = Image.new('L', (W, H), G_YARD); dr = ImageDraw.Draw(im)
     areas = []
     for w, pts in ways:
@@ -140,11 +140,18 @@ def render(x0, y0, W, H, tree_out=None):
         elif am == 'parking' and t.get('parking') not in ('underground', 'multi-storey'): c = G_PARK
         elif (t.get('highway') == 'pedestrian' and t.get('area') == 'yes') or t.get('place') == 'square' or t.get('area:highway') == 'pedestrian': c = G_PED
         elif t.get('railway') == 'platform': c = G_PAVED
+        elif na in ('beach', 'sand') or le == 'beach_resort': c = G_SAND
         if c is not None:
             a = 0.5 * abs(sum(pts[i][0] * pts[i - 1][1] - pts[i - 1][0] * pts[i][1] for i in range(len(pts))))
             areas.append((a, c, pts))
     areas.sort(key=lambda a: -a[0])
     for _, c, pts in areas: dr.polygon(pts, fill=c)
+    # внутрішні кільця мультиполігонів: острів у водосховищі — трава, решта — двір
+    for w, pts in ways:
+        if w['t'].get('_inner') and len(pts) >= 4:
+            of = w['t'].get('_of', '')
+            if 'natural=water' in of or 'water=' in of: dr.polygon(pts, fill=G_GRASS)
+            elif 'leisure=park' in of or 'natural=wood' in of: dr.polygon(pts, fill=G_YARD)
     # знімок: двори (трава/плитка/ґрунт) там, де OSM нічого не каже
     sat = np.load('build/sat_map.npy', mmap_mode='r')
     # точне вікно знімка: піксель гри (i, j) <- знімок ((x0 + j + 0.5) / K - 0.5, ...), однаково для будь-якого блоку
@@ -238,6 +245,7 @@ def render(x0, y0, W, H, tree_out=None):
     put(G_RAIL, pick(BALLAST, fine))
     put(G_PITCH, np.where(((xx // 8) % 2 == 0)[..., None], np.array(PITCH[0], np.uint8), np.array(PITCH[1], np.uint8)))
     put(G_TRACK, np.full((H, W, 3), TRACK[1], np.uint8))
+    put(G_SAND, pick([(206, 186, 140), (218, 200, 154), (228, 212, 168)], 0.3 + 0.4 * blob + 0.3 * (fine > 0.9)))
     put(G_YARD, pick(PAVED, 0.5 + 0.0 * blob))
     road = cls == G_ROAD
     walk = np.isin(cls, (G_SIDE, G_PED))
@@ -367,7 +375,7 @@ def render(x0, y0, W, H, tree_out=None):
     park = park.astype(bool) & ~np.isin(cls, (G_PATH, G_PED, G_ROAD, G_SIDE))
     canopy |= park & ((tex > 3.0) | (mx < 70)) & (exg > -8)
     canopy &= ~cv2.dilate(bmask.astype(np.uint8), np.ones((7, 7), np.uint8)).astype(bool)
-    canopy &= ~np.isin(cls, (G_ROAD, G_RAIL, G_WATER, G_PITCH, G_TRACK))
+    canopy &= ~np.isin(cls, (G_ROAD, G_RAIL, G_WATER, G_PITCH, G_TRACK, G_SAND))
     canopy = cv2.morphologyEx(canopy.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
     canopy = cv2.morphologyEx(canopy, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)).astype(bool)
     dist = cv2.distanceTransform(canopy.astype(np.uint8), cv2.DIST_L2, 5)
@@ -391,6 +399,21 @@ def render(x0, y0, W, H, tree_out=None):
     sh = shadow.astype(bool) & ~bmask
     img[sh] = (img[sh] * 0.7).astype(np.uint8)
 
+    # ---------- пляж: парасольки й шезлонги (детерміновано за світовими координатами)
+    sand = cls == G_SAND
+    if sand.any():
+        gx0, gy0 = int(round(x0)), int(round(y0))
+        UMB = [(214, 64, 52), (244, 196, 52), (52, 120, 200), (238, 238, 232)]
+        for yy_ in range(-(gy0 % 16) + 8, H, 16):
+            for xx_ in range(-(gx0 % 18) + 9, W, 18):
+                if not (0 <= yy_ < H and 0 <= xx_ < W) or not sand[yy_, xx_]: continue
+                hsh = ((xx_ + gx0) * 73856093 ^ (yy_ + gy0) * 19349663) & 0xFFFF
+                if hsh % 3 == 0: continue
+                if not sand[max(0, yy_ - 5):yy_ + 6, max(0, xx_ - 5):xx_ + 6].all(): continue
+                c = UMB[hsh % 4]
+                cv2.rectangle(img, (xx_ + 3, yy_ + 1), (xx_ + 7, yy_ + 2), (236, 232, 220), -1)     # шезлонг
+                cv2.circle(img, (xx_, yy_), 4, OUT, -1); cv2.circle(img, (xx_, yy_), 3, c, -1)
+                img[yy_, xx_] = (250, 250, 245)
     # ---------- дахи
     rs_all = random.Random(7)
     for i, b, pts in sorted(blds, key=lambda z: z[1]['h']):
