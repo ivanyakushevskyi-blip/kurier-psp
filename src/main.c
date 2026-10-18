@@ -1,4 +1,4 @@
-// КУР'ЄР: ХМЕЛЬНИЦЬКИЙ - PSP homebrew prototype
+// ПРОСКУРІВ ЕКСПРЕС (робоча назва була «Кур'єр: Хмельницький») - PSP homebrew
 // Real Khmelnytskyi centre (OpenStreetMap) rendered to pixel art by tools/*.py
 // Map lives in MAP.BIN next to EBOOT: zlib-compressed 64x64 chunks (pixels + collision bits),
 // streamed from the memory stick into an LRU cache with prefetch around the camera.
@@ -201,6 +201,7 @@ static int utf8next(const char **s) {
     *s += 1; return '?';
 }
 static int ncp(const char *s) { int n = 0; while (*s) { utf8next(&s); n++; } return n; }
+static int btn_outline;                  /* під час малювання обвідки значки кнопок не дублюються */
 static const Glyph *glyph(int sc, int cp) {
     const FontTab *F = &FONTS[sc];
     int lo = 0, hi = F->n - 1;
@@ -208,16 +209,41 @@ static const Glyph *glyph(int sc, int cp) {
     return cp == '?' ? NULL : glyph(sc, '?');
 }
 static int fsc(int sc) { return sc < 1 ? 1 : (sc > 5 ? 5 : sc); }
+/* кнопки PSP у тексті: приватні коди U+E000..E003 -> значки як на геймпаді */
+#define BT_TRI "\xee\x80\x80"
+#define BT_CIR "\xee\x80\x81"
+#define BT_X   "\xee\x80\x82"
+#define BT_SQ  "\xee\x80\x83"
+static int is_btn(int cp) { return cp >= 0xE000 && cp <= 0xE003; }
+static void draw_btn(int x, int y, int cp) {
+    /* кругла темна кнопка 11 пікс; y — верх великих літер */
+    int cx = x + 5, cy = y + 4;
+    static const int8_t disc11[11][2] = { {3,7},{1,9},{1,9},{0,10},{0,10},{0,10},{0,10},{0,10},{1,9},{1,9},{3,7} };
+    for (int r = 0; r < 11; r++) for (int c = disc11[r][0]; c <= disc11[r][1]; c++) pset(x + c, cy - 5 + r, C_ink_0);
+    if (cp == 0xE000) {          /* трикутник, зелений */
+        static const char *T[] = { "   #   ", "  # #  ", "  # #  ", " #   # ", " #   # ", "#######" };
+        for (int r = 0; r < 6; r++) for (int c = 0; c < 7; c++) if (T[r][c] == '#') pset(cx - 3 + c, cy - 3 + r, C_green_3);
+    } else if (cp == 0xE001) {   /* коло, червоне */
+        static const char *O[] = { " ### ", "#   #", "#   #", "#   #", " ### " };
+        for (int r = 0; r < 5; r++) for (int c = 0; c < 5; c++) if (O[r][c] == '#') pset(cx - 2 + c, cy - 2 + r, C_red_3);
+    } else if (cp == 0xE002) {   /* хрестик, синій */
+        for (int k = -2; k <= 2; k++) { pset(cx + k, cy + k, C_blue_3); pset(cx + k, cy - k, C_blue_3); }
+    } else {                     /* квадрат, рожевий */
+        for (int k = -2; k <= 2; k++) { pset(cx + k, cy - 2, C_skin_2); pset(cx + k, cy + 2, C_skin_2); pset(cx - 2, cy + k, C_skin_2); pset(cx + 2, cy + k, C_skin_2); }
+    }
+}
 static int tw8(const char *s, int sc) {
     sc = fsc(sc); int w = 0;
-    while (*s) { const Glyph *g = glyph(sc, utf8next(&s)); if (g) w += g->adv; }
+    while (*s) { int cp = utf8next(&s); if (is_btn(cp)) { w += 13; continue; } const Glyph *g = glyph(sc, cp); if (g) w += g->adv; }
     return w;
 }
 /* пропорційний шрифт Rubik; y — верх великих літер (як було з 8x8) */
 static void text8(int x, int y, int sc, u8 col, const char *s) {
     sc = fsc(sc); int h = FONTS[sc].h; y -= FONTS[sc].asc;
     while (*s) {
-        const Glyph *g = glyph(sc, utf8next(&s));
+        int cp = utf8next(&s);
+        if (is_btn(cp)) { if (!btn_outline) draw_btn(x, y + FONTS[sc].asc, cp); x += 13; continue; }
+        const Glyph *g = glyph(sc, cp);
         if (!g) continue;
         int st = (g->w + 7) >> 3; const u8 *b = FONT_DATA + g->off;
         for (int r = 0; r < h; r++) {
@@ -231,7 +257,9 @@ static void text8(int x, int y, int sc, u8 col, const char *s) {
 }
 static void otext8(int x, int y, int sc, u8 col, u8 oc, const char *s) {
     int o = sc > 2 ? 2 : 1;
+    btn_outline = 1;
     for (int dy = -o; dy <= o; dy += o) for (int dx = -o; dx <= o; dx += o) if (dx || dy) text8(x + dx, y + dy, sc, oc, s);
+    btn_outline = 0;
     text8(x, y, sc, col, s);
 }
 static void otext8_c(int cx, int y, int sc, u8 col, u8 oc, const char *s) { otext8(cx - tw8(s, sc) / 2, y, sc, col, oc, s); }
@@ -874,7 +902,7 @@ static void draw_hud(void) {
             snprintf(b, sizeof b, "ВІД: %s", SHOPS[shop_i].name); text_clip(tx, l2, NW - 30 - tw8(w, 1), C_ink_2, b);
         } else if (n_offers) {
             text8(tx, l1, 1, ink, "ВІЛЬНИЙ ЧАС");
-            text8(tx, l2, 1, (tick / 20) % 2 ? C_red_1 : C_ink_2, "ТРИКУТНИК: 3 НОВІ ЗАМОВЛЕННЯ");
+            text8(tx, l2, 1, (tick / 20) % 2 ? C_red_1 : C_ink_2, BT_TRI " 3 НОВІ ЗАМОВЛЕННЯ");
         } else {
             text8(tx, l1, 1, ink, "ВІЛЬНИЙ ЧАС"); text8(tx, l2, 1, C_ink_2, "ЧЕКАЮ НА ЗАМОВЛЕННЯ...");
         }
@@ -898,7 +926,7 @@ static void draw_hud(void) {
                 snprintf(t2, sizeof t2, "%s   ·   %d ГРН   ·   %d:%02d", b, o->pay, s_ / 60, s_ % 60);
                 text8(tx + 9, y + 11, 1, C_ink_2, t2);
             }
-            text8(tx, ny + H - 15, 1, C_ink_2, "ТРИКУТНИК: ВЗЯТИ     КОЛО: СХОВАТИ");
+            text8(tx, ny + H - 15, 1, C_ink_2, BT_TRI " ВЗЯТИ      " BT_CIR " СХОВАТИ");
         } else {
             snprintf(b, sizeof b, "ЗАМОВЛЕННЯ: %s", TNAME[otype]); text8(tx, ny + 7, 1, ink, b);
             snprintf(b, sizeof b, "ЗВІДКИ: %s (%s)", SHOPS[shop_i].name, SHOPS[shop_i].kind); text_clip(tx, ny + 22, NW - 20, C_ink_2, b);
@@ -931,7 +959,7 @@ static void draw_hud(void) {
         otext8_c(SW / 2, y - 15, 1, C_white_2, C_ink_0, prog);
         rect(x - 2, y - 2, ww + 4, 10, C_ink_0); rect(x, y, ww * t / 70, 6, C_yellow_3);
     }
-    if (fuel <= 0 && fabsf(vel) < 0.05f && !evac) otext8_c(SW / 2, 172, 1, C_red_3, C_ink_0, "ПАЛЬНЕ СКІНЧИЛОСЯ. КОЛО: ЕВАКУАТОР ДО АЗС (300 ГРН)");
+    if (fuel <= 0 && fabsf(vel) < 0.05f && !evac) otext8_c(SW / 2, 172, 1, C_red_3, C_ink_0, "ПАЛЬНЕ СКІНЧИЛОСЯ.  " BT_CIR " ЕВАКУАТОР ДО АЗС (300 ГРН)");
     if (toast_t > 0) {
         int sc = tw8(toast, 2) > 440 ? 1 : 2;
         otext8_c(SW / 2, 50, sc, toast_c, C_ink_0, toast);
@@ -1047,11 +1075,11 @@ static void draw_frame(void) {
         if (camx > MAP_W - SW) camx = MAP_W - SW; if (camy > MAP_H - SH) camy = MAP_H - SH;
         draw_map((int)camx, (int)camy);
         darken_rect(0, 30, SW, 150, 2);
-        otext8_c(SW / 2, 46, 5, C_box_3, C_ink_0, "КУР'ЄР");
-        otext8_c(SW / 2, 100, 3, C_white_2, C_ink_0, "ХМЕЛЬНИЦЬКИЙ");
-        otext8_c(SW / 2, 140, 1, C_yellow_3, C_ink_0, "ЗАБЕРИ ЗАМОВЛЕННЯ - ДОВЕЗИ ВЧАСНО");
+        otext8_c(SW / 2, 46, 5, C_box_3, C_ink_0, "ПРОСКУРІВ");
+        otext8_c(SW / 2, 100, 3, C_white_2, C_ink_0, "ЕКСПРЕС");
+        otext8_c(SW / 2, 140, 1, C_yellow_3, C_ink_0, "КУР'ЄРСЬКА ДОСТАВКА ПО ХМЕЛЬНИЦЬКОМУ");
         if ((tick / 30) % 2) otext8_c(SW / 2, 196, 2, C_white_2, C_ink_0, "НАТИСНИ СТАРТ");
-        otext8_c(SW / 2, 220, 1, C_white_1, C_ink_0, "X: ГАЗ   КВАДРАТ: ГАЛЬМО / НАЗАД   R: РУЧНИК");
+        otext8_c(SW / 2, 220, 1, C_white_1, C_ink_0, BT_X " ГАЗ    " BT_SQ " ГАЛЬМО / НАЗАД    R: РУЧНИК    " BT_TRI " НОТАТНИК");
         otext8_c(SW / 2, 234, 1, C_white_1, C_ink_0, "СТІК: КЕРМО   L: ОГЛЯД   SELECT: КАРТА   START: ПАУЗА");
         otext8_c(SW / 2, 249, 1, C_white_0, C_ink_0, "КАРТА: (C) OPENSTREETMAP CONTRIBUTORS");
         if (money) { snprintf(b, sizeof b, "ЗАРОБЛЕНО: %d ГРН  ДОСТАВОК: %d", money, deliveries); otext8_c(SW / 2, 172, 1, C_green_3, C_ink_0, b); }
@@ -1070,7 +1098,7 @@ static void draw_frame(void) {
         if (street_i >= 0) otext8_c(244, 10, 1, C_white_2, C_ink_0, STREETS[street_i]);
         panel(0, SH - 18, SW, 18);   /* огляд: без приладів */
         text8(8, SH - 13, 1, C_yellow_3, "ОГЛЯД МІСТА");
-        text8(118, SH - 13, 1, C_white_1, "СТІК: РУХ  X: ШВИДКО  L: ДО МАШИНИ");
+        text8(118, SH - 13, 1, C_white_1, "СТІК: РУХ   " BT_X " ШВИДКО   L: ДО МАШИНИ");
         return;
     }
     if (ostate == O_PICK || ostate == O_LOAD) draw_target(SHOPS[shop_i].x, SHOPS[shop_i].y, assets_bin + ICON_SHOP, C_green_2, C_green_0);
@@ -1088,7 +1116,7 @@ static void draw_frame(void) {
             if (i == menu_i) { snprintf(b, sizeof b, "> %s <", items[i]); otext8_c(SW / 2, y, 1, C_yellow_3, C_ink_0, b); }
             else otext8_c(SW / 2, y, 1, C_white_1, C_ink_0, items[i]);
         }
-        otext8_c(SW / 2, 214, 1, C_white_0, C_ink_0, "ВГОРУ/ВНИЗ, X: ВИБРАТИ   R: РУЧНИК");
+        otext8_c(SW / 2, 214, 1, C_white_0, C_ink_0, "ВГОРУ/ВНИЗ,  " BT_X " ВИБРАТИ");
     }
 }
 
