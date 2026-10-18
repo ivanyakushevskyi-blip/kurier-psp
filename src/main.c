@@ -235,17 +235,34 @@ static int money, deliveries, late;
 static char toast[48]; static int toast_t; static u8 toast_c;
 static int street_i = -1, street_t;
 static char save_path[512] = "save.dat";
+/* пам'ятки: відкриті (біт = порядок у data/landmarks.json), анімація таблички */
+static u8 lm_found[NLM > 0 ? NLM : 1], lm_lab[NLM > 0 ? NLM : 1];
+static int lm_count;
+#define LM_REWARD 50
 
 static void say(const char *t, u8 c, int life) { strncpy(toast, t, 47); toast[47] = 0; toast_t = life; toast_c = c; }
 static float dist(float ax, float ay, float bx, float by) { float dx = ax - bx, dy = ay - by; return sqrtf(dx * dx + dy * dy); }
 
 static void load_save(void) {
     FILE *f = fopen(save_path, "rb");
-    if (f) { int a = 0, b = 0; if (fscanf(f, "%d %d", &a, &b) == 2) { money = a; deliveries = b; } fclose(f); }
+    if (f) {
+        int a = 0, b = 0; char bits[130] = "";
+        if (fscanf(f, "%d %d", &a, &b) == 2) { money = a; deliveries = b; }
+        if (fscanf(f, "%129s", bits) == 1)
+            for (int i = 0; i < NLM; i++) { int k = LMS[i].bit; if (k < (int)strlen(bits) && bits[k] == '1') { lm_found[i] = 1; lm_count++; } }
+        fclose(f);
+    }
 }
 static void write_save(void) {
     FILE *f = fopen(save_path, "wb");
-    if (f) { fprintf(f, "%d %d\n", money, deliveries); fclose(f); }
+    if (f) {
+        char bits[130]; int n = 0;
+        for (int i = 0; i < NLM; i++) if (LMS[i].bit + 1 > n) n = LMS[i].bit + 1;
+        if (n > 128) n = 128;
+        memset(bits, '0', (size_t)n); bits[n] = 0;
+        for (int i = 0; i < NLM; i++) if (lm_found[i] && LMS[i].bit < n) bits[LMS[i].bit] = '1';
+        fprintf(f, "%d %d %s\n", money, deliveries, n ? bits : "-"); fclose(f);
+    }
 }
 
 static void new_order(void) {
@@ -421,6 +438,65 @@ static void update_street(void) {
     if (bi >= 0) street_i = bi;
 }
 
+/* ================= пам'ятки ================= */
+static void update_landmarks(void) {
+    float qx = freecam ? fcx : px_, qy = freecam ? fcy : py_;
+    for (int i = 0; i < NLM; i++) {
+        float d = dist(qx, qy, LMS[i].x, LMS[i].y);
+        int near = d < LMS[i].r;
+        if (near && !freecam && !lm_found[i]) {
+            lm_found[i] = 1; lm_count++; money += LM_REWARD;
+            char b[48]; snprintf(b, sizeof b, "ПАМ'ЯТКА %d/%d  +%d ГРН", lm_count, NLM, LM_REWARD);
+            say(b, C_yellow_3, 170);
+            write_save();
+        }
+        if (near && (lm_found[i] || freecam)) { if (lm_lab[i] < 60) lm_lab[i]++; }
+        else if (lm_lab[i] > 0) lm_lab[i] = lm_lab[i] > 14 ? 14 : lm_lab[i] - 1;
+    }
+}
+static const u8 *lm_frame(int i) {
+    int st = (LMS[i].w * LMS[i].h + 3) & ~3;
+    int f = LMS[i].nfr > 1 ? (tick / 7 + i) % LMS[i].nfr : 0;
+    return assets_bin + LMS[i].off + f * st;
+}
+static void draw_landmarks(int ox, int oy) {
+    for (int i = 0; i < NLM; i++) {
+        int sx = LMS[i].x - ox, sy = LMS[i].y - oy, w = LMS[i].w, h = LMS[i].h;
+        if (sx < -w || sx > SW + w || sy < -4 || sy > SH + h) continue;
+        int bob = (int)floorf(sinf(tick * 0.07f + i * 1.7f) * 1.5f + 0.5f);
+        shadow_ell(sx + 1.5f, sy + 0.5f, w * 0.45f, 3);
+        blit(lm_frame(i), w, h, sx - w / 2, sy - h + 1 + bob);
+    }
+}
+/* табличка з назвою: виїжджає збоку від позначки, назва друкується по літерах */
+static void draw_lm_labels(int ox, int oy) {
+    char b[96];
+    for (int i = 0; i < NLM; i++) {
+        int t = lm_lab[i]; if (!t) continue;
+        int sx = LMS[i].x - ox, sy = LMS[i].y - oy, w = LMS[i].w, h = LMS[i].h;
+        int bob = (int)floorf(sinf(tick * 0.07f + i * 1.7f) * 1.5f + 0.5f);
+        const char *nm = LMS[i].name;
+        int full = tw8(nm, 1) + 12;
+        float k = t >= 10 ? 1.0f : t / 10.0f;
+        int pw = (int)(full * k), ph = 14;
+        int py0 = sy - h + bob;
+        if (py0 < 40) py0 = 40; if (py0 > SH - 50) py0 = SH - 50;
+        /* праворуч від позначки; якщо не влазить або наїжджає на мінікарту/гроші — ліворуч; інакше нижче мінікарти */
+        int xr = sx + w / 2 + 4, xl = sx - w / 2 - 4 - full;
+        #define LM_BAD(x) ((x) < 4 || (x) + full > SW - 4 || ((x) + full > 358 && py0 < 96) || ((x) < 134 && py0 < 40))
+        int px0 = xr;
+        if (LM_BAD(xr)) { if (!LM_BAD(xl)) px0 = xl; else { px0 = xr + full > SW - 4 ? SW - 4 - full : xr; if (px0 < 4) px0 = 4; if (px0 + full > 358 && py0 < 96) py0 = 96; } }
+        if (px0 == xl) px0 = xl + full - pw;         /* ліворуч — виїжджає від позначки */
+        rect(px0, py0, pw, ph, C_ink_0);
+        if (pw > 2) { rect(px0 + 1, py0 + 1, pw - 2, ph - 2, C_panel_1); rect(px0 + 1, py0 + 1, pw - 2, 1, C_yellow_3); }
+        int nch = t > 8 ? (t - 8) * 2 / 3 + 1 : 0, n = 0; const char *p = nm, *q = nm;
+        while (*p && n < nch) { utf8next(&p); n++; }
+        int len = (int)(p - q); if (len > (int)sizeof b - 1) len = sizeof b - 1;
+        memcpy(b, q, (size_t)len); b[len] = 0;
+        if (k >= 1.0f) text8(px0 + 6, py0 + 4, 1, C_white_2, b);
+    }
+}
+
 /* ================= HUD ================= */
 static void panel(int x, int y, int w, int h) {
     rect(x, y, w, h, C_ink_0);
@@ -437,6 +513,10 @@ static void draw_minimap(float tx, float ty, int have_t, u8 tcol) {
     if (ox < 0) ox = 0; if (oy < 0) oy = 0;
     if (ox > MINI_W - MW) ox = MINI_W - MW; if (oy > MINI_H - MH) oy = MINI_H - MH;
     for (int y = 0; y < MH; y++) memcpy(fb + (MY + y) * SW + MX, minib + (oy + y) * MINI_W + ox, MW);
+    for (int i = 0; i < NLM; i++) if (lm_found[i]) {
+        int lx = LMS[i].x / MINI_S - ox, ly = LMS[i].y / MINI_S - oy;
+        if (lx >= 1 && ly >= 1 && lx < MW - 1 && ly < MH - 1) { pset(MX + lx, MY + ly, C_yellow_3); pset(MX + lx - 1, MY + ly, C_ink_0); pset(MX + lx + 1, MY + ly, C_ink_0); pset(MX + lx, MY + ly - 1, C_ink_0); pset(MX + lx, MY + ly + 1, C_ink_0); }
+    }
     if (have_t) {
         float mx = tx / MINI_S - ox, my = ty / MINI_S - oy;
         if (mx < 2) mx = 2; if (my < 2) my = 2; if (mx > MW - 3) mx = MW - 3; if (my > MH - 3) my = MH - 3;
@@ -528,7 +608,9 @@ static void draw_world(void) {
     if (bump > 0) { ox += (rand() % 5) - 2; oy += (rand() % 5) - 2; if (ox < 0) ox = 0; if (oy < 0) oy = 0;
         if (ox > MAP_W - SW) ox = MAP_W - SW; if (oy > MAP_H - SH) oy = MAP_H - SH; }
     draw_map(ox, oy);
+    draw_landmarks(ox, oy);
     if (freecam) {
+        draw_lm_labels(ox, oy);
         int cx = SW / 2, cy = SH / 2;
         rect(cx - 7, cy, 5, 1, C_white_2); rect(cx + 3, cy, 5, 1, C_white_2);
         rect(cx, cy - 7, 1, 5, C_white_2); rect(cx, cy + 3, 1, 5, C_white_2);
@@ -539,6 +621,7 @@ static void draw_world(void) {
     int fi = (int)floorf(ang / (2 * PI_F) * SPR_N + 0.5f);
     fi = ((fi % SPR_N) + SPR_N) % SPR_N;
     blit(assets_bin + SPR_OFF + fi * SPR_SZ * SPR_SZ, SPR_SZ, SPR_SZ, (int)sx - SPR_SZ / 2, (int)sy - SPR_SZ / 2);
+    draw_lm_labels(ox, oy);
 }
 
 static void draw_bigmap(void) {
@@ -549,9 +632,14 @@ static void draw_bigmap(void) {
     int mx = ox + (int)(qx / BIG_S), my = oy + (int)(qy / BIG_S);
     if (ostate == O_PICK || ostate == O_LOAD) { int tx = ox + SHOPS[shop_i].x / BIG_S, ty = oy + SHOPS[shop_i].y / BIG_S; rect(tx - 2, ty - 2, 5, 5, C_ink_0); rect(tx - 1, ty - 1, 3, 3, C_green_3); }
     if (ostate == O_DROP) { int tx = ox + ADDRS[addr_i].x / BIG_S, ty = oy + ADDRS[addr_i].y / BIG_S; rect(tx - 2, ty - 2, 5, 5, C_ink_0); rect(tx - 1, ty - 1, 3, 3, C_yellow_3); }
+    for (int i = 0; i < NLM; i++) if (lm_found[i]) {
+        int tx = ox + LMS[i].x / BIG_S, ty = oy + LMS[i].y / BIG_S;
+        rect(tx - 2, ty, 5, 1, C_ink_0); rect(tx, ty - 2, 1, 5, C_ink_0); rect(tx - 1, ty, 3, 1, C_yellow_3); rect(tx, ty - 1, 1, 3, C_yellow_3);
+    }
     rect(mx - 3, my - 3, 7, 7, C_ink_0);
     rect(mx - 2, my - 2, 5, 5, (tick / 8) % 2 ? C_red_3 : C_white_2);
     text8(6, 6, 1, C_white_2, "КАРТА");
+    { char b[40]; snprintf(b, sizeof b, "ПАМ'ЯТКИ: %d/%d", lm_count, NLM); text8(SW - 8 - tw8(b, 1), 6, 1, C_yellow_3, b); }
     text8(6, SH - 22, 1, C_white_0, "SELECT: НАЗАД");
     text8(6, SH - 10, 1, C_white_0, "(C) OSM, MICROSOFT BUILDING FOOTPRINTS");
 }
@@ -602,8 +690,9 @@ static void draw_frame(void) {
         otext8_c(SW / 2, 70, 4, C_white_2, C_ink_0, "ПАУЗА");
         snprintf(b, sizeof b, "ЗАРОБЛЕНО: %d ГРН", money); otext8_c(SW / 2, 120, 1, C_yellow_3, C_ink_0, b);
         snprintf(b, sizeof b, "ДОСТАВОК: %d   ЗАПІЗНЕНЬ: %d", deliveries, late); otext8_c(SW / 2, 136, 1, C_white_2, C_ink_0, b);
-        otext8_c(SW / 2, 170, 1, C_white_1, C_ink_0, "СТАРТ: ГРАТИ ДАЛІ");
-        otext8_c(SW / 2, 184, 1, C_white_1, C_ink_0, "SELECT: ІНШЕ ЗАМОВЛЕННЯ");
+        snprintf(b, sizeof b, "ПАМ'ЯТКИ МІСТА: %d/%d", lm_count, NLM); otext8_c(SW / 2, 152, 1, C_yellow_3, C_ink_0, b);
+        otext8_c(SW / 2, 176, 1, C_white_1, C_ink_0, "СТАРТ: ГРАТИ ДАЛІ");
+        otext8_c(SW / 2, 190, 1, C_white_1, C_ink_0, "SELECT: ІНШЕ ЗАМОВЛЕННЯ");
     }
 }
 
@@ -640,6 +729,7 @@ static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
     if (freecam) update_freecam(btn, lx, ly);
     else { update_player(btn, lx); update_camera(0); update_orders(); }
     update_street();
+    update_landmarks();
     prefetch((int)camx, (int)camy, freecam ? 0 : cosf(ang) * vel, freecam ? 0 : sinf(ang) * vel);
 }
 
@@ -777,6 +867,16 @@ int main(int argc, char **argv) {
         }
         draw_frame(); snprintf(nm, sizeof nm, "%s/f_stress.ppm", dir); dump(nm);
         printf("stress: застрягань (3 с без руху, з газом і задньою) = %d, кадрів у стіні = %d\n", stuck_ep, inwall);
+    }
+    /* пам'ятка: підвезти до першої (каланча), дочекатися таблички */
+    if (NLM > 0) {
+        int c0 = lm_count;
+        px_ = LMS[0].x + 20; py_ = LMS[0].y + 40; vel = 0; unstick(); update_camera(1);
+        for (int f = 0; f < 50; f++) { game_update(0, 0, 128, 128); }
+        draw_frame(); snprintf(nm, sizeof nm, "%s/f_landmark.ppm", dir); dump(nm);
+        printf("landmarks: %d total, found %d -> %d\n", NLM, c0, lm_count);
+        int bytes = 0; for (int i = 0; i < NLM; i++) bytes += LMS[i].nfr * ((LMS[i].w * LMS[i].h + 3) & ~3);
+        printf("landmark sprites: %d bytes\n", bytes);
     }
     game_update(0, PSP_CTRL_SELECT, 128, 128); draw_frame();
     snprintf(nm, sizeof nm, "%s/f_bigmap.ppm", dir); dump(nm);

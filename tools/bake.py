@@ -96,6 +96,23 @@ SPR_OFF = put(b''.join(f.tobytes() for f in fr))
 ICON_SHOP = put(sprites.icon('shop').tobytes())
 ICON_HOME = put(sprites.icon('home').tobytes())
 
+# ---- пам'ятки: спрайти-позначки (індекси палітри, 0 = прозоро) + таблиця
+import landmarks as LMK
+LM = json.load(open(os.path.join(BUILD, 'landmarks.json'), encoding='utf-8')) if os.path.exists(os.path.join(BUILD, 'landmarks.json')) else []
+palf = np.array(PAL, np.float32)
+lm_rows = []
+for e in LM:
+    frs = LMK.sprite(e)
+    h, w = frs[0].shape[:2]
+    offs = []
+    for fr in frs:
+        rgb_ = fr[..., :3].reshape(-1, 3).astype(np.float32)
+        d = ((rgb_[:, None, :] - palf[None, 1:]) ** 2).sum(-1)
+        idx = (d.argmin(1) + 1).astype(np.uint8)
+        idx[fr[..., 3].reshape(-1) == 0] = 0
+        offs.append(put(idx.tobytes()))
+    lm_rows.append((e['x'], e['y'], w, h, len(frs), offs[0], e['r'], e['label'], e['bit']))
+
 open(os.path.join(OUT, 'assets.bin'), 'wb').write(blob)
 
 # ---- font
@@ -143,6 +160,9 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('static const char *STREETS[] = {%s};\n' % ','.join(cstr(n) for n in md['names']))
     f.write('static const int16_t SEGS[][5] = {%s};\n' % ','.join('{%d,%d,%d,%d,%d}' % tuple(s) for s in md['segs']))
     f.write('#define NSEGS (int)(sizeof(SEGS)/sizeof(SEGS[0]))\n')
+    f.write('typedef struct { int16_t x, y; uint8_t w, h, nfr; int32_t off; int16_t r; const char *name; uint8_t bit; } Landmark;\n')
+    f.write('static const Landmark LMS[] = {\n%s};\n' % ',\n'.join('{%d,%d,%d,%d,%d,%d,%d,%s,%d}' % (r[0], r[1], r[2], r[3], r[4], r[5], r[6], cstr(r[7]), r[8]) for r in lm_rows) if lm_rows else 'static const Landmark LMS[1] = {{0}};\n')
+    f.write('#define NLM %d\n' % len(lm_rows))
     f.write('#define NGLYPH %d\n' % len(glyphs))
     f.write('static const uint16_t FONT_CP[NGLYPH] = {%s};\n' % ','.join(str(c) for c, _ in glyphs))
     f.write('static const uint8_t FONT_BITS[NGLYPH][8] = {%s};\n' % ','.join('{' + ','.join(map(str, r)) + '}' for _, r in glyphs))
