@@ -96,7 +96,44 @@ def data():
                         b['roof'] = o['roof']
         for b in _CACHE['B'] + _CACHE['SAT']:
             a = np.array(b['q'], np.float32); b['bb'] = (a[:, 0].min(), a[:, 1].min(), a[:, 0].max(), a[:, 1].max())
+        _drop_on_roads(_CACHE, GW, GH)
     return _CACHE
+
+
+def drivable(t):
+    """Проїжджа частина, яка має бути вільною (не під будинком)."""
+    h = t.get('highway')
+    return h in ROAD_W and h != 'track' and t.get('area') != 'yes' and t.get('tunnel') not in ('yes', 'building_passage') \
+        and t.get('covered') != 'yes' and t.get('layer', '0') in ('0', '1', '2')
+
+
+def _drop_on_roads(C, GW, GH):
+    """Будинки, що стоять на проїжджій частині (похибки контурів MS/OSM, кіоски на дорозі) — прибираємо, щоб не врізатися."""
+    S = 1.0 / SRC                                          # растр 1 м
+    w, h = int(GW / S) + 1, int(GH / S) + 1
+    road = np.zeros((h, w), np.uint8)
+    for wy in C['w']:
+        if not drivable(wy['t']): continue
+        P = np.round(np.array(wy['pts']) / S).astype(np.int32)
+        cv2.polylines(road, [P], False, 1, max(1, int(ROAD_W[wy['t']['highway']] - 1.5)))
+    kept = {'B': [], 'SAT': []}; n = 0
+    for key in ('B', 'SAT'):
+        for b in C[key]:
+            q = np.array(b['q']) / S
+            x0, y0 = np.floor(q.min(0)).astype(int); x1, y1 = np.ceil(q.max(0)).astype(int) + 1
+            if x1 <= 0 or y1 <= 0 or x0 >= w or y0 >= h: kept[key].append(b); continue
+            xa, ya = max(0, x0), max(0, y0)
+            m = np.zeros((y1 - y0, x1 - x0), np.uint8)
+            cv2.fillPoly(m, [np.round(q - [x0, y0]).astype(np.int32)], 1)
+            m = m[ya - y0:min(h, y1) - y0, xa - x0:min(w, x1) - x0]
+            tot = m.sum()
+            frac = (road[ya:ya + m.shape[0], xa:xa + m.shape[1]][m > 0]).mean() if tot else 0
+            osm = key == 'B' and b['t'].get('src') not in ('ms', 'sat', 'manual')
+            if (not osm and frac > 0.12) or (osm and b['area'] < 80 and frac > 0.25) or frac > 0.6:
+                n += 1; continue
+            kept[key].append(b)
+    C['B'], C['SAT'] = kept['B'], kept['SAT']
+    C['dropped'] = n
 
 
 ROAD_W = {'primary': 13, 'secondary': 11, 'tertiary': 9.5, 'residential': 7, 'unclassified': 6.5, 'living_street': 5.5,
@@ -446,8 +483,15 @@ def render(x0, y0, W, H, tree_out=None):
                 img[yy_, xx_] = (250, 250, 245)
     # ---------- дахи
     rs_all = random.Random(7)
+    img_ground = img.copy()
     for i, b, pts in sorted(blds, key=lambda z: z[1]['h']):
         draw_roof(img, b, pts, random.Random(i * 31 + 7))
+    # проїжджа частина завжди видна: дах, що трохи наліз на дорогу, обрізається (крім арок)
+    rm = Image.new('L', (W, H), 0); drm = ImageDraw.Draw(rm)
+    for w, pts in ways:
+        if drivable(w['t']): drm.line(pts, fill=1, width=max(1, int((ROAD_W[w['t']['highway']] - 1.5) / MPP)))
+    rmask = (np.array(rm) > 0) & (cls == G_ROAD)
+    img[rmask] = img_ground[rmask]
 
     # ---------- дерева
     if tree_out is not None:

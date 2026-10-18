@@ -63,6 +63,7 @@ def render_all(jobs, rgb, cls, nproc):
     print('trees', len(trees), flush=True)
 
 
+ARCH_ROOFS = []
 BAR_RED, BAR_WHITE = (200, 56, 44), (236, 236, 230)
 
 
@@ -114,12 +115,24 @@ def main(nproc=2):
     for b in D['B'] + D.get('SAT', []):
         P = np.array(b['q']) * K
         cv2.fillPoly(solid, [np.round(P).astype(np.int32)], 1)
+    # проїжджа частина вільна (будинки, що наїхали на дорогу, не заважають)
+    for w in D['w']:
+        if CD.drivable(w['t']):
+            P = np.round(np.array(w['pts']) * K).astype(np.int32)
+            cv2.polylines(solid, [P], False, 0, max(2, int((CD.ROAD_W[w['t']['highway']] - 1.5) / CD.MPP)))
+    print('dropped buildings on roads', D.get('dropped'), flush=True)
     # арки: дорога під будинком (tunnel=building_passage / covered) — проїзна
     for w in D['w']:
         t = w['t']
         if t.get('highway') in CD.ROAD_W and (t.get('tunnel') == 'building_passage' or t.get('covered') == 'yes'):
             P = np.round(np.array(w['pts']) * K).astype(np.int32)
             cv2.polylines(solid, [P], False, 0, max(10, int(CD.ROAD_W[t['highway']] / CD.MPP)))
+            # будинок над аркою: гра домальовує його поверх машини
+            for b in D['B'] + D['SAT']:
+                Q = np.array(b['q'], np.float32) * K
+                if any(cv2.pointPolygonTest(Q, (float(x), float(y)), False) >= 0 for x, y in P.tolist()):
+                    q = cv2.approxPolyDP(Q.astype(np.float32), 1.0, True)[:, 0, :]
+                    ARCH_ROOFS.append([[int(round(x)), int(round(y))] for x, y in q[:24]])
     solid = solid.astype(bool)                       # вода — не стіна: у неї можна заїхати (і втопити машину)
     solid |= ~play
     # ---- палітра карти: лічильник 24-бітних кольорів
@@ -173,7 +186,9 @@ def mapdata(D, cls, solid, play):
     """Заклади (забір), адреси (доставка), назви вулиць, старт — у сітці гри."""
     import citygen as CG
     MG = CG.MG
-    access = np.isin(cls, (G_SIDE, G_PATH, G_PED, G_PARK, G_PAVED)) & ~solid & play
+    # точки забору/доставки — на проїжджій частині або паркуванні, де вміщається машина
+    free = cv2.erode((~solid & play).astype(np.uint8), np.ones((9, 9), np.uint8)).astype(bool)
+    access = np.isin(cls, (G_ROAD, G_PARK)) & free
 
     def gp(p): return (p[0] * K, p[1] * K)
 
@@ -234,6 +249,13 @@ def mapdata(D, cls, solid, play):
         s_ = stop_at(x, y, 90)
         if s_ and all(abs(s_[0] - a['x']) + abs(s_[1] - a['y']) > 60 for a in sto):
             sto.append(dict(x=s_[0], y=s_[1], name=MG.clean(t.get('name', 'СТО'))))
+    fuel = []
+    cf = [(t, gp(CG.px(*D['nodes'][nid]))) for nid, t in D['n'].items() if nid in D['nodes'] and t.get('amenity') == 'fuel']
+    cf += [(w['t'], gp(np.array(w['pts']).mean(0))) for w in D['w'] if w['closed'] and w['t'].get('amenity') == 'fuel']
+    for t, (x, y) in cf:
+        s_ = stop_at(x, y, 90)
+        if s_ and all(abs(s_[0] - a['x']) + abs(s_[1] - a['y']) > 60 for a in fuel):
+            fuel.append(dict(x=s_[0], y=s_[1], name=MG.clean(t.get('name') or t.get('brand') or 'АЗС')))
     # осьові ліній доріг для помічника смуги: x0,y0,x1,y1, напівширина смуги (пікс), одностороння
     lanes = []
     for w in D['w']:
@@ -249,8 +271,8 @@ def mapdata(D, cls, solid, play):
         for i in range(len(P) - 1):
             a, b = (P[i], P[i + 1]) if ow >= 0 else (P[i + 1], P[i])
             lanes.append((int(a[0]), int(a[1]), int(b[0]), int(b[1]), int(round(lw / 2)), 1 if ow else 0))
-    print('sto', len(sto), 'lane segs', len(lanes), flush=True)
-    json.dump(dict(shops=shops, addrs=addrs, names=names, segs=segs, spawn=list(spawn), W=W, H=H, M=CD.MPP, sto=sto, lanes=lanes),
+    print('sto', len(sto), 'fuel', len(fuel), 'lane segs', len(lanes), 'arch roofs', len(ARCH_ROOFS), flush=True)
+    json.dump(dict(shops=shops, addrs=addrs, names=names, segs=segs, spawn=list(spawn), W=W, H=H, M=CD.MPP, sto=sto, lanes=lanes, fuel=fuel, arches=ARCH_ROOFS),
               open('build/mapdata.json', 'w'), ensure_ascii=False)
     print('shops', len(shops), 'addrs', len(addrs), 'streets', len(names), 'segs', len(segs), 'spawn', spawn, flush=True)
 

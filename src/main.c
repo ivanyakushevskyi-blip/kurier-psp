@@ -201,21 +201,36 @@ static int utf8next(const char **s) {
     *s += 1; return '?';
 }
 static int ncp(const char *s) { int n = 0; while (*s) { utf8next(&s); n++; } return n; }
-static int tw8(const char *s, int sc) { return ncp(s) * 8 * sc; }
-static const u8 *glyph8(int cp) {
-    int lo = 0, hi = NGLYPH - 1;
-    while (lo <= hi) { int m = (lo + hi) / 2; if (FONT_CP[m] == cp) return FONT_BITS[m]; if (FONT_CP[m] < cp) lo = m + 1; else hi = m - 1; }
-    return NULL;
+static const Glyph *glyph(int sc, int cp) {
+    const FontTab *F = &FONTS[sc];
+    int lo = 0, hi = F->n - 1;
+    while (lo <= hi) { int m = (lo + hi) / 2; if (F->g[m].cp == cp) return &F->g[m]; if (F->g[m].cp < cp) lo = m + 1; else hi = m - 1; }
+    return cp == '?' ? NULL : glyph(sc, '?');
 }
+static int fsc(int sc) { return sc < 1 ? 1 : (sc > 5 ? 5 : sc); }
+static int tw8(const char *s, int sc) {
+    sc = fsc(sc); int w = 0;
+    while (*s) { const Glyph *g = glyph(sc, utf8next(&s)); if (g) w += g->adv; }
+    return w;
+}
+/* пропорційний шрифт Rubik; y — верх великих літер (як було з 8x8) */
 static void text8(int x, int y, int sc, u8 col, const char *s) {
+    sc = fsc(sc); int h = FONTS[sc].h; y -= FONTS[sc].asc;
     while (*s) {
-        const u8 *g = glyph8(utf8next(&s));
-        if (g) for (int r = 0; r < 8; r++) for (int c = 0; c < 8; c++) if (g[r] & (128 >> c)) rect(x + c * sc, y + r * sc, sc, sc, col);
-        x += 8 * sc;
+        const Glyph *g = glyph(sc, utf8next(&s));
+        if (!g) continue;
+        int st = (g->w + 7) >> 3; const u8 *b = FONT_DATA + g->off;
+        for (int r = 0; r < h; r++) {
+            int yy = y + r; if ((unsigned)yy >= SH) { b += st; continue; }
+            u8 *d = fb + yy * SW;
+            for (int c = 0; c < g->w; c++) if (b[c >> 3] & (128 >> (c & 7))) { int xx = x + g->xoff + c; if ((unsigned)xx < SW) d[xx] = col; }
+            b += st;
+        }
+        x += g->adv;
     }
 }
 static void otext8(int x, int y, int sc, u8 col, u8 oc, const char *s) {
-    int o = sc;
+    int o = sc > 2 ? 2 : 1;
     for (int dy = -o; dy <= o; dy += o) for (int dx = -o; dx <= o; dx += o) if (dx || dy) text8(x + dx, y + dy, sc, oc, s);
     text8(x, y, sc, col, s);
 }
@@ -228,16 +243,18 @@ static int state = S_TITLE;
 static float px_, py_, ang, vel;           /* vel — швидкість уздовж кузова (пікс/кадр, зі знаком) */
 static float vx_, vy_;                       /* вектор швидкості у світі (інерція, занос) */
 static float health = 100;                   /* стан авто, % */
+static float fuel = 100;                     /* пальне, % */
+static int fuel_t, fuel_warned;
 static int lane_assist;
 static int menu_i;                      /* помічник утримання смуги (налаштування) */
 static int braking, drifting;
-enum { EV_NONE, EV_WRECK, EV_DROWN };
+enum { EV_NONE, EV_WRECK, EV_DROWN, EV_FUEL };
 static int evac, evac_t, repair_t;
 static int shake;                            /* сила струсу камери */
 static float camx, camy;
 static int freecam;                       /* L: огляд міста без машини */
 static float fcx, fcy;
-static int ostate = O_NONE, owait = 90, otimer, olimit, shop_i = -1, addr_i = -1, pay, load_t;
+static int ostate = O_NONE, owait = 60, otimer, olimit, shop_i = -1, addr_i = -1, pay, load_t;
 static int money, deliveries, late;
 static char toast[48]; static int toast_t; static u8 toast_c;
 static int street_i = -1, street_t;
@@ -248,6 +265,7 @@ static int lm_count;
 #define LM_REWARD 50
 
 static int bump;
+static void puff(float x, float y, float dx, float dy, int life, u8 kind);
 static void say(const char *t, u8 c, int life) { strncpy(toast, t, 47); toast[47] = 0; toast_t = life; toast_c = c; }
 static float dist(float ax, float ay, float bx, float by) { float dx = ax - bx, dy = ay - by; return sqrtf(dx * dx + dy * dy); }
 
@@ -259,6 +277,7 @@ static void load_save(void) {
         if (fscanf(f, "%129s", bits) == 1)
             for (int i = 0; i < NLM; i++) { int k = LMS[i].bit; if (k < (int)strlen(bits) && bits[k] == '1') { lm_found[i] = 1; lm_count++; } }
         int la = 0; if (fscanf(f, "%d", &la) == 1) lane_assist = la != 0;
+        float fu, he; if (fscanf(f, "%f %f", &fu, &he) == 2) { fuel = fu; health = he > 5 ? he : 100; }
         fclose(f);
     }
 }
@@ -270,33 +289,76 @@ static void write_save(void) {
         if (n > 128) n = 128;
         memset(bits, '0', (size_t)n); bits[n] = 0;
         for (int i = 0; i < NLM; i++) if (lm_found[i] && LMS[i].bit < n) bits[LMS[i].bit] = '1';
-        fprintf(f, "%d %d %s %d\n", money, deliveries, n ? bits : "-", lane_assist); fclose(f);
+        fprintf(f, "%d %d %s %d %.1f %.1f\n", money, deliveries, n ? bits : "-", lane_assist, fuel, health); fclose(f);
     }
 }
 
-static void new_order(void) {
+/* ---- замовлення: на вибір 3 пропозиції з різними умовами */
+enum { T_NORMAL, T_URGENT, T_FAR, T_FRAGILE, T_DANGER, T_HEAVY, T_FOOD, NTYPE };
+static const char *TNAME[NTYPE] = { "ЗВИЧАЙНЕ", "ТЕРМІНОВЕ", "ДАЛЕКЕ", "КРИХКЕ", "НЕБЕЗПЕЧНЕ", "ВАЖКЕ", "ГАРЯЧА ЇЖА" };
+static const float TPAY[NTYPE] = { 1.0f, 1.6f, 1.3f, 1.5f, 2.2f, 1.4f, 1.3f };
+static const float TTIME[NTYPE] = { 1.0f, 0.62f, 1.0f, 1.15f, 1.2f, 1.3f, 0.8f };
+typedef struct { int type, shop, addr, pay, limit; } Offer;
+static Offer offers[3]; static int n_offers, offer_sel, offer_t, otype;
+static float cargo = 100;                    /* стан крихкого вантажу, % */
+static u8 tcol(int t) { return t == T_DANGER ? C_red_3 : (t == T_URGENT || t == T_FOOD ? C_yellow_3 : (t == T_FRAGILE ? C_white_2 : C_green_3)); }
+static int is_food(int i) { const char *k = SHOPS[i].kind; return !strcmp(k, "КАВ'ЯРНЯ") || !strcmp(k, "РЕСТОРАН") || !strcmp(k, "ФАСТФУД") || !strcmp(k, "ПІЦА") || !strcmp(k, "ПЕКАРНЯ"); }
+static int pick_shop(float maxd, int food) {
     int best = -1;
-    for (int t = 0; t < 80; t++) {
+    for (int t = 0; t < 300; t++) {
         int i = rand() % NSHOPS;
+        if (food && !is_food(i)) continue;
         float d = dist(px_, py_, SHOPS[i].x, SHOPS[i].y);
-        if (d > 160 && d < 1100) { best = i; break; }
+        if (d > 120 && d < maxd) return i;
         if (best < 0 || d < dist(px_, py_, SHOPS[best].x, SHOPS[best].y)) best = i;
     }
-    shop_i = best;
+    return best < 0 ? rand() % NSHOPS : best;
+}
+static int pick_addr(int shop, float dmin, float dmax) {
     int ab = -1;
-    for (int t = 0; t < 120; t++) {
+    for (int t = 0; t < 300; t++) {
         int i = rand() % NADDRS;
-        float d = dist(SHOPS[shop_i].x, SHOPS[shop_i].y, ADDRS[i].x, ADDRS[i].y);
-        if (d > 500 && d < 1850) { ab = i; break; }
+        float d = dist(SHOPS[shop].x, SHOPS[shop].y, ADDRS[i].x, ADDRS[i].y);
+        if (d > dmin && d < dmax) return i;
         if (ab < 0) ab = i;
     }
-    addr_i = ab;
-    ostate = O_PICK;
-    say("НОВЕ ЗАМОВЛЕННЯ!", C_green_3, 110);
+    return ab;
 }
+static void make_offers(void) {
+    int used = 0;
+    for (int k = 0; k < 3; k++) {
+        int t;
+        do { t = k == 0 ? (rand() % 2 ? T_NORMAL : T_FOOD) : rand() % NTYPE; } while (used & (1 << t));
+        used |= 1 << t;
+        Offer *o = &offers[k]; o->type = t;
+        o->shop = pick_shop(t == T_FAR ? 900 : 1500, t == T_FOOD);
+        float dmin = 500, dmax = 1850;
+        if (t == T_FAR) { dmin = 2200; dmax = 4400; } else if (t == T_URGENT || t == T_FOOD) { dmin = 400; dmax = 1400; }
+        o->addr = pick_addr(o->shop, dmin, dmax);
+        float dm = dist(SHOPS[o->shop].x, SHOPS[o->shop].y, ADDRS[o->addr].x, ADDRS[o->addr].y) * MPP;
+        o->pay = (int)((35 + dm * 0.09f) * TPAY[t]);
+        o->limit = (int)((dm * 1.5f / 10.0f + 25.0f) * 60.0f * TTIME[t]);
+    }
+    n_offers = 3; offer_sel = 0; offer_t = 60 * 45;
+    say("НОВІ ЗАМОВЛЕННЯ!", C_green_3, 100);
+}
+static void accept_offer(int k) {
+    Offer *o = &offers[k];
+    shop_i = o->shop; addr_i = o->addr; otype = o->type; pay = o->pay; olimit = o->limit; cargo = 100;
+    n_offers = 0; ostate = O_PICK;
+    char b[48]; snprintf(b, sizeof b, "ЗАМОВЛЕННЯ: %s", TNAME[otype]); say(b, tcol(otype), 110);
+}
+static void fail_order(const char *why) { ostate = O_NONE; owait = 200; late++; say(why, C_red_3, 160); }
 
-static void update_orders(void) {
-    if (ostate == O_NONE) { if (--owait <= 0) new_order(); return; }
+static void update_orders(unsigned pressed) {
+    if (ostate == O_NONE) {
+        if (!n_offers) { if (--owait <= 0) make_offers(); return; }
+        if (pressed & PSP_CTRL_UP) offer_sel = (offer_sel + 2) % 3;
+        if (pressed & PSP_CTRL_DOWN) offer_sel = (offer_sel + 1) % 3;
+        if (pressed & PSP_CTRL_TRIANGLE) { accept_offer(offer_sel); return; }
+        if ((pressed & PSP_CTRL_CIRCLE) || --offer_t <= 0) make_offers();
+        return;
+    }
     if (ostate == O_PICK) {
         if (dist(px_, py_, SHOPS[shop_i].x, SHOPS[shop_i].y) < 24 && fabsf(vel) < 0.35f) { ostate = O_LOAD; load_t = 0; }
         return;
@@ -304,29 +366,36 @@ static void update_orders(void) {
     if (ostate == O_LOAD) {
         if (dist(px_, py_, SHOPS[shop_i].x, SHOPS[shop_i].y) > 34) { ostate = O_PICK; return; }
         if (++load_t >= 60) {
-            float dm = dist(SHOPS[shop_i].x, SHOPS[shop_i].y, ADDRS[addr_i].x, ADDRS[addr_i].y) * MPP;
-            olimit = (int)((dm * 1.5f / 10.0f + 25.0f) * 60.0f);
             otimer = olimit;
-            pay = 35 + (int)(dm * 0.09f);
             ostate = O_DROP;
-            say("ЗАБРАВ! ВЕЗИ ДО КЛІЄНТА", C_yellow_3, 100);
+            say(otype == T_DANGER ? "ОБЕРЕЖНО! НЕ БИЙ МАШИНУ" : (otype == T_FRAGILE ? "КРИХКЕ! ЇДЬ АКУРАТНО" : "ЗАБРАВ! ВЕЗИ ДО КЛІЄНТА"), C_yellow_3, 110);
         }
         return;
     }
     if (ostate == O_DROP) {
-        if (--otimer <= 0) {
-            late++; ostate = O_NONE; owait = 150;
-            say("ЗАПІЗНИВСЯ. ЗАМОВЛЕННЯ СКАСОВАНО", C_red_3, 150);
-            return;
-        }
+        if (--otimer <= 0) { fail_order("ЗАПІЗНИВСЯ. ЗАМОВЛЕННЯ СКАСОВАНО"); return; }
         if (dist(px_, py_, ADDRS[addr_i].x, ADDRS[addr_i].y) < 24 && fabsf(vel) < 0.45f) {
             int bonus = otimer / 60 / 3;
-            money += pay + bonus; deliveries++;
-            char b[48]; snprintf(b, sizeof b, "+%d ГРН%s", pay + bonus, bonus > 5 ? "  ШВИДКО!" : "");
+            int got = pay + bonus;
+            if (otype == T_FRAGILE) got = (int)(got * cargo / 100.0f);
+            money += got; deliveries++;
+            char b[48]; snprintf(b, sizeof b, "+%d ГРН%s", got, bonus > 5 ? "  ШВИДКО!" : "");
             say(b, C_green_3, 150);
             ostate = O_NONE; owait = 140;
             write_save();
         }
+    }
+}
+/* удар під час доставки: крихке псується, небезпечне вибухає */
+static void cargo_hit(float spd) {
+    if (ostate != O_DROP) return;
+    if (otype == T_FRAGILE) {
+        cargo -= (spd - 0.2f) * 140.0f;
+        if (cargo <= 0) { cargo = 0; fail_order("ВАНТАЖ РОЗБИТО!"); }
+        else { char b[40]; snprintf(b, sizeof b, "ВАНТАЖ: %d%%", (int)cargo); say(b, C_red_3, 70); }
+    } else if (otype == T_DANGER && spd > 0.34f) {
+        health = 0; fail_order("ВИБУХ! ВАНТАЖ ЗНИЩЕНО");
+        for (int k = 0; k < 24; k++) puff(px_ + rand() % 15 - 7, py_ + rand() % 15 - 7, (rand() % 11 - 5) * 0.12f, (rand() % 11 - 5) * 0.12f, 30 + rand() % 20, 1);
     }
 }
 
@@ -438,8 +507,11 @@ static void update_player(unsigned btn, int lx) {
     float vf = vx_ * fx + vy_ * fy, vr = vx_ * rx + vy_ * ry;
     int off = OFFROAD[map_px((int)px_, (int)py_)];
     float vmax = off ? 0.50f : 0.935f;                       /* 0,935 пікс/кадр ≈ 101 км/год; на спідометрі — 100 */
+    int heavy = ostate == O_DROP && otype == T_HEAVY;
+    if (heavy) vmax *= 0.7f;
+    if (fuel <= 0) gas = 0;                                   /* пальне скінчилося */
     /* двигун / гальмо / задній хід */
-    if (gas && vf >= -0.02f) { float k = vf / vmax; vf += (off ? 0.012f : 0.019f) * (1.0f - 0.75f * k * k); }
+    if (gas && vf >= -0.02f) { float k = vf / vmax; vf += (off ? 0.009f : 0.0125f) * (heavy ? 0.6f : 1.0f) * (1.0f - 0.85f * k * k); }
     else if (gas) vf += 0.045f;
     braking = 0;
     if (brake) { if (vf > 0.03f) { vf -= 0.042f; braking = 1; } else if (vf > -0.34f) vf -= 0.011f; }
@@ -475,6 +547,7 @@ static void update_player(unsigned btn, int lx) {
         if (spd > 0.28f) {
             float dmg = (spd - 0.28f) * 42.0f;
             health -= dmg; bump = 10; shake = (int)(2 + spd * 6);
+            cargo_hit(spd);
             for (int k = 0; k < 4; k++) puff(px_ + fx * 9, py_ + fy * 9, (rand() % 7 - 3) * 0.08f, (rand() % 7 - 3) * 0.08f, 22, 1);
         }
         vx_ *= -0.22f; vy_ *= -0.22f;
@@ -492,6 +565,9 @@ static void update_player(unsigned btn, int lx) {
     }
     if (health < 35 && tick % 9 == 0) puff(px_ + fx * 8, py_ + fy * 8, 0.02f, -0.18f, 40, 2);   /* пара з-під капота */
     float moved = fabsf(px_ - ox_) + fabsf(py_ - oy_);
+    fuel -= moved * 0.0031f * (heavy ? 1.4f : 1.0f) + (gas ? 0.0004f : 0);
+    if (fuel < 0) fuel = 0;
+    if (fuel < 20 && !fuel_warned) { fuel_warned = 1; say("МАЛО ПАЛЬНОГО! ЗАЇДЬ НА АЗС", C_yellow_3, 160); }
     if ((gas || brake) && moved < 0.02f) { if (++blocked_t > 90) unwedge(); } else blocked_t = 0;
     static int win_t; static float wx, wy;
     if (gas || brake) {
@@ -510,19 +586,37 @@ static int nearest_sto(float x, float y) {
 }
 static void update_evac(void) {
     evac_t++; vel = 0;
-    if (evac == EV_DROWN) { vx_ *= 0.9f; vy_ *= 0.9f; px_ += vx_; py_ += vy_; if (tick % 4 == 0) puff(px_ + (rand() % 13 - 6), py_ + (rand() % 9 - 4), 0, -0.15f, 26, 3); }
+    if (evac == EV_FUEL) { vx_ = vy_ = 0; }
+    else if (evac == EV_DROWN) { vx_ *= 0.9f; vy_ *= 0.9f; px_ += vx_; py_ += vy_; if (tick % 4 == 0) puff(px_ + (rand() % 13 - 6), py_ + (rand() % 9 - 4), 0, -0.15f, 26, 3); }
     else { vx_ *= 0.8f; vy_ *= 0.8f; if (tick % 5 == 0) puff(px_ + (rand() % 9 - 4), py_, 0.02f, -0.2f, 44, 2); }
     if (evac_t < 110) return;
+    if (evac == EV_FUEL) {
+        int b = 0; for (int i = 1; i < NFUEL; i++) if (dist(px_, py_, FUELS[i].x, FUELS[i].y) < dist(px_, py_, FUELS[b].x, FUELS[b].y)) b = i;
+        money -= 300; px_ = FUELS[b].x; py_ = FUELS[b].y; stop_car(); fuel = 15; fuel_warned = 0; evac = EV_NONE;
+        unstick(); say("ЕВАКУАТОР ДО АЗС: -300 ГРН", C_red_3, 200); write_save(); return;
+    }
     int k = nearest_sto(px_, py_);
     int cost = evac == EV_DROWN ? 700 : 450;
     money -= cost;
-    if (ostate != O_NONE) { ostate = O_NONE; owait = 200; }
+    if (ostate != O_NONE) { ostate = O_NONE; n_offers = 0; owait = 200; }
     px_ = STOS[k].x; py_ = STOS[k].y; stop_car(); health = 100; evac = EV_NONE;
     for (int r = 0; r < 200 && hit(px_, py_, ang); r += 2) px_ = STOS[k].x + r;
     unstick();
     char b[48]; snprintf(b, sizeof b, "ЕВАКУАЦІЯ НА СТО: -%d ГРН", cost);
     say(b, C_red_3, 200);
     write_save();
+}
+static void update_fuel(unsigned pressed) {
+    if (fuel <= 0 && fabsf(vel) < 0.05f && (pressed & PSP_CTRL_CIRCLE)) { evac = EV_FUEL; evac_t = 0; say("ВИКЛИКАЮ ЕВАКУАТОР...", C_white_2, 110); return; }
+    if (fuel >= 99.5f) { fuel_t = 0; return; }
+    int b = 0; for (int i = 1; i < NFUEL; i++) if (dist(px_, py_, FUELS[i].x, FUELS[i].y) < dist(px_, py_, FUELS[b].x, FUELS[b].y)) b = i;
+    if (dist(px_, py_, FUELS[b].x, FUELS[b].y) < 26 && fabsf(vel) < 0.3f) {
+        if (++fuel_t >= 70) {
+            int cost = (int)((100 - fuel) * 2 + 0.5f);
+            money -= cost; fuel = 100; fuel_t = 0; fuel_warned = 0;
+            char t[48]; snprintf(t, sizeof t, "ЗАПРАВКА: -%d ГРН", cost); say(t, C_yellow_3, 150); write_save();
+        }
+    } else fuel_t = 0;
 }
 static void update_repair(void) {
     if (health >= 99.5f) { repair_t = 0; return; }
@@ -655,6 +749,13 @@ static void draw_minimap(float tx, float ty, int have_t, u8 tcol) {
         int lx = LMS[i].x / MINI_S - ox, ly = LMS[i].y / MINI_S - oy;
         if (lx >= 1 && ly >= 1 && lx < MW - 1 && ly < MH - 1) { pset(MX + lx, MY + ly, C_yellow_3); pset(MX + lx - 1, MY + ly, C_ink_0); pset(MX + lx + 1, MY + ly, C_ink_0); pset(MX + lx, MY + ly - 1, C_ink_0); pset(MX + lx, MY + ly + 1, C_ink_0); }
     }
+    if (fuel < 25 || health < 50) {                              /* найближча АЗС / СТО, коли треба */
+        const Sto *L = fuel < 25 ? FUELS : STOS; int n = fuel < 25 ? NFUEL : NSTO, b = 0;
+        for (int i = 1; i < n; i++) if (dist(px_, py_, L[i].x, L[i].y) < dist(px_, py_, L[b].x, L[b].y)) b = i;
+        float mx = L[b].x / MINI_S - ox, my = L[b].y / MINI_S - oy;
+        if (mx < 2) mx = 2; if (my < 2) my = 2; if (mx > MW - 3) mx = MW - 3; if (my > MH - 3) my = MH - 3;
+        if ((tick / 12) % 2) { rect(MX + (int)mx - 2, MY + (int)my - 2, 5, 5, C_ink_0); rect(MX + (int)mx - 1, MY + (int)my - 1, 3, 3, fuel < 25 ? C_green_3 : C_red_3); }
+    }
     if (have_t) {
         float mx = tx / MINI_S - ox, my = ty / MINI_S - oy;
         if (mx < 2) mx = 2; if (my < 2) my = 2; if (mx > MW - 3) mx = MW - 3; if (my > MH - 3) my = MH - 3;
@@ -694,57 +795,88 @@ static void draw_target(float tx, float ty, const u8 *icon, u8 col, u8 coldark) 
     otext8(lx, ly, 1, C_white_2, C_ink_0, b);
 }
 
+/* текст, обрізаний по ширині (пропорційний шрифт) */
+static void text_clip(int x, int y, int maxw, u8 col, const char *s) {
+    char b[96]; int n = 0, w = 0; const char *p = s;
+    while (*p && n < 90) { const char *q = p; const Glyph *g = glyph(1, utf8next(&p)); int aw = g ? g->adv : 0;
+        if (w + aw > maxw) break; memcpy(b + n, q, (size_t)(p - q)); n += (int)(p - q); w += aw; }
+    b[n] = 0; text8(x, y, 1, col, b);
+}
+static void bar(int x, int y, const char *label, float v, u8 c) {
+    panel(x, y, 124, 14);
+    text8(x + 5, y + 3, 1, C_white_1, label);
+    rect(x + 62, y + 4, 58, 6, C_ink_0); rect(x + 63, y + 5, (int)(56 * v / 100), 4, c);
+}
 static void draw_hud(void) {
     char b[200];
-    /* money */
+    /* гроші */
     panel(6, 6, 124, 30);
     snprintf(b, sizeof b, "%d ГРН", money);
-    text8(13, 11, 1, C_yellow_3, b);
+    text8(13, 10, 1, money < 0 ? C_red_3 : C_yellow_3, b);
     snprintf(b, sizeof b, "ДОСТАВОК: %d", deliveries);
     text8(13, 23, 1, C_white_1, b);
-    /* стан авто */
-    {
-        int hp = (int)(health + 0.5f); u8 hc = hp > 60 ? C_green_3 : (hp > 30 ? C_yellow_3 : ((tick / 10) % 2 ? C_red_3 : C_white_2));
-        panel(6, 38, 124, 14);
-        text8(11, 41, 1, C_white_1, "АВТО");
-        rect(48, 42, 76, 6, C_ink_0); rect(49, 43, 74 * hp / 100, 4, hc);
+    /* стан авто, пальне */
+    int hp = (int)(health + 0.5f);
+    bar(6, 38, "АВТО", health, hp > 60 ? C_green_3 : (hp > 30 ? C_yellow_3 : ((tick / 10) % 2 ? C_red_3 : C_white_2)));
+    bar(6, 54, "ПАЛЬНЕ", fuel, fuel > 25 ? C_yellow_3 : ((tick / 10) % 2 ? C_red_3 : C_white_2));
+    const char *prog = repair_t > 0 ? "РЕМОНТ НА СТО" : (fuel_t > 0 ? "ЗАПРАВКА" : NULL);
+    if (prog) {
+        int w = 120, x = SW / 2 - w / 2, y = 150, t = repair_t > 0 ? repair_t : fuel_t;
+        otext8_c(SW / 2, y - 15, 1, C_white_2, C_ink_0, prog);
+        rect(x - 2, y - 2, w + 4, 10, C_ink_0); rect(x, y, w * t / 70, 6, C_yellow_3);
     }
-    if (repair_t > 0) {
-        int w = 120, x = SW / 2 - w / 2, y = 150;
-        otext8_c(SW / 2, y - 14, 1, C_white_2, C_ink_0, "РЕМОНТ НА СТО");
-        rect(x - 2, y - 2, w + 4, 10, C_ink_0); rect(x, y, w * repair_t / 70, 6, C_yellow_3);
-    }
-    /* street name */
+    if (fuel <= 0 && fabsf(vel) < 0.05f && !evac) otext8_c(SW / 2, 172, 1, C_red_3, C_ink_0, "ПАЛЬНЕ СКІНЧИЛОСЯ. КОЛО: ЕВАКУАТОР ДО АЗС (300 ГРН)");
+    /* назва вулиці */
     if (street_i >= 0) otext8_c(244, 10, 1, C_white_2, C_ink_0, STREETS[street_i]);
-    /* order panel */
-    panel(0, SH - 30, SW, 30);
-    const u8 *ish = assets_bin + ICON_SHOP, *iho = assets_bin + ICON_HOME;
+    /* нижня панель */
     float kmh = fabsf(vel) * MPP * 60 * 3.6f;
     int ik = (int)(kmh + 0.5f); if (ik > 100) ik = 100;                /* фізичний максимум ~101: показуємо рівно 100 */
-    snprintf(b, sizeof b, "%d КМ/Г", ik);
-    text8(SW - 8 - tw8(b, 1), SH - 12, 1, C_white_1, b);
-    if (ostate == O_PICK || ostate == O_LOAD) {
-        blit(ish, ICON_SZ, ICON_SZ, 6, SH - 26);
-        snprintf(b, sizeof b, "ЗАБРАТИ: %s", SHOPS[shop_i].name);
-        text8(26, SH - 25, 1, C_green_3, b);
-        snprintf(b, sizeof b, "%s  %dМ", SHOPS[shop_i].kind, (int)(dist(px_, py_, SHOPS[shop_i].x, SHOPS[shop_i].y) * MPP));
-        text8(26, SH - 12, 1, C_white_1, b);
-    } else if (ostate == O_DROP) {
-        blit(iho, ICON_SZ, ICON_SZ, 6, SH - 26);
-        snprintf(b, sizeof b, "ДОСТАВИТИ: %s", ADDRS[addr_i].name);
-        text8(26, SH - 25, 1, C_yellow_3, b);
-        snprintf(b, sizeof b, "%dМ   ОПЛАТА %d ГРН", (int)(dist(px_, py_, ADDRS[addr_i].x, ADDRS[addr_i].y) * MPP), pay);
-        text8(26, SH - 12, 1, C_white_1, b);
-        int s = otimer / 60;
-        snprintf(b, sizeof b, "%d:%02d", s / 60, s % 60);
-        u8 tc = s < 15 ? ((tick / 8) % 2 ? C_red_3 : C_white_2) : C_white_2;
-        text8(SW - 8 - tw8(b, 2), SH - 28, 2, tc, b);
+    const u8 *ish = assets_bin + ICON_SHOP, *iho = assets_bin + ICON_HOME;
+    if (ostate == O_NONE && n_offers) {
+        int y0 = SH - 62;
+        panel(0, y0, SW, 62);
+        text8(8, y0 + 4, 1, C_white_0, "ЗАМОВЛЕННЯ:  ВГОРУ/ВНИЗ: ВИБІР,  ТРИКУТНИК: ВЗЯТИ,  КОЛО: ІНШІ");
+        for (int k = 0; k < 3; k++) {
+            const Offer *o = &offers[k]; int y = y0 + 18 + k * 14;
+            if (k == offer_sel) rect(2, y - 2, SW - 4, 13, C_ink_2);
+            text8(8, y, 1, k == offer_sel ? C_yellow_3 : C_ink_2, k == offer_sel ? ">" : " ");
+            text8(18, y, 1, tcol(o->type), TNAME[o->type]);
+            text_clip(110, y, 170, C_white_2, SHOPS[o->shop].name);
+            float dm = (dist(px_, py_, SHOPS[o->shop].x, SHOPS[o->shop].y) + dist(SHOPS[o->shop].x, SHOPS[o->shop].y, ADDRS[o->addr].x, ADDRS[o->addr].y)) * MPP;
+            snprintf(b, sizeof b, "%d,%d КМ", (int)(dm / 1000), (int)(dm / 100) % 10); text8(290, y, 1, C_white_1, b);
+            snprintf(b, sizeof b, "%d ГРН", o->pay); text8(352, y, 1, C_green_3, b);
+            int s_ = o->limit / 60; snprintf(b, sizeof b, "%d:%02d", s_ / 60, s_ % 60); text8(SW - 8 - tw8(b, 1), y, 1, C_white_1, b);
+        }
     } else {
-        text8(26, SH - 20, 1, C_white_1, "ОЧІКУЄМО ЗАМОВЛЕННЯ...");
+        panel(0, SH - 30, SW, 30);
+        snprintf(b, sizeof b, "%d КМ/Г", ik);
+        text8(SW - 8 - tw8(b, 1), SH - 12, 1, C_white_1, b);
+        if (ostate == O_PICK || ostate == O_LOAD) {
+            blit(ish, ICON_SZ, ICON_SZ, 6, SH - 26);
+            text8(26, SH - 26, 1, tcol(otype), TNAME[otype]);
+            snprintf(b, sizeof b, "ЗАБРАТИ: %s", SHOPS[shop_i].name);
+            text_clip(26 + tw8(TNAME[otype], 1) + 8, SH - 26, 330, C_green_3, b);
+            snprintf(b, sizeof b, "%s   %d М   ОПЛАТА %d ГРН", SHOPS[shop_i].kind, (int)(dist(px_, py_, SHOPS[shop_i].x, SHOPS[shop_i].y) * MPP), pay);
+            text8(26, SH - 13, 1, C_white_1, b);
+        } else if (ostate == O_DROP) {
+            blit(iho, ICON_SZ, ICON_SZ, 6, SH - 26);
+            text8(26, SH - 26, 1, tcol(otype), TNAME[otype]);
+            snprintf(b, sizeof b, "ДОСТАВИТИ: %s", ADDRS[addr_i].name);
+            text_clip(26 + tw8(TNAME[otype], 1) + 8, SH - 26, 300, C_yellow_3, b);
+            if (otype == T_FRAGILE) snprintf(b, sizeof b, "%d М   ОПЛАТА %d ГРН   ВАНТАЖ %d%%", (int)(dist(px_, py_, ADDRS[addr_i].x, ADDRS[addr_i].y) * MPP), pay, (int)cargo);
+            else snprintf(b, sizeof b, "%d М   ОПЛАТА %d ГРН", (int)(dist(px_, py_, ADDRS[addr_i].x, ADDRS[addr_i].y) * MPP), pay);
+            text8(26, SH - 13, 1, C_white_1, b);
+            int s_ = otimer / 60;
+            snprintf(b, sizeof b, "%d:%02d", s_ / 60, s_ % 60);
+            u8 tc = s_ < 15 ? ((tick / 8) % 2 ? C_red_3 : C_white_2) : C_white_2;
+            text8(SW - 8 - tw8(b, 2), SH - 52, 2, tc, b);
+        } else {
+            text8(26, SH - 20, 1, C_white_1, "ОЧІКУЄМО ЗАМОВЛЕННЯ...");
+        }
     }
     if (ostate == O_LOAD) {
         int w = 120, x = SW / 2 - w / 2, y = 150;
-        otext8_c(SW / 2, y - 14, 1, C_white_2, C_ink_0, "ЗАБИРАЮ ЗАМОВЛЕННЯ");
+        otext8_c(SW / 2, y - 15, 1, C_white_2, C_ink_0, "ЗАБИРАЮ ЗАМОВЛЕННЯ");
         rect(x - 2, y - 2, w + 4, 10, C_ink_0);
         rect(x, y, w * load_t / 60, 6, C_green_2);
     }
@@ -785,6 +917,10 @@ static void draw_world(void) {
         int x = skid[i][0] - ox, y = skid[i][1] - oy;
         if ((unsigned)x < SW && (unsigned)y < SH) { u8 *p = fb + y * SW + x; *p = DARK[DARK[*p]]; }
     }
+    for (int i = 0; i < NFUEL; i++) {                             /* АЗС */
+        int x = FUELS[i].x - ox, y = FUELS[i].y - oy;
+        if (x > -16 && x < SW + 16 && y > -16 && y < SH + 16) blit(assets_bin + ICON_FUEL, ICON_SZ, ICON_SZ, x - 8, y - 8);
+    }
     for (int i = 0; i < NSTO; i++) {                              /* СТО */
         int x = STOS[i].x - ox, y = STOS[i].y - oy;
         if (x > -16 && x < SW + 16 && y > -16 && y < SH + 16) blit(assets_bin + ICON_STO, ICON_SZ, ICON_SZ, x - 8, y - 8);
@@ -812,6 +948,20 @@ static void draw_world(void) {
     } else {
         shadow_ell(sx + 2, sy + 2, 11, 6);
         blit(spr, SPR_SZ, SPR_SZ, (int)sx - SPR_SZ / 2, (int)sy - SPR_SZ / 2);
+    }
+    /* арки: будинок над проїздом малюється поверх машини */
+    for (int i = 0; i < NARCH; i++) {
+        const Arch *A = &ARCHES[i];
+        int x0 = (int)px_ - 16, x1 = (int)px_ + 16, y0 = (int)py_ - 16, y1 = (int)py_ + 16;
+        if (x1 < A->x0 || x0 > A->x1 || y1 < A->y0 || y0 > A->y1) continue;
+        for (int y = y0; y <= y1; y++) for (int x = x0; x <= x1; x++) {
+            int in = 0;
+            for (int a = 0, b = A->n - 1; a < A->n; b = a++) {
+                int ya = A->p[a][1], yb = A->p[b][1];
+                if ((ya > y) != (yb > y) && x < (A->p[b][0] - A->p[a][0]) * (y - ya) / (float)(yb - ya) + A->p[a][0]) in = !in;
+            }
+            if (in) pset(x - ox, y - oy, map_px(x, y));
+        }
     }
     draw_particles(ox, oy);
     draw_lm_labels(ox, oy);
@@ -849,9 +999,9 @@ static void draw_frame(void) {
         otext8_c(SW / 2, 100, 3, C_white_2, C_ink_0, "ХМЕЛЬНИЦЬКИЙ");
         otext8_c(SW / 2, 140, 1, C_yellow_3, C_ink_0, "ЗАБЕРИ ЗАМОВЛЕННЯ - ДОВЕЗИ ВЧАСНО");
         if ((tick / 30) % 2) otext8_c(SW / 2, 196, 2, C_white_2, C_ink_0, "НАТИСНИ СТАРТ");
-        otext8_c(SW / 2, 232, 1, C_white_1, C_ink_0, "X: ГАЗ   КВАДРАТ: ГАЛЬМО / НАЗАД");
-        otext8_c(SW / 2, 246, 1, C_white_1, C_ink_0, "СТІК: КЕРМО  R: РУЧНИК  L: ОГЛЯД  SELECT: КАРТА");
-        otext8_c(SW / 2, 262, 1, C_white_0, C_ink_0, "КАРТА: (C) OPENSTREETMAP CONTRIBUTORS");
+        otext8_c(SW / 2, 220, 1, C_white_1, C_ink_0, "X: ГАЗ   КВАДРАТ: ГАЛЬМО / НАЗАД   R: РУЧНИК");
+        otext8_c(SW / 2, 234, 1, C_white_1, C_ink_0, "СТІК: КЕРМО   L: ОГЛЯД   SELECT: КАРТА   START: ПАУЗА");
+        otext8_c(SW / 2, 249, 1, C_white_0, C_ink_0, "КАРТА: (C) OPENSTREETMAP CONTRIBUTORS");
         if (money) { snprintf(b, sizeof b, "ЗАРОБЛЕНО: %d ГРН  ДОСТАВОК: %d", money, deliveries); otext8_c(SW / 2, 172, 1, C_green_3, C_ink_0, b); }
         return;
     }
@@ -884,7 +1034,7 @@ static void draw_frame(void) {
         snprintf(b, sizeof b, "ЗАРОБЛЕНО: %d ГРН", money); otext8_c(SW / 2, 100, 1, C_yellow_3, C_ink_0, b);
         snprintf(b, sizeof b, "ДОСТАВОК: %d   ЗАПІЗНЕНЬ: %d", deliveries, late); otext8_c(SW / 2, 114, 1, C_white_2, C_ink_0, b);
         snprintf(b, sizeof b, "ПАМ'ЯТКИ МІСТА: %d/%d", lm_count, NLM); otext8_c(SW / 2, 128, 1, C_yellow_3, C_ink_0, b);
-        const char *items[3] = { "ГРАТИ ДАЛІ", "ІНШЕ ЗАМОВЛЕННЯ", lane_assist ? "ПОМІЧНИК СМУГИ: УВІМК" : "ПОМІЧНИК СМУГИ: ВИМК" };
+        const char *items[3] = { "ГРАТИ ДАЛІ", "ВІДМОВИТИСЯ ВІД ЗАМОВЛЕННЯ", lane_assist ? "ПОМІЧНИК СМУГИ: УВІМК" : "ПОМІЧНИК СМУГИ: ВИМК" };
         for (int i = 0; i < 3; i++) {
             int y = 156 + i * 18;
             if (i == menu_i) { snprintf(b, sizeof b, "> %s <", items[i]); otext8_c(SW / 2, y, 1, C_yellow_3, C_ink_0, b); }
@@ -896,8 +1046,14 @@ static void draw_frame(void) {
 
 static void game_init(void) {
     px_ = SPAWN_X; py_ = SPAWN_Y; ang = 0; stop_car();
-    /* find a free spot near spawn */
-    for (int r = 0; r < 200 && hit(px_, py_, ang); r += 2) { px_ = SPAWN_X + r; }
+    /* старт у випадковому місці міста: середина випадкового відрізка звичайної дороги */
+    for (int t = 0; t < 400 && NLANE > 0; t++) {
+        const int16_t *L = LANES[rand() % NLANE];
+        if (L[4] < 3) continue;
+        float x = (L[0] + L[2]) * 0.5f, y = (L[1] + L[3]) * 0.5f, a = atan2f(L[3] - L[1], L[2] - L[0]);
+        if (!hit(x, y, a) && !on_water(x, y)) { px_ = x; py_ = y; ang = a; break; }
+    }
+    for (int r = 0; r < 200 && hit(px_, py_, ang); r += 2) { px_ += 2; }
     update_camera(1);
 }
 
@@ -918,7 +1074,7 @@ static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
         if (pressed & PSP_CTRL_START) state = S_PLAY;
         if (pressed & PSP_CTRL_CROSS) {
             if (menu_i == 0) state = S_PLAY;
-            else if (menu_i == 1) { ostate = O_NONE; owait = 20; state = S_PLAY; }
+            else if (menu_i == 1) { ostate = O_NONE; n_offers = 0; owait = 20; state = S_PLAY; }
             else { lane_assist = !lane_assist; write_save(); }
         }
         return;
@@ -933,7 +1089,7 @@ static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
         else update_camera(1);
     }
     if (freecam) update_freecam(btn, lx, ly);
-    else { update_player(btn, lx); update_camera(0); update_orders(); update_repair(); }
+    else { update_player(btn, lx); update_camera(0); update_orders(pressed); update_repair(); update_fuel(pressed); }
     update_street();
     update_landmarks();
     prefetch((int)camx, (int)camy, freecam ? 0 : cosf(ang) * vel, freecam ? 0 : sinf(ang) * vel);
@@ -1040,6 +1196,9 @@ int main(int argc, char **argv) {
         if (ostate == O_PICK || ostate == O_LOAD) { tx = SHOPS[shop_i].x; ty = SHOPS[shop_i].y; }
         else if (ostate == O_DROP) { tx = ADDRS[addr_i].x; ty = ADDRS[addr_i].y; }
         unsigned btn = 0; int lx = 128;
+        if (ostate == O_NONE && n_offers) {
+            static int shot_off; if (!shot_off++) { draw_frame(); snprintf(nm, sizeof nm, "%s/f_offers.ppm", dir); dump(nm); }
+            game_update(0, PSP_CTRL_TRIANGLE, 128, 128); fuel = 100; }
         if (ostate != O_NONE) {
             float want = atan2f(ty - py_, tx - px_), d = want - ang;
             while (d > PI_F) d -= 2 * PI_F; while (d < -PI_F) d += 2 * PI_F;
@@ -1067,6 +1226,7 @@ int main(int argc, char **argv) {
         for (int f = 0; f < 72000; f++) {
             static int st = 128, rev = 0; if (f % 40 == 0) st = rand() % 256;
             if (still >= 1 && rev == 0) rev = 70;                       /* як гравець: уперся — здай назад */
+            fuel = 100;
             game_update(rev > 0 ? PSP_CTRL_SQUARE : PSP_CTRL_CROSS, 0, rev > 0 ? 255 - st : st, 128); if (rev > 0) rev--;
             if (hit(px_, py_, ang)) inwall++;
             if (f % 60 == 0) { if (dist(px_, py_, lx0, ly0) < 3) { if (++still == 3) { stuck_ep++; printf("  stuck at %d %d ang %.2f\n", (int)px_, (int)py_, ang); } } else still = 0; lx0 = px_; ly0 = py_; }
@@ -1081,7 +1241,7 @@ int main(int argc, char **argv) {
         for (int i = 0; i < NLANE; i++) { float l = dist(LANES[i][0], LANES[i][1], LANES[i][2], LANES[i][3]); if (l > bl && LANES[i][4] >= 4) { bl = l; bi = i; } }
         const int16_t *L = LANES[bi];
         float ux = (L[2] - L[0]) / bl, uy = (L[3] - L[1]) / bl;
-        evac = 0; health = 100; ostate = O_NONE; owait = 100000;
+        evac = 0; health = 100; fuel = 100; ostate = O_NONE; n_offers = 0; owait = 100000;
         px_ = L[0] + ux * 10 - uy * L[4]; py_ = L[1] + uy * 10 + ux * L[4]; ang = atan2f(uy, ux); stop_car(); unstick(); update_camera(1);
         int kmin = 999, kmax = 0, t100 = -1;
         for (int f = 0; f < 400 && dist(px_, py_, L[0], L[1]) < bl - 60; f++) {
