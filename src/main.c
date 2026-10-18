@@ -851,12 +851,12 @@ static void draw_hud(void) {
     if (ostate == O_PICK || ostate == O_LOAD || ostate == O_DROP) {
         text8(nx + 5, ny + 6, 1, ostate == O_DROP ? C_red_1 : C_green_0, ostate == O_DROP ? "ВЕЗУ:" : "ЗАБРАТИ:");
         int lx = nx + 5 + tw8(ostate == O_DROP ? "ВЕЗУ:" : "ЗАБРАТИ:", 1) + 4;
-        if (ostate == O_DROP) text_clip(lx, ny + 6, nx + nw - 50 - lx, ink, ADDRS[addr_i].name);
+        if (ostate == O_DROP) text_clip(lx, ny + 6, nx + nw - 70 - lx, ink, ADDRS[addr_i].name);
         else text_clip(lx, ny + 6, nx + nw - 6 - lx, ink, SHOPS[shop_i].name);
         if (ostate == O_DROP && otype == T_FRAGILE) snprintf(b, sizeof b, "%s · %d ГРН · ВАНТАЖ %d%%", TNAME[otype], pay, (int)cargo);
         else if (ostate == O_DROP) snprintf(b, sizeof b, "%s · %d ГРН", TNAME[otype], pay);
         else snprintf(b, sizeof b, "%s · %d ГРН · ДО: %s", TNAME[otype], pay, ADDRS[addr_i].name);
-        text_clip(nx + 5, ny + 19, ostate == O_DROP ? nw - 54 : nw - 10, C_ink_2, b);
+        text_clip(nx + 5, ny + 19, ostate == O_DROP ? nw - 74 : nw - 10, C_ink_2, b);
         if (ostate == O_DROP) {
             int s_ = otimer / 60; snprintf(b, sizeof b, "%d:%02d", s_ / 60, s_ % 60);
             u8 tc = s_ < 15 ? ((tick / 8) % 2 ? C_red_2 : ink) : ink;
