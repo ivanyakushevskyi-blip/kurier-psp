@@ -114,7 +114,13 @@ def main(nproc=2):
     for b in D['B'] + D.get('SAT', []):
         P = np.array(b['q']) * K
         cv2.fillPoly(solid, [np.round(P).astype(np.int32)], 1)
-    solid = solid.astype(bool) | (cls == G_WATER)
+    # арки: дорога під будинком (tunnel=building_passage / covered) — проїзна
+    for w in D['w']:
+        t = w['t']
+        if t.get('highway') in CD.ROAD_W and (t.get('tunnel') == 'building_passage' or t.get('covered') == 'yes'):
+            P = np.round(np.array(w['pts']) * K).astype(np.int32)
+            cv2.polylines(solid, [P], False, 0, max(10, int(CD.ROAD_W[t['highway']] / CD.MPP)))
+    solid = solid.astype(bool)                       # вода — не стіна: у неї можна заїхати (і втопити машину)
     solid |= ~play
     # ---- палітра карти: лічильник 24-бітних кольорів
     import palgame
@@ -148,6 +154,14 @@ def main(nproc=2):
     for k, c in enumerate(pc): dim[palgame.MAP_START + k] = palgame.MAP_START + int(((pc - c * 0.72) ** 2).sum(1).argmin())
     for r0 in range(0, H, 512):
         o = ~play[r0:r0 + 512]; blk = mp_[r0:r0 + 512]; blk[o] = dim[blk[o]]
+    # які індекси палітри — вода (для «машина тоне»)
+    tot = np.zeros(256, np.int64); wat = np.zeros(256, np.int64)
+    for r0 in range(0, H, 1024):
+        a = mp_[r0:r0 + 1024]; m = (cls[r0:r0 + 1024] == G_WATER) & play[r0:r0 + 1024]
+        tot += np.bincount(a.ravel(), minlength=256); wat += np.bincount(a[m].ravel(), minlength=256)
+    widx = [int(i) for i in range(256) if wat[i] > 500 and wat[i] > 0.8 * tot[i]]
+    json.dump(widx, open('build/water_idx.json', 'w'))
+    print('water palette ids', len(widx), flush=True)
     np.save('build/map.npy', mp_); np.save('build/solid.npy', solid); np.save('build/play.npy', play)
     del mp_
     mapdata(D, cls, solid, play)
@@ -212,7 +226,31 @@ def mapdata(D, cls, solid, play):
         if spawn is None and 'Проскурівська' in nm:
             spawn = stop_at(*P[len(P) // 2], 200)
     spawn = spawn or (W // 2, H // 2)
-    json.dump(dict(shops=shops, addrs=addrs, names=names, segs=segs, spawn=list(spawn), W=W, H=H, M=CD.MPP),
+    # СТО (евакуація, ремонт)
+    sto = []
+    cs_ = [(t, gp(CG.px(*D['nodes'][nid]))) for nid, t in D['n'].items() if nid in D['nodes'] and (t.get('shop') == 'car_repair' or t.get('craft') == 'car_repair' or t.get('amenity') == 'car_repair')]
+    cs_ += [(w['t'], gp(np.array(w['pts']).mean(0))) for w in D['w'] if w['closed'] and (w['t'].get('shop') == 'car_repair' or w['t'].get('craft') == 'car_repair')]
+    for t, (x, y) in cs_:
+        s_ = stop_at(x, y, 90)
+        if s_ and all(abs(s_[0] - a['x']) + abs(s_[1] - a['y']) > 60 for a in sto):
+            sto.append(dict(x=s_[0], y=s_[1], name=MG.clean(t.get('name', 'СТО'))))
+    # осьові ліній доріг для помічника смуги: x0,y0,x1,y1, напівширина смуги (пікс), одностороння
+    lanes = []
+    for w in D['w']:
+        t = w['t']; h = t.get('highway')
+        if h not in CD.ROAD_W or h in ('track',) or t.get('area') == 'yes': continue
+        P = [gp(p) for p in w['pts']]
+        if not any(0 <= x < W and 0 <= y < H and play[int(y), int(x)] for x, y in P): continue
+        ow = 1 if t.get('oneway') in ('yes', '1') or t.get('junction') == 'roundabout' else (-1 if t.get('oneway') == '-1' else 0)
+        nl = 2 if ow == 0 else 1
+        try: nl = max(nl, int(t.get('lanes', nl)))
+        except ValueError: pass
+        lw = CD.ROAD_W[h] / CD.MPP / nl
+        for i in range(len(P) - 1):
+            a, b = (P[i], P[i + 1]) if ow >= 0 else (P[i + 1], P[i])
+            lanes.append((int(a[0]), int(a[1]), int(b[0]), int(b[1]), int(round(lw / 2)), 1 if ow else 0))
+    print('sto', len(sto), 'lane segs', len(lanes), flush=True)
+    json.dump(dict(shops=shops, addrs=addrs, names=names, segs=segs, spawn=list(spawn), W=W, H=H, M=CD.MPP, sto=sto, lanes=lanes),
               open('build/mapdata.json', 'w'), ensure_ascii=False)
     print('shops', len(shops), 'addrs', len(addrs), 'streets', len(names), 'segs', len(segs), 'spawn', spawn, flush=True)
 

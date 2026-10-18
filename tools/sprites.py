@@ -100,7 +100,7 @@ def scooter_frames():
 CAR_SZ = 28
 
 
-def draw_golf():
+def draw_golf(lit=False):
     """VW Golf V хетчбек, сріблястий, вид згори, ніс на схід. ~20 x 9 пікс (гра 0,5 м/пікс, машина збільшена)."""
     S = CAR_SZ * SS
     im = Image.new('RGBA', (S, S), (0, 0, 0, 0)); d = ImageDraw.Draw(im)
@@ -120,12 +120,15 @@ def draw_golf():
         d.polygon([P(-6.0, sg * 3.6), P(1.6, sg * 3.6), P(1.0, sg * 4.2), P(-5.6, sg * 4.2)], fill=col(gl[1]))   # бокові вікна
         rr(2.2, sg * 4.3 - 0.5, 3.2, sg * 4.3 + 0.5, R['ink'][1], 0.3)                     # дзеркала
     rr(9.2, -3.6, 9.9, -2.0, R['yellow'][3], 0.2); rr(9.2, 2.0, 9.9, 3.6, R['yellow'][3], 0.2)   # фари
-    rr(-10.0, -3.6, -9.4, -2.2, R['red'][2], 0.2); rr(-10.0, 2.2, -9.4, 3.6, R['red'][2], 0.2)   # ліхтарі
+    if lit:   # стоп-сигнали: яскраві й ширші
+        rr(-10.4, -3.9, -9.2, -1.8, R['red'][3], 0.2); rr(-10.4, 1.8, -9.2, 3.9, R['red'][3], 0.2)
+    else:
+        rr(-10.0, -3.6, -9.4, -2.2, R['red'][2], 0.2); rr(-10.0, 2.2, -9.4, 3.6, R['red'][2], 0.2)   # ліхтарі
     return im
 
 
-def car_frames():
-    base = draw_golf()
+def car_frames(lit=False):
+    base = draw_golf(lit)
     allowed = sum((R[k] for k in ('silver', 'glass', 'tire', 'ink', 'yellow', 'red')), [])
     S = CAR_SZ * SS
     return [quantise(base.rotate(-i * 360.0 / NROT, resample=Image.BICUBIC, center=(S / 2, S / 2)), allowed) for i in range(NROT)]
@@ -136,7 +139,13 @@ def icon(kind):
     S = 16 * SS
     im = Image.new('RGBA', (S, S), (0, 0, 0, 0)); d = ImageDraw.Draw(im)
     def P(x, y): return (x * SS, y * SS)
-    if kind == 'shop':
+    if kind == 'sto':
+        d.ellipse([P(1, 1), P(15, 15)], fill=col(R['ink'][0]))
+        d.ellipse([P(2, 2), P(14, 14)], fill=col(R['red'][2]))
+        d.line([P(5, 11), P(10.5, 5.5)], fill=col(R['white'][2]), width=int(2.2 * SS))
+        d.ellipse([P(9, 3), P(13, 7)], fill=col(R['white'][2])); d.ellipse([P(10.4, 4.4), P(11.6, 5.6)], fill=col(R['red'][2]))
+        d.ellipse([P(3.5, 9.5), P(6.5, 12.5)], fill=col(R['white'][2]))
+    elif kind == 'shop':
         d.ellipse([P(1, 1), P(15, 15)], fill=col(R['green'][1]))
         d.ellipse([P(2, 2), P(14, 14)], fill=col(R['green'][2]))
         d.rounded_rectangle([P(4.5, 6.5), P(11.5, 12.5)], radius=SS, fill=col(R['white'][2]))

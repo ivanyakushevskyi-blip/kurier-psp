@@ -93,6 +93,8 @@ BIG_ZLEN = len(blob) - BIG_OFF
 # ---- sprites
 fr = sprites.car_frames()
 SPR_OFF = put(b''.join(f.tobytes() for f in fr))
+SPR_LIT = put(b''.join(f.tobytes() for f in sprites.car_frames(lit=True)))
+ICON_STO = put(sprites.icon('sto').tobytes())
 ICON_SHOP = put(sprites.icon('shop').tobytes())
 ICON_HOME = put(sprites.icon('home').tobytes())
 
@@ -152,6 +154,28 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('#define MINI_OFF %d\n#define MINI_ZLEN %d\n#define MINI_W %d\n#define MINI_H %d\n#define MINI_S %d\n' % (MINI_OFF, MINI_ZLEN, mw, mh, MS))
     f.write('#define SPR_OFF %d\n#define SPR_SZ %d\n#define SPR_N %d\n#define ICON_SHOP %d\n#define ICON_HOME %d\n#define ICON_SZ 16\n' % (SPR_OFF, sprites.CAR_SZ, sprites.NROT, ICON_SHOP, ICON_HOME))
     f.write('#define SPAWN_X %d\n#define SPAWN_Y %d\n' % tuple(md['spawn']))
+    f.write('#define SPR_LIT %d\n#define ICON_STO %d\n' % (SPR_LIT, ICON_STO))
+    widx = json.load(open(os.path.join(BUILD, 'water_idx.json'))) if os.path.exists(os.path.join(BUILD, 'water_idx.json')) else []
+    f.write('static const uint8_t WATERIDX[256] = {%s};\n' % ','.join('1' if i in widx else '0' for i in range(256)))
+    sto = md.get('sto') or [dict(x=md['spawn'][0], y=md['spawn'][1], name='СТО')]
+    f.write('typedef struct { int16_t x, y; const char *name; } Sto;\n')
+    f.write('static const Sto STOS[] = {%s};\n#define NSTO %d\n' % (','.join('{%d,%d,%s}' % (a['x'], a['y'], cstr(a['name'])) for a in sto), len(sto)))
+    # смуги для помічника: відрізки осі дороги + сітка 128 пікс
+    lanes = md.get('lanes', [])
+    LG = 128; gw, gh = (W + LG - 1) // LG, (H + LG - 1) // LG
+    cells = [[] for _ in range(gw * gh)]
+    for k, (x0, y0, x1, y1, off, ow) in enumerate(lanes):
+        m = 26
+        for cy in range(max(0, (min(y0, y1) - m) // LG), min(gh, (max(y0, y1) + m) // LG + 1)):
+            for cx in range(max(0, (min(x0, x1) - m) // LG), min(gw, (max(x0, x1) + m) // LG + 1)):
+                cells[cy * gw + cx].append(k)
+    starts = [0]; idx = []
+    for c in cells: idx.extend(c); starts.append(len(idx))
+    assert len(lanes) < 65536
+    f.write('#define LANE_G %d\n#define LANE_GW %d\n#define LANE_GH %d\n#define NLANE %d\n' % (LG, gw, gh, len(lanes)))
+    f.write('static const int16_t LANES[][6] = {%s};\n' % (','.join('{%d,%d,%d,%d,%d,%d}' % tuple(l) for l in lanes) or '{0}'))
+    f.write('static const uint32_t LANE_CELL[] = {%s};\n' % ','.join(map(str, starts)))
+    f.write('static const uint16_t LANE_IDX[] = {%s};\n' % (','.join(map(str, idx)) or '0'))
     f.write('typedef struct { int16_t x, y; const char *name; const char *kind; } Poi;\n')
     f.write('static const Poi SHOPS[] = {\n%s};\n' % ',\n'.join('{%d,%d,%s,%s}' % (s['x'], s['y'], cstr(s['name']), cstr(s['kind'])) for s in md['shops']))
     f.write('#define NSHOPS (int)(sizeof(SHOPS)/sizeof(SHOPS[0]))\n')

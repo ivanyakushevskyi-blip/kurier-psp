@@ -225,9 +225,16 @@ static void otext8_c(int cx, int y, int sc, u8 col, u8 oc, const char *s) { otex
 enum { S_TITLE, S_PLAY, S_PAUSE, S_BIGMAP };
 enum { O_NONE, O_PICK, O_LOAD, O_DROP };
 static int state = S_TITLE;
-static float px_, py_, ang, vel;
+static float px_, py_, ang, vel;           /* vel — швидкість уздовж кузова (пікс/кадр, зі знаком) */
+static float vx_, vy_;                       /* вектор швидкості у світі (інерція, занос) */
+static float health = 100;                   /* стан авто, % */
+static int lane_assist;
+static int menu_i;                      /* помічник утримання смуги (налаштування) */
+static int braking, drifting;
+enum { EV_NONE, EV_WRECK, EV_DROWN };
+static int evac, evac_t, repair_t;
+static int shake;                            /* сила струсу камери */
 static float camx, camy;
-static int bump;
 static int freecam;                       /* L: огляд міста без машини */
 static float fcx, fcy;
 static int ostate = O_NONE, owait = 90, otimer, olimit, shop_i = -1, addr_i = -1, pay, load_t;
@@ -240,6 +247,7 @@ static u8 lm_found[NLM > 0 ? NLM : 1], lm_lab[NLM > 0 ? NLM : 1];
 static int lm_count;
 #define LM_REWARD 50
 
+static int bump;
 static void say(const char *t, u8 c, int life) { strncpy(toast, t, 47); toast[47] = 0; toast_t = life; toast_c = c; }
 static float dist(float ax, float ay, float bx, float by) { float dx = ax - bx, dy = ay - by; return sqrtf(dx * dx + dy * dy); }
 
@@ -250,6 +258,7 @@ static void load_save(void) {
         if (fscanf(f, "%d %d", &a, &b) == 2) { money = a; deliveries = b; }
         if (fscanf(f, "%129s", bits) == 1)
             for (int i = 0; i < NLM; i++) { int k = LMS[i].bit; if (k < (int)strlen(bits) && bits[k] == '1') { lm_found[i] = 1; lm_count++; } }
+        int la = 0; if (fscanf(f, "%d", &la) == 1) lane_assist = la != 0;
         fclose(f);
     }
 }
@@ -261,7 +270,7 @@ static void write_save(void) {
         if (n > 128) n = 128;
         memset(bits, '0', (size_t)n); bits[n] = 0;
         for (int i = 0; i < NLM; i++) if (lm_found[i] && LMS[i].bit < n) bits[LMS[i].bit] = '1';
-        fprintf(f, "%d %d %s\n", money, deliveries, n ? bits : "-"); fclose(f);
+        fprintf(f, "%d %d %s %d\n", money, deliveries, n ? bits : "-", lane_assist); fclose(f);
     }
 }
 
@@ -349,13 +358,68 @@ static int open_spot(float x, float y) {
     for (int k = 0; k < 8; k++) { float a = k * (PI_F / 4); if (hit(x + cosf(a) * 8, y + sinf(a) * 8, a)) return 0; }
     return !hit(x, y, ang);
 }
+static void stop_car(void);
 static void unwedge(void) {
     for (int r = 6; r <= 120; r += 3)
         for (int k = 0; k < 24; k++) {
             float a = k * (2 * PI_F / 24), x = px_ + cosf(a) * r, y = py_ + sinf(a) * r;
-            if (open_spot(x, y)) { px_ = x; py_ = y; vel = 0; blocked_t = 0; return; }
+            if (open_spot(x, y)) { px_ = x; py_ = y; stop_car(); blocked_t = 0; return; }
         }
 }
+
+static void stop_car(void) { vx_ = vy_ = 0; vel = 0; }
+
+/* ---- ефекти: дим з-під коліс, сліди шин, пара з-під капота, бульбашки */
+#define NPART 64
+static struct { float x, y, dx, dy; int life, max; u8 kind; } part[NPART];
+static int part_i;
+static void puff(float x, float y, float dx, float dy, int life, u8 kind) {
+    part[part_i].x = x; part[part_i].y = y; part[part_i].dx = dx; part[part_i].dy = dy;
+    part[part_i].life = part[part_i].max = life; part[part_i].kind = kind; part_i = (part_i + 1) % NPART;
+}
+#define NSKID 1200
+static int16_t skid[NSKID][2]; static int skid_i, skid_n;
+static void add_skid(float x, float y) {
+    int16_t ix = (int16_t)x, iy = (int16_t)y; int pi = (skid_i + NSKID - 1) % NSKID;
+    if (skid_n && skid[pi][0] == ix && skid[pi][1] == iy) return;
+    skid[skid_i][0] = ix; skid[skid_i][1] = iy; skid_i = (skid_i + 1) % NSKID; if (skid_n < NSKID) skid_n++;
+}
+
+/* ---- помічник смуги: найближча вісь дороги (сітка LANE_G) -> кермо до правої смуги */
+static float lane_steer(void) {
+    if (NLANE == 0) return 0;
+    int gx = (int)px_ / LANE_G, gy = (int)py_ / LANE_G;
+    if (gx < 0 || gy < 0 || gx >= LANE_GW || gy >= LANE_GH) return 0;
+    int c = gy * LANE_GW + gx;
+    float fx = cosf(ang), fy = sinf(ang), best = 24.0f * 24.0f, out = 0; int found = 0;
+    for (uint32_t k = LANE_CELL[c]; k < LANE_CELL[c + 1]; k++) {
+        const int16_t *L = LANES[LANE_IDX[k]];
+        float x0 = L[0], y0 = L[1], dx = L[2] - x0, dy = L[3] - y0, l2 = dx * dx + dy * dy;
+        if (l2 < 1) continue;
+        float t = ((px_ - x0) * dx + (py_ - y0) * dy) / l2; if (t < -0.05f || t > 1.05f) continue;
+        float ln = sqrtf(l2), ux = dx / ln, uy = dy / ln;
+        float dot = ux * fx + uy * fy;
+        if (L[5] && dot < 0.2f) continue;                    /* одностороння: лише за напрямком */
+        if (dot < 0) { ux = -ux; uy = -uy; dot = -dot; }     /* двостороння: у бік руху машини */
+        if (dot < 0.64f) continue;                           /* перехрестя / поворот — не заважаємо */
+        float nx = -uy, ny = ux;                             /* праворуч від напрямку (y донизу) */
+        float cx = x0 + dx * t, cy = y0 + dy * t;
+        float off = L[5] ? 0 : L[4];
+        float lat = (px_ - cx) * nx + (py_ - cy) * ny - off;  /* >0 — правіше центру смуги */
+        float d2 = (px_ - cx) * (px_ - cx) + (py_ - cy) * (py_ - cy);
+        if (d2 < best) {
+            best = d2; found = 1;
+            float err = atan2f(uy, ux) - ang;
+            while (err > PI_F) err -= 2 * PI_F; while (err < -PI_F) err += 2 * PI_F;
+            out = err * 2.2f - lat * 0.035f;
+        }
+    }
+    if (!found) return 0;
+    if (out > 0.7f) out = 0.7f; if (out < -0.7f) out = -0.7f;
+    return out;
+}
+
+static int on_water(float x, float y) { return WATERIDX[map_px((int)x, (int)y)]; }
 
 static void update_player(unsigned btn, int lx) {
     float steer = 0;
@@ -365,45 +429,118 @@ static void update_player(unsigned btn, int lx) {
     if (steer > 1) steer = 1; if (steer < -1) steer = -1;
     int gas = (btn & PSP_CTRL_CROSS) != 0;
     int brake = (btn & PSP_CTRL_SQUARE) != 0;
+    int hand = (btn & PSP_CTRL_RTRIGGER) != 0;
+    static int free_t;
+    if (fabsf(steer) > 0.08f) free_t = 0; else free_t++;
+    if (lane_assist && free_t > 8 && !hand && vel > 0.12f) steer = lane_steer();
+
+    float fx = cosf(ang), fy = sinf(ang), rx = -fy, ry = fx;
+    float vf = vx_ * fx + vy_ * fy, vr = vx_ * rx + vy_ * ry;
     int off = OFFROAD[map_px((int)px_, (int)py_)];
-    float vmax = off ? 0.4f : 0.75f;
-    if (gas && vel < vmax) vel += vel < 0 ? 0.04f : 0.017f;
-    if (brake) vel -= vel > 0.02f ? 0.045f : 0.012f;
-    if (!gas && !brake) { vel *= 0.984f; if (fabsf(vel) < 0.006f) vel = 0; }
-    if (vel > vmax) vel -= 0.025f;
-    if (vel < -0.34f) vel = -0.34f;
-    float grip = fabsf(vel) / 0.30f; if (grip > 1) grip = 1;
-    if ((gas || brake) && grip < 0.35f) grip = 0.35f;          /* аркадно: можна вивернути від стіни майже з місця */
-    /* поворот: лише якщо кузов не впирається в стіну після повороту */
-    float na = ang + steer * 0.062f * grip * (vel < 0 ? -1 : 1);
+    float vmax = off ? 0.50f : 0.935f;                       /* 0,935 пікс/кадр ≈ 101 км/год; на спідометрі — 100 */
+    /* двигун / гальмо / задній хід */
+    if (gas && vf >= -0.02f) { float k = vf / vmax; vf += (off ? 0.012f : 0.019f) * (1.0f - 0.75f * k * k); }
+    else if (gas) vf += 0.045f;
+    braking = 0;
+    if (brake) { if (vf > 0.03f) { vf -= 0.042f; braking = 1; } else if (vf > -0.34f) vf -= 0.011f; }
+    if (!gas && !brake) { vf *= 0.988f; if (fabsf(vf) < 0.006f) vf = 0; }
+    if (vf > vmax) vf -= (vf - vmax) * 0.12f;
+    if (vf < -0.34f) vf = -0.34f;
+    /* зчеплення: гасить боковий рух; ручник — занос */
+    float grip = off ? 0.10f : 0.24f;
+    if (hand) { grip = 0.035f; vf *= 0.986f; braking = 1; }
+    vr *= 1.0f - grip;
+    /* поворот: залежить від швидкості; на великій — плавніше */
+    float sp = fabsf(vf);
+    float turn = sp / 0.22f; if (turn > 1) turn = 1;
+    if ((gas || brake) && turn < 0.35f) turn = 0.35f;           /* аркадно: вивернути від стіни майже з місця */
+    turn *= 1.0f - 0.30f * (sp / 0.935f);
+    if (hand) turn *= 1.45f;
+    float na = ang + steer * 0.058f * turn * (vf < 0 ? -1 : 1);
     if (na > PI_F) na -= 2 * PI_F; if (na < -PI_F) na += 2 * PI_F;
     if (!hit(px_, py_, na)) ang = na;
+    /* вектор швидкості у світі: інерція — повертається за кузовом через зчеплення */
+    vx_ = fx * vf + rx * vr; vy_ = fy * vf + ry * vr;
+    drifting = fabsf(vr) > 0.16f && sp > 0.3f;
     /* рух дрібними кроками з ковзанням уздовж стін */
     float ox_ = px_, oy_ = py_;
-    int steps = 1 + (int)(fabsf(vel) / 0.5f);
-    float dx = cosf(ang) * vel / steps, dy = sinf(ang) * vel / steps;
+    float spd = sqrtf(vx_ * vx_ + vy_ * vy_);
+    int steps = 1 + (int)(spd / 0.4f);
+    float dx = vx_ / steps, dy = vy_ / steps;
     for (int i = 0; i < steps; i++) {
         if (!hit(px_ + dx, py_ + dy, ang)) { px_ += dx; py_ += dy; continue; }
-        /* ковзання: проєкція руху на вісь X або Y */
-        if (fabsf(dx) > 0.01f && !hit(px_ + dx, py_, ang)) { px_ += dx; vel *= 0.97f; continue; }
-        if (fabsf(dy) > 0.01f && !hit(px_, py_ + dy, ang)) { py_ += dy; vel *= 0.97f; continue; }
-        if (fabsf(vel) > 0.45f) bump = 8;
-        vel *= -0.2f;
+        if (fabsf(dx) > 0.01f && !hit(px_ + dx, py_, ang)) { px_ += dx; vx_ *= 0.97f; vy_ *= 0.6f; continue; }
+        if (fabsf(dy) > 0.01f && !hit(px_, py_ + dy, ang)) { py_ += dy; vy_ *= 0.97f; vx_ *= 0.6f; continue; }
+        /* удар */
+        if (spd > 0.28f) {
+            float dmg = (spd - 0.28f) * 42.0f;
+            health -= dmg; bump = 10; shake = (int)(2 + spd * 6);
+            for (int k = 0; k < 4; k++) puff(px_ + fx * 9, py_ + fy * 9, (rand() % 7 - 3) * 0.08f, (rand() % 7 - 3) * 0.08f, 22, 1);
+        }
+        vx_ *= -0.22f; vy_ *= -0.22f;
         break;
     }
+    vel = vx_ * fx + vy_ * fy;
+    /* дим і сліди при заносі / пробуксовці */
+    int burn = gas && sp < 0.35f && vf > 0.02f && !off && (tick & 1);
+    if ((drifting || (hand && sp > 0.35f) || burn) && !off) {
+        for (int sgn = -1; sgn <= 1; sgn += 2) {
+            float wx = px_ - fx * 7 + rx * 4 * sgn, wy = py_ - fy * 7 + ry * 4 * sgn;
+            add_skid(wx, wy);
+            if ((tick + sgn) % 3 == 0) puff(wx, wy, -vx_ * 0.2f + (rand() % 5 - 2) * 0.05f, -vy_ * 0.2f - 0.05f, 34, 0);
+        }
+    }
+    if (health < 35 && tick % 9 == 0) puff(px_ + fx * 8, py_ + fy * 8, 0.02f, -0.18f, 40, 2);   /* пара з-під капота */
     float moved = fabsf(px_ - ox_) + fabsf(py_ - oy_);
     if ((gas || brake) && moved < 0.02f) { if (++blocked_t > 90) unwedge(); } else blocked_t = 0;
-    /* крутиться в «кишені» 4 с з газом і не може виїхати — теж переставити */
     static int win_t; static float wx, wy;
     if (gas || brake) {
         if (++win_t >= 240) { if (fabsf(px_ - wx) + fabsf(py_ - wy) < 6) unwedge(); win_t = 0; wx = px_; wy = py_; }
     } else { win_t = 0; wx = px_; wy = py_; }
     unstick();
+    /* вода: машина тоне; розбита: евакуація */
+    if (on_water(px_, py_) && on_water(px_ + fx * 6, py_ + fy * 6)) { evac = EV_DROWN; evac_t = 0; say("МАШИНА ТОНЕ!", C_red_3, 120); }
+    else if (health <= 0) { health = 0; evac = EV_WRECK; evac_t = 0; say("АВТО РОЗБИТЕ!", C_red_3, 120); }
+}
+
+/* ---- евакуація на найближче СТО і ремонт */
+static int nearest_sto(float x, float y) {
+    int b = 0; for (int i = 1; i < NSTO; i++) if (dist(x, y, STOS[i].x, STOS[i].y) < dist(x, y, STOS[b].x, STOS[b].y)) b = i;
+    return b;
+}
+static void update_evac(void) {
+    evac_t++; vel = 0;
+    if (evac == EV_DROWN) { vx_ *= 0.9f; vy_ *= 0.9f; px_ += vx_; py_ += vy_; if (tick % 4 == 0) puff(px_ + (rand() % 13 - 6), py_ + (rand() % 9 - 4), 0, -0.15f, 26, 3); }
+    else { vx_ *= 0.8f; vy_ *= 0.8f; if (tick % 5 == 0) puff(px_ + (rand() % 9 - 4), py_, 0.02f, -0.2f, 44, 2); }
+    if (evac_t < 110) return;
+    int k = nearest_sto(px_, py_);
+    int cost = evac == EV_DROWN ? 700 : 450;
+    money -= cost;
+    if (ostate != O_NONE) { ostate = O_NONE; owait = 200; }
+    px_ = STOS[k].x; py_ = STOS[k].y; stop_car(); health = 100; evac = EV_NONE;
+    for (int r = 0; r < 200 && hit(px_, py_, ang); r += 2) px_ = STOS[k].x + r;
+    unstick();
+    char b[48]; snprintf(b, sizeof b, "ЕВАКУАЦІЯ НА СТО: -%d ГРН", cost);
+    say(b, C_red_3, 200);
+    write_save();
+}
+static void update_repair(void) {
+    if (health >= 99.5f) { repair_t = 0; return; }
+    int k = nearest_sto(px_, py_);
+    if (dist(px_, py_, STOS[k].x, STOS[k].y) < 26 && fabsf(vel) < 0.3f) {
+        if (++repair_t >= 70) {
+            int cost = (int)((100 - health) * 3 + 0.5f);
+            money -= cost; health = 100; repair_t = 0;
+            char b[48]; snprintf(b, sizeof b, "РЕМОНТ: -%d ГРН", cost); say(b, C_yellow_3, 150); write_save();
+        }
+    } else repair_t = 0;
 }
 
 static void update_camera(int snap) {
-    float tx = px_ + cosf(ang) * vel * 60 - SW / 2, ty = py_ + sinf(ang) * vel * 50 - SH / 2 + 12;
-    if (snap) { camx = tx; camy = ty; } else { camx += (tx - camx) * 0.09f; camy += (ty - camy) * 0.09f; }
+    /* динамічна: дивиться вперед за вектором швидкості, на швидкості доганяє швидше */
+    float spd = sqrtf(vx_ * vx_ + vy_ * vy_), k = spd / 0.935f; if (k > 1) k = 1;
+    float tx = px_ + vx_ * (40 + 45 * k) - SW / 2, ty = py_ + vy_ * (34 + 36 * k) - SH / 2 + 12;
+    if (snap) { camx = tx; camy = ty; } else { float a = 0.06f + 0.05f * k; camx += (tx - camx) * a; camy += (ty - camy) * a; }
     if (camx < 0) camx = 0; if (camy < 0) camy = 0;
     if (camx > MAP_W - SW) camx = MAP_W - SW; if (camy > MAP_H - SH) camy = MAP_H - SH;
 }
@@ -479,6 +616,7 @@ static void draw_lm_labels(int ox, int oy) {
         int full = tw8(nm, 1) + 12;
         float k = t >= 10 ? 1.0f : t / 10.0f;
         int pw = (int)(full * k), ph = 14;
+        if (pw < 8) continue;
         int py0 = sy - h + bob;
         if (py0 < 40) py0 = 40; if (py0 > SH - 50) py0 = SH - 50;
         /* праворуч від позначки; якщо не влазить або наїжджає на мінікарту/гроші — ліворуч; інакше нижче мінікарти */
@@ -564,13 +702,26 @@ static void draw_hud(void) {
     text8(13, 11, 1, C_yellow_3, b);
     snprintf(b, sizeof b, "ДОСТАВОК: %d", deliveries);
     text8(13, 23, 1, C_white_1, b);
+    /* стан авто */
+    {
+        int hp = (int)(health + 0.5f); u8 hc = hp > 60 ? C_green_3 : (hp > 30 ? C_yellow_3 : ((tick / 10) % 2 ? C_red_3 : C_white_2));
+        panel(6, 38, 124, 14);
+        text8(11, 41, 1, C_white_1, "АВТО");
+        rect(48, 42, 76, 6, C_ink_0); rect(49, 43, 74 * hp / 100, 4, hc);
+    }
+    if (repair_t > 0) {
+        int w = 120, x = SW / 2 - w / 2, y = 150;
+        otext8_c(SW / 2, y - 14, 1, C_white_2, C_ink_0, "РЕМОНТ НА СТО");
+        rect(x - 2, y - 2, w + 4, 10, C_ink_0); rect(x, y, w * repair_t / 70, 6, C_yellow_3);
+    }
     /* street name */
     if (street_i >= 0) otext8_c(244, 10, 1, C_white_2, C_ink_0, STREETS[street_i]);
     /* order panel */
     panel(0, SH - 30, SW, 30);
     const u8 *ish = assets_bin + ICON_SHOP, *iho = assets_bin + ICON_HOME;
     float kmh = fabsf(vel) * MPP * 60 * 3.6f;
-    snprintf(b, sizeof b, "%d КМ/Г", (int)(kmh + 0.5f));
+    int ik = (int)(kmh + 0.5f); if (ik > 100) ik = 100;                /* фізичний максимум ~101: показуємо рівно 100 */
+    snprintf(b, sizeof b, "%d КМ/Г", ik);
     text8(SW - 8 - tw8(b, 1), SH - 12, 1, C_white_1, b);
     if (ostate == O_PICK || ostate == O_LOAD) {
         blit(ish, ICON_SZ, ICON_SZ, 6, SH - 26);
@@ -603,11 +754,41 @@ static void draw_hud(void) {
     }
 }
 
+static void update_particles(void) {
+    for (int i = 0; i < NPART; i++) if (part[i].life > 0) { part[i].x += part[i].dx; part[i].y += part[i].dy; part[i].dx *= 0.95f; part[i].dy *= 0.95f; part[i].life--; }
+}
+static void draw_particles(int ox, int oy) {
+    for (int i = 0; i < NPART; i++) {
+        if (part[i].life <= 0) continue;
+        float t = 1.0f - (float)part[i].life / part[i].max;         /* 0 -> 1 */
+        float x = part[i].x - ox, y = part[i].y - oy;
+        if (part[i].kind == 3) { ring(x, y - t * 6, 1.5f + t * 2, C_white_2, 1); continue; }      /* бульбашки */
+        float r = part[i].kind == 1 ? 1.5f + t * 2 : 2.0f + t * 4.5f;
+        u8 c = part[i].kind == 2 ? (t < 0.5f ? C_ink_2 : C_white_0) : (t < 0.4f ? C_white_2 : (t < 0.75f ? C_white_1 : C_white_0));
+        if (part[i].kind == 1) c = C_yellow_3;
+        /* «прозорість» — розріджена шахівниця в кінці життя */
+        int sparse = t > 0.7f;
+        for (int yy = (int)(y - r); yy <= (int)(y + r); yy++) for (int xx = (int)(x - r); xx <= (int)(x + r); xx++) {
+            if ((xx - x) * (xx - x) + (yy - y) * (yy - y) > r * r) continue;
+            if (sparse && ((xx + yy + tick) & 1)) continue;
+            pset(xx, yy, c);
+        }
+    }
+}
+
 static void draw_world(void) {
     int ox = (int)camx, oy = (int)camy;
-    if (bump > 0) { ox += (rand() % 5) - 2; oy += (rand() % 5) - 2; if (ox < 0) ox = 0; if (oy < 0) oy = 0;
+    if (bump > 0) { int a = shake * bump / 10 + 1; ox += (rand() % (2 * a + 1)) - a; oy += (rand() % (2 * a + 1)) - a; if (ox < 0) ox = 0; if (oy < 0) oy = 0;
         if (ox > MAP_W - SW) ox = MAP_W - SW; if (oy > MAP_H - SH) oy = MAP_H - SH; }
     draw_map(ox, oy);
+    for (int i = 0; i < skid_n; i++) {                           /* сліди шин */
+        int x = skid[i][0] - ox, y = skid[i][1] - oy;
+        if ((unsigned)x < SW && (unsigned)y < SH) { u8 *p = fb + y * SW + x; *p = DARK[DARK[*p]]; }
+    }
+    for (int i = 0; i < NSTO; i++) {                              /* СТО */
+        int x = STOS[i].x - ox, y = STOS[i].y - oy;
+        if (x > -16 && x < SW + 16 && y > -16 && y < SH + 16) blit(assets_bin + ICON_STO, ICON_SZ, ICON_SZ, x - 8, y - 8);
+    }
     draw_landmarks(ox, oy);
     if (freecam) {
         draw_lm_labels(ox, oy);
@@ -617,10 +798,22 @@ static void draw_world(void) {
         return;
     }
     float sx = px_ - ox, sy = py_ - oy;
-    shadow_ell(sx + 2, sy + 2, 11, 6);
     int fi = (int)floorf(ang / (2 * PI_F) * SPR_N + 0.5f);
     fi = ((fi % SPR_N) + SPR_N) % SPR_N;
-    blit(assets_bin + SPR_OFF + fi * SPR_SZ * SPR_SZ, SPR_SZ, SPR_SZ, (int)sx - SPR_SZ / 2, (int)sy - SPR_SZ / 2);
+    const u8 *spr = assets_bin + ((braking || evac) ? SPR_LIT : SPR_OFF) + fi * SPR_SZ * SPR_SZ;
+    if (evac == EV_DROWN) {
+        /* тоне: машина темнішає й «осідає» — видно все менше рядків */
+        int keep = SPR_SZ - evac_t * SPR_SZ / 110; if (keep < 0) keep = 0;
+        u8 tmp[SPR_SZ * SPR_SZ];
+        for (int i = 0; i < SPR_SZ * SPR_SZ; i++) { u8 v = spr[i]; if (v) { v = DARK[v]; if (evac_t > 40) v = DARK[v]; } tmp[i] = v; }
+        int y0 = (SPR_SZ - keep) / 2;
+        blit(tmp + y0 * SPR_SZ, SPR_SZ, keep, (int)sx - SPR_SZ / 2, (int)sy - SPR_SZ / 2 + y0);
+        ring(sx, sy, 8 + (evac_t % 30) / 3.0f, C_white_1, 1);
+    } else {
+        shadow_ell(sx + 2, sy + 2, 11, 6);
+        blit(spr, SPR_SZ, SPR_SZ, (int)sx - SPR_SZ / 2, (int)sy - SPR_SZ / 2);
+    }
+    draw_particles(ox, oy);
     draw_lm_labels(ox, oy);
 }
 
@@ -657,7 +850,7 @@ static void draw_frame(void) {
         otext8_c(SW / 2, 140, 1, C_yellow_3, C_ink_0, "ЗАБЕРИ ЗАМОВЛЕННЯ - ДОВЕЗИ ВЧАСНО");
         if ((tick / 30) % 2) otext8_c(SW / 2, 196, 2, C_white_2, C_ink_0, "НАТИСНИ СТАРТ");
         otext8_c(SW / 2, 232, 1, C_white_1, C_ink_0, "X: ГАЗ   КВАДРАТ: ГАЛЬМО / НАЗАД");
-        otext8_c(SW / 2, 246, 1, C_white_1, C_ink_0, "СТІК: КЕРМО  L: ОГЛЯД  SELECT: КАРТА");
+        otext8_c(SW / 2, 246, 1, C_white_1, C_ink_0, "СТІК: КЕРМО  R: РУЧНИК  L: ОГЛЯД  SELECT: КАРТА");
         otext8_c(SW / 2, 262, 1, C_white_0, C_ink_0, "КАРТА: (C) OPENSTREETMAP CONTRIBUTORS");
         if (money) { snprintf(b, sizeof b, "ЗАРОБЛЕНО: %d ГРН  ДОСТАВОК: %d", money, deliveries); otext8_c(SW / 2, 172, 1, C_green_3, C_ink_0, b); }
         return;
@@ -687,17 +880,22 @@ static void draw_frame(void) {
     draw_hud();
     if (state == S_PAUSE) {
         darken_rect(0, 0, SW, SH - 30, 2);
-        otext8_c(SW / 2, 70, 4, C_white_2, C_ink_0, "ПАУЗА");
-        snprintf(b, sizeof b, "ЗАРОБЛЕНО: %d ГРН", money); otext8_c(SW / 2, 120, 1, C_yellow_3, C_ink_0, b);
-        snprintf(b, sizeof b, "ДОСТАВОК: %d   ЗАПІЗНЕНЬ: %d", deliveries, late); otext8_c(SW / 2, 136, 1, C_white_2, C_ink_0, b);
-        snprintf(b, sizeof b, "ПАМ'ЯТКИ МІСТА: %d/%d", lm_count, NLM); otext8_c(SW / 2, 152, 1, C_yellow_3, C_ink_0, b);
-        otext8_c(SW / 2, 176, 1, C_white_1, C_ink_0, "СТАРТ: ГРАТИ ДАЛІ");
-        otext8_c(SW / 2, 190, 1, C_white_1, C_ink_0, "SELECT: ІНШЕ ЗАМОВЛЕННЯ");
+        otext8_c(SW / 2, 56, 4, C_white_2, C_ink_0, "ПАУЗА");
+        snprintf(b, sizeof b, "ЗАРОБЛЕНО: %d ГРН", money); otext8_c(SW / 2, 100, 1, C_yellow_3, C_ink_0, b);
+        snprintf(b, sizeof b, "ДОСТАВОК: %d   ЗАПІЗНЕНЬ: %d", deliveries, late); otext8_c(SW / 2, 114, 1, C_white_2, C_ink_0, b);
+        snprintf(b, sizeof b, "ПАМ'ЯТКИ МІСТА: %d/%d", lm_count, NLM); otext8_c(SW / 2, 128, 1, C_yellow_3, C_ink_0, b);
+        const char *items[3] = { "ГРАТИ ДАЛІ", "ІНШЕ ЗАМОВЛЕННЯ", lane_assist ? "ПОМІЧНИК СМУГИ: УВІМК" : "ПОМІЧНИК СМУГИ: ВИМК" };
+        for (int i = 0; i < 3; i++) {
+            int y = 156 + i * 18;
+            if (i == menu_i) { snprintf(b, sizeof b, "> %s <", items[i]); otext8_c(SW / 2, y, 1, C_yellow_3, C_ink_0, b); }
+            else otext8_c(SW / 2, y, 1, C_white_1, C_ink_0, items[i]);
+        }
+        otext8_c(SW / 2, 214, 1, C_white_0, C_ink_0, "ВГОРУ/ВНИЗ, X: ВИБРАТИ   R: РУЧНИК");
     }
 }
 
 static void game_init(void) {
-    px_ = SPAWN_X; py_ = SPAWN_Y; ang = 0; vel = 0;
+    px_ = SPAWN_X; py_ = SPAWN_Y; ang = 0; stop_car();
     /* find a free spot near spawn */
     for (int r = 0; r < 200 && hit(px_, py_, ang); r += 2) { px_ = SPAWN_X + r; }
     update_camera(1);
@@ -715,19 +913,27 @@ static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
     }
     if (state == S_BIGMAP) { if (pressed & (PSP_CTRL_SELECT | PSP_CTRL_START | PSP_CTRL_CIRCLE)) state = S_PLAY; return; }
     if (state == S_PAUSE) {
+        if (pressed & PSP_CTRL_UP) menu_i = (menu_i + 2) % 3;
+        if (pressed & PSP_CTRL_DOWN) menu_i = (menu_i + 1) % 3;
         if (pressed & PSP_CTRL_START) state = S_PLAY;
-        if (pressed & PSP_CTRL_SELECT) { ostate = O_NONE; owait = 20; state = S_PLAY; }
+        if (pressed & PSP_CTRL_CROSS) {
+            if (menu_i == 0) state = S_PLAY;
+            else if (menu_i == 1) { ostate = O_NONE; owait = 20; state = S_PLAY; }
+            else { lane_assist = !lane_assist; write_save(); }
+        }
         return;
     }
-    if (pressed & PSP_CTRL_START) { state = S_PAUSE; return; }
+    if (pressed & PSP_CTRL_START) { state = S_PAUSE; menu_i = 0; return; }
     if (pressed & PSP_CTRL_SELECT) { state = S_BIGMAP; return; }
+    update_particles();
+    if (evac) { update_evac(); update_camera(0); update_street(); prefetch((int)camx, (int)camy, 0, 0); return; }
     if (pressed & PSP_CTRL_LTRIGGER) {
         freecam = !freecam;
-        if (freecam) { fcx = camx + SW / 2; fcy = camy + SH / 2; vel = 0; }
+        if (freecam) { fcx = camx + SW / 2; fcy = camy + SH / 2; stop_car(); }
         else update_camera(1);
     }
     if (freecam) update_freecam(btn, lx, ly);
-    else { update_player(btn, lx); update_camera(0); update_orders(); }
+    else { update_player(btn, lx); update_camera(0); update_orders(); update_repair(); }
     update_street();
     update_landmarks();
     prefetch((int)camx, (int)camy, freecam ? 0 : cosf(ang) * vel, freecam ? 0 : sinf(ang) * vel);
@@ -847,7 +1053,7 @@ int main(int argc, char **argv) {
             float nx = px_ + (tx - px_) * k, ny = py_ + (ty - py_) * k;
             if (!hit(nx, ny, ang)) { px_ = nx; py_ = ny; }
             else { px_ = tx; py_ = ty; }
-            vel = 0; stuck = 0;
+            stop_car(); stuck = 0;
         }
         game_update(btn, 0, lx, 128);
         draw_frame();
@@ -866,12 +1072,54 @@ int main(int argc, char **argv) {
             if (f % 60 == 0) { if (dist(px_, py_, lx0, ly0) < 3) { if (++still == 3) { stuck_ep++; printf("  stuck at %d %d ang %.2f\n", (int)px_, (int)py_, ang); } } else still = 0; lx0 = px_; ly0 = py_; }
         }
         draw_frame(); snprintf(nm, sizeof nm, "%s/f_stress.ppm", dir); dump(nm);
+        printf("stress: money after drunk driving %d (evacuations included)\n", money);
         printf("stress: застрягань (3 с без руху, з газом і задньою) = %d, кадрів у стіні = %d\n", stuck_ep, inwall);
+    }
+    /* ---- етап 2: швидкість, занос, помічник смуги, вода, арка */
+    {
+        int bi = 0; float bl = 0;                                 /* найдовший прямий відрізок дороги */
+        for (int i = 0; i < NLANE; i++) { float l = dist(LANES[i][0], LANES[i][1], LANES[i][2], LANES[i][3]); if (l > bl && LANES[i][4] >= 4) { bl = l; bi = i; } }
+        const int16_t *L = LANES[bi];
+        float ux = (L[2] - L[0]) / bl, uy = (L[3] - L[1]) / bl;
+        evac = 0; health = 100; ostate = O_NONE; owait = 100000;
+        px_ = L[0] + ux * 10 - uy * L[4]; py_ = L[1] + uy * 10 + ux * L[4]; ang = atan2f(uy, ux); stop_car(); unstick(); update_camera(1);
+        int kmin = 999, kmax = 0, t100 = -1;
+        for (int f = 0; f < 400 && dist(px_, py_, L[0], L[1]) < bl - 60; f++) {
+            game_update(PSP_CTRL_CROSS, 0, 128, 128);
+            int k = (int)(fabsf(vel) * MPP * 60 * 3.6f + 0.5f); if (k > 100) k = 100;
+            if (k >= 100 && t100 < 0) t100 = f;
+            if (t100 >= 0) { if (k < kmin) kmin = k; if (k > kmax) kmax = k;}
+        }
+        printf("speed: segment %.0f m, 100 km/h after %d frames, shown range after that %d..%d\n", bl * MPP, t100, kmin, kmax);
+        /* занос на ручнику */
+        for (int f = 0; f < 24; f++) { game_update(PSP_CTRL_CROSS | PSP_CTRL_RTRIGGER, 0, 255, 128); draw_frame(); }
+        snprintf(nm, sizeof nm, "%s/f_drift.ppm", dir); dump(nm);
+        printf("drift: slip %d, skids %d\n", drifting, skid_n);
+        /* помічник смуги: відхилити на 0,35 рад, керма немає */
+        lane_assist = 1; px_ = L[0] + ux * 30 - uy * L[4]; py_ = L[1] + uy * 30 + ux * L[4]; ang = atan2f(uy, ux) + 0.35f; stop_car(); vx_ = cosf(ang) * 0.5f; vy_ = sinf(ang) * 0.5f;
+        float e0 = 0.35f;
+        for (int f = 0; f < 150; f++) game_update(PSP_CTRL_CROSS, 0, 128, 128);
+        float e1 = ang - atan2f(uy, ux); while (e1 > PI_F) e1 -= 2 * PI_F; while (e1 < -PI_F) e1 += 2 * PI_F;
+        float lat = (px_ - L[0]) * (-uy) + (py_ - L[1]) * ux;
+        printf("lane assist: heading error %.2f -> %.2f rad, lateral %.1f px (lane centre %d), health %.0f\n", e0, e1, lat, L[4], health);
+        lane_assist = 0;
+    }
+    {   /* вода: знайти водний піксель біля дороги й заїхати */
+        int found = 0;
+        for (int y = 200; y < MAP_H - 200 && !found; y += 16) for (int x = 200; x < MAP_W - 200 && !found; x += 16)
+            if (WATERIDX[map_px(x, y)] && !is_solid(x - 40, y) && !WATERIDX[map_px(x - 40, y)] && WATERIDX[map_px(x + 12, y)] && WATERIDX[map_px(x + 30, y)]) {
+                px_ = x - 40; py_ = y; ang = 0; stop_car(); unstick(); found = 1;
+            }
+        int m0 = money, drowned = 0;
+        for (int f = 0; f < 300; f++) { game_update(evac ? 0 : PSP_CTRL_CROSS, 0, 128, 128); if (evac == EV_DROWN) { drowned = 1; if (evac_t == 60) { draw_frame(); snprintf(nm, sizeof nm, "%s/f_drown.ppm", dir); dump(nm); } } }
+        printf("water: found %d, drowned %d, money %d -> %d\n", found, drowned, m0, money);
+        int a = 0; for (int k = -3; k <= 3; k++) a += is_solid(6974 + k * 2, 7638);
+        printf("arch on Podilska solid samples: %d/7\n", a);
     }
     /* пам'ятка: підвезти до першої (каланча), дочекатися таблички */
     if (NLM > 0) {
         int c0 = lm_count;
-        px_ = LMS[0].x + 20; py_ = LMS[0].y + 40; vel = 0; unstick(); update_camera(1);
+        px_ = LMS[0].x + 20; py_ = LMS[0].y + 40; stop_car(); unstick(); update_camera(1);
         for (int f = 0; f < 50; f++) { game_update(0, 0, 128, 128); }
         draw_frame(); snprintf(nm, sizeof nm, "%s/f_landmark.ppm", dir); dump(nm);
         printf("landmarks: %d total, found %d -> %d\n", NLM, c0, lm_count);
