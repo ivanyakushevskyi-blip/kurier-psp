@@ -153,5 +153,61 @@ def pilot(out_dir):
     cv2.imwrite(os.path.join(out_dir, 'kal_sprite_x6.png'), big)
 
 
+def demo_gif(out_path):
+    """Макет поведінки в грі: вежа-позначка злегка «дихає», коли машина поруч — виїжджає табличка з назвою."""
+    import citydraw as CD, citygen as CG, sprites
+    from palgame import PAL
+    from PIL import Image, ImageDraw, ImageFont
+    x, y = CG.px(KAL['lat'], KAL['lon']); gx, gy = int(round(x * CD.K)), int(round(y * CD.K))
+    bx, by = gx, gy + 4
+    W, H = 480, 272
+    x0, y0 = gx - W // 2 - 40, gy - 150
+    D = CD.data()
+    for b_ in D['B']:
+        if b_['t'].get('addr:street') == 'Подільська вулиця' and b_['t'].get('addr:housenumber') == '39':
+            b_['t'] = dict(b_['t'], building='house'); b_['roof'] = list(RED[1])
+    base, cls = CD.render(x0, y0, W, H)
+    # центр смуги Подільської під вежею
+    col = cls[:, bx - x0 - 60]
+    rows = [r for r in range(by - y0, H) if col[r] == 5]
+    ry = (rows[0] + rows[min(len(rows) - 1, 14)]) // 2 + 4
+    pal = np.array(PAL + [(0, 0, 0)] * (256 - len(PAL)), np.uint8)
+    car = sprites.car_frames()[0]
+    font = ImageFont.truetype(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'PressStart2P.ttf'), 8)
+    name = KAL['name'].upper()
+    tw = int(font.getlength(name))
+    f = tower_facade()
+    frames = []
+    shown = 0.0
+    N = 90
+    for i in range(N):
+        img = base.copy()
+        cx = int(20 + (W - 40) * i / (N - 1)); cy = ry
+        d = abs(cx - (bx - x0))
+        shown = min(1.0, shown + 0.12) if d < 150 else max(0.0, shown - 0.12)
+        bob = int(round(math.sin(i * 0.35) * 1.0))
+        # тінь-«пляма» під позначкою
+        cv2.ellipse(img, (bx - x0 + 1, by - y0 + 1), (9, 3), 0, 0, 360, tuple(int(v * 0.6) for v in (120, 120, 120)), -1)
+        blit_rgba(img, f, bx - x0 - 10, by - y0 - f.shape[0] + 2 + bob)
+        for yy in range(car.shape[0]):
+            for xx in range(car.shape[1]):
+                if car[yy, xx]: img[cy - 14 + yy, cx - 14 + xx] = pal[car[yy, xx]]
+        if shown > 0:
+            pw = int((tw + 12) * min(1.0, shown * 1.3))
+            px0, py0 = bx - x0 + 14, by - y0 - 60 + bob
+            pim = Image.fromarray(img); dr = ImageDraw.Draw(pim)
+            dr.rectangle([px0, py0, px0 + pw, py0 + 14], fill=OUT)
+            dr.rectangle([px0 + 1, py0 + 1, px0 + pw - 1, py0 + 13], fill=(44, 42, 62))
+            dr.rectangle([px0 + 1, py0 + 1, px0 + pw - 1, py0 + 1], fill=(246, 196, 40))
+            dr.line([(px0 - 3, py0 + 7), (px0, py0 + 7)], fill=OUT, width=1)
+            nch = int(len(name) * max(0.0, min(1.0, (shown - 0.25) / 0.75)))
+            dr.text((px0 + 6, py0 + 4), name[:nch], font=font, fill=(246, 230, 170))
+            img = np.array(pim)
+        frames.append(Image.fromarray(img).resize((W * 2, H * 2), Image.NEAREST))
+    frames[0].save(out_path, save_all=True, append_images=frames[1:], duration=50, loop=0)
+
+
 if __name__ == '__main__':
     if sys.argv[1] == 'pilot': pilot(sys.argv[2])
+    if sys.argv[1] == 'gif': demo_gif(sys.argv[2])
+
