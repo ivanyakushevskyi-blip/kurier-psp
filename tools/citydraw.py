@@ -85,17 +85,29 @@ SIDE_W = {'primary': 3.0, 'secondary': 3.0, 'tertiary': 2.6, 'residential': 2.0,
           'primary_link': 2.0, 'secondary_link': 2.0, 'tertiary_link': 2.0}
 
 
-def dither(H, W, seed=1):
-    rs = np.random.RandomState(seed)
-    n = cv2.GaussianBlur(rs.rand(H // 4 + 2, W // 4 + 2).astype(np.float32), (0, 0), 1.0)
-    n = cv2.resize(n, (W, H), interpolation=cv2.INTER_NEAREST)[:H, :W]
-    n = (n - n.min()) / (n.max() - n.min() + 1e-6)
-    fine = rs.rand(H, W).astype(np.float32)
+def _hash(ix, iy, seed):
+    h = (ix.astype(np.int64) * 73856093) ^ (iy.astype(np.int64) * 19349663) ^ (seed * 83492791)
+    h = (h ^ (h >> 13)) * 1274126177
+    return ((h ^ (h >> 16)) & 0xFFFF).astype(np.float32) / 65535.0
+
+
+def dither(H, W, seed=1, x0=0, y0=0):
+    """Шум у світових координатах: однаковий незалежно від того, яким вікном малюється карта (без швів)."""
+    gx = np.arange(x0, x0 + W)[None, :]; gy = np.arange(y0, y0 + H)[:, None]
+    cx = np.floor_divide(gx, 4); cy = np.floor_divide(gy, 4)
+    acc = np.zeros((H, W), np.float32)
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            acc += _hash(cx + dx, cy + dy, seed) * (2.0 if dx == 0 and dy == 0 else 1.0)
+    n = acc / 10.0
+    n = np.clip((n - 0.3) / 0.4, 0, 1)
+    fine = _hash(gx + 0 * gy, gy + 0 * gx, seed + 1)
     return n, fine
 
 
 # ---------------------------------------------------------------- рендер вікна
-def render(x0, y0, W, H):
+def render(x0, y0, W, H, tree_out=None):
+    """tree_out: якщо список — дерева не малюються, а додаються туди у світових координатах (малює citybuild один раз)."""
     D = data()
     to = lambda p: (p[0] * K - x0, p[1] * K - y0)
 
@@ -135,11 +147,20 @@ def render(x0, y0, W, H):
     for _, c, pts in areas: dr.polygon(pts, fill=c)
     # знімок: двори (трава/плитка/ґрунт) там, де OSM нічого не каже
     sat = np.load('build/sat_map.npy', mmap_mode='r')
-    sx0, sy0 = int(x0 / K), int(y0 / K); sx1, sy1 = int((x0 + W) / K) + 2, int((y0 + H) / K) + 2
-    raw = np.ascontiguousarray(sat[max(0, sy0):sy1, max(0, sx0):sx1])
-    sw = cv2.resize(raw, (W, H), interpolation=cv2.INTER_AREA)[..., ::-1].astype(np.float32)   # RGB, ~0.5 м
+    # точне вікно знімка: піксель гри (i, j) <- знімок ((x0 + j + 0.5) / K - 0.5, ...), однаково для будь-якого блоку
+    PADS = 8
+    sx0, sy0 = int(math.floor(x0 / K)) - PADS, int(math.floor(y0 / K)) - PADS
+    sx1, sy1 = int(math.ceil((x0 + W) / K)) + PADS, int(math.ceil((y0 + H) / K)) + PADS
+    SH_, SW_ = sat.shape[:2]
+    raw = np.zeros((sy1 - sy0, sx1 - sx0, 3), np.uint8)
+    cy0, cx0 = max(0, sy0), max(0, sx0); cy1, cx1 = min(SH_, sy1), min(SW_, sx1)
+    if cy1 > cy0 and cx1 > cx0: raw[cy0 - sy0:cy1 - sy0, cx0 - sx0:cx1 - sx0] = sat[cy0:cy1, cx0:cx1]
+    raw = cv2.blur(raw, (2, 2))                                   # ~ INTER_AREA при зменшенні в 1,56 раза
+    A_ = np.float32([[1 / K, 0, x0 / K + 0.5 / K - 0.5 - sx0], [0, 1 / K, y0 / K + 0.5 / K - 0.5 - sy0]])
+    warp = lambda img: cv2.warpAffine(img, A_, (W, H), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP, borderMode=cv2.BORDER_REPLICATE)
+    sw = warp(raw)[..., ::-1].astype(np.float32)
     gray32 = cv2.cvtColor(raw, cv2.COLOR_BGR2GRAY).astype(np.float32)
-    tex = cv2.resize(np.abs(cv2.Laplacian(cv2.GaussianBlur(gray32, (3, 3), 0), cv2.CV_32F)), (W, H), interpolation=cv2.INTER_AREA)
+    tex = cv2.blur(warp(np.abs(cv2.Laplacian(cv2.GaussianBlur(gray32, (3, 3), 0), cv2.CV_32F))), (2, 2))
     tex = cv2.GaussianBlur(tex, (0, 0), 1.5)
     sm = cv2.medianBlur(sw.astype(np.uint8), 5).astype(np.float32)
     r, g, bl = sm[..., 0], sm[..., 1], sm[..., 2]
@@ -191,8 +212,9 @@ def render(x0, y0, W, H):
 
     # ---------- текстури землі
     img = np.zeros((H, W, 3), np.uint8)
-    blob, fine = dither(H, W, 7)
+    blob, fine = dither(H, W, 7, int(round(x0)), int(round(y0)))
     yy, xx = np.mgrid[0:H, 0:W]
+    yy = yy + int(round(y0)); xx = xx + int(round(x0))
     def pick(ramp, t):
         idx = np.clip((t * len(ramp)).astype(int), 0, len(ramp) - 1); return np.array(ramp, np.uint8)[idx]
     def put(cid, arr):
@@ -275,7 +297,8 @@ def render(x0, y0, W, H):
         m = cv2.erode(m, np.ones((5, 5), np.uint8)).astype(bool) & (cls == G_PARK)
         (cx, cy), (rw, rh), ang = cv2.minAreaRect(P); a = math.radians(ang)
         ux, uy = (math.cos(a), math.sin(a)) if rw >= rh else (-math.sin(a), math.cos(a))
-        along = xx * ux + yy * uy; across = -xx * uy + yy * ux
+        xl = xx - int(round(x0)); yl = yy - int(round(y0))
+        along = xl * ux + yl * uy; across = -xl * uy + yl * ux
         c_across = -cx * uy + cy * ux
         band = (np.abs(((across - c_across) % 22) - 11) > 2)          # ряди місць по ~5 м, проїзд між рядами
         stripe = (np.floor(along) % 5 == 0) & band
@@ -374,8 +397,11 @@ def render(x0, y0, W, H):
         draw_roof(img, b, pts, random.Random(i * 31 + 7))
 
     # ---------- дерева
+    if tree_out is not None:
+        tree_out.extend((int(x + x0), int(y + y0), rr, kind) for x, y, rr, kind in trees)
+        return img, cls
     for k, (x, y, rr, kind) in enumerate(sorted(trees, key=lambda t: t[1])):
-        draw_tree(img, x, y, rr, kind, random.Random(k * 13 + x))
+        draw_tree(img, x, y, rr, kind, random.Random(int(x + x0) * 7919 + int(y + y0)))
     return img, cls
 
 

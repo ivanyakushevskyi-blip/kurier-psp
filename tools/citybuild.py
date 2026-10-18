@@ -33,13 +33,26 @@ def main():
     print('map', W, H)
     rgb = np.zeros((H, W, 3), np.uint8)
     cls = np.zeros((H, W), np.uint8)
+    trees = []
     for by in range(0, H, B):
         for bx in range(0, W, B):
             w, h = min(B, W - bx), min(B, H - by)
-            img, c = CD.render(bx - M, by - M, w + 2 * M, h + 2 * M)
+            tl = []
+            img, c = CD.render(bx - M, by - M, w + 2 * M, h + 2 * M, tree_out=tl)
+            trees.extend(t for t in tl if bx <= t[0] < bx + w and by <= t[1] < by + h)
             rgb[by:by + h, bx:bx + w] = img[M:M + h, M:M + w]
             cls[by:by + h, bx:bx + w] = c[M:M + h, M:M + w]
             print('  block', bx, by, flush=True)
+    # ---- дерева одним проходом по всій карті (без швів між блоками)
+    import random
+    kept = []
+    from scipy.spatial import cKDTree
+    trees.sort(key=lambda t: -t[2])
+    for t in trees:
+        kept.append(t)
+    for x, y, rr, kind in sorted(kept, key=lambda t: t[1]):
+        CD.draw_tree(rgb, x, y, rr, kind, random.Random(x * 7919 + y))
+    print('trees', len(kept))
     # ---- зіткнення: будинки OSM + знімкові, вода; поза ігровою зоною — стіна
     D = CD.data()
     solid = np.zeros((H, W), np.uint8)

@@ -306,12 +306,38 @@ static void update_orders(void) {
 
 static int hit(float x, float y, float a) {
     float c = cosf(a), s = sinf(a);
-    static const float P[][2] = { { 0, 0 }, { 10, 0 }, { -10, 0 }, { 9, 4 }, { 9, -4 }, { -9, 4 }, { -9, -4 } };   /* Golf ~20x9 пікс */
-    for (int i = 0; i < 7; i++) {
+    static const float P[][2] = { { 0, 0 }, { 9, 0 }, { -9, 0 }, { 8, 3 }, { 8, -3 }, { -8, 3 }, { -8, -3 }, { 0, 3 }, { 0, -3 } };   /* Golf ~20x9 пікс, трохи менше за спрайт */
+    for (int i = 0; i < 9; i++) {
         float lx = P[i][0], ly = P[i][1];
         if (is_solid((int)(x + lx * c - ly * s), (int)(y + lx * s + ly * c))) return 1;
     }
     return 0;
+}
+
+/* Аварійно: якщо кузов опинився в стіні — виштовхнути на найближче вільне місце (спіраль до ~25 м). */
+static void unstick(void) {
+    if (!hit(px_, py_, ang)) return;
+    for (int r = 2; r <= 50; r += 2)
+        for (int k = 0; k < 16; k++) {
+            float a = k * (2 * PI_F / 16);
+            float x = px_ + cosf(a) * r, y = py_ + sinf(a) * r;
+            if (!hit(x, y, ang)) { px_ = x; py_ = y; return; }
+            for (int t = 1; t < 8; t++) { float aa = ang + t * (PI_F / 8); if (!hit(x, y, aa)) { px_ = x; py_ = y; ang = aa; return; } }
+        }
+}
+
+/* Якщо машина затиснута (газ/задня не рухають її ~1,5 с) — переставити на найближче відкрите місце. */
+static int blocked_t;
+static int open_spot(float x, float y) {
+    for (int k = 0; k < 8; k++) { float a = k * (PI_F / 4); if (hit(x + cosf(a) * 8, y + sinf(a) * 8, a)) return 0; }
+    return !hit(x, y, ang);
+}
+static void unwedge(void) {
+    for (int r = 6; r <= 120; r += 3)
+        for (int k = 0; k < 24; k++) {
+            float a = k * (2 * PI_F / 24), x = px_ + cosf(a) * r, y = py_ + sinf(a) * r;
+            if (open_spot(x, y)) { px_ = x; py_ = y; vel = 0; blocked_t = 0; return; }
+        }
 }
 
 static void update_player(unsigned btn, int lx) {
@@ -329,14 +355,28 @@ static void update_player(unsigned btn, int lx) {
     if (!gas && !brake) { vel *= 0.984f; if (fabsf(vel) < 0.006f) vel = 0; }
     if (vel > vmax) vel -= 0.025f;
     if (vel < -0.34f) vel = -0.34f;
-    float grip = fabsf(vel) / 0.45f; if (grip > 1) grip = 1;
-    ang += steer * 0.058f * grip * (vel < 0 ? -1 : 1);
-    if (ang > PI_F) ang -= 2 * PI_F; if (ang < -PI_F) ang += 2 * PI_F;
-    float nx = px_ + cosf(ang) * vel, ny = py_ + sinf(ang) * vel;
-    if (!hit(nx, ny, ang)) { px_ = nx; py_ = ny; }
-    else if (!hit(nx, py_, ang)) { px_ = nx; vel *= 0.9f; }
-    else if (!hit(px_, ny, ang)) { py_ = ny; vel *= 0.9f; }
-    else { if (fabsf(vel) > 0.5f) bump = 8; vel *= -0.25f; }
+    float grip = fabsf(vel) / 0.30f; if (grip > 1) grip = 1;
+    if ((gas || brake) && grip < 0.35f) grip = 0.35f;          /* аркадно: можна вивернути від стіни майже з місця */
+    /* поворот: лише якщо кузов не впирається в стіну після повороту */
+    float na = ang + steer * 0.062f * grip * (vel < 0 ? -1 : 1);
+    if (na > PI_F) na -= 2 * PI_F; if (na < -PI_F) na += 2 * PI_F;
+    if (!hit(px_, py_, na)) ang = na;
+    /* рух дрібними кроками з ковзанням уздовж стін */
+    float ox_ = px_, oy_ = py_;
+    int steps = 1 + (int)(fabsf(vel) / 0.5f);
+    float dx = cosf(ang) * vel / steps, dy = sinf(ang) * vel / steps;
+    for (int i = 0; i < steps; i++) {
+        if (!hit(px_ + dx, py_ + dy, ang)) { px_ += dx; py_ += dy; continue; }
+        /* ковзання: проєкція руху на вісь X або Y */
+        if (fabsf(dx) > 0.01f && !hit(px_ + dx, py_, ang)) { px_ += dx; vel *= 0.97f; continue; }
+        if (fabsf(dy) > 0.01f && !hit(px_, py_ + dy, ang)) { py_ += dy; vel *= 0.97f; continue; }
+        if (fabsf(vel) > 0.45f) bump = 8;
+        vel *= -0.2f;
+        break;
+    }
+    float moved = fabsf(px_ - ox_) + fabsf(py_ - oy_);
+    if ((gas || brake) && moved < 0.02f) { if (++blocked_t > 90) unwedge(); } else blocked_t = 0;
+    unstick();
 }
 
 static void update_camera(int snap) {
@@ -717,6 +757,19 @@ int main(int argc, char **argv) {
         if ((f == 200 || f == 900 || (ostate == O_LOAD && load_t == 30) || (ostate == O_DROP && otimer == olimit - 300) || (toast_t == 140 && strstr(toast, "ГРН"))) && shots < 8) {
             snprintf(nm, sizeof nm, "%s/f_play%d.ppm", dir, shots++); dump(nm);
         }
+    }
+    /* стрес-тест зіткнень: «п'яний» водій 72 000 кадрів (20 хв гри), газ і випадкове кермо */
+    {
+        int stuck_ep = 0, still = 0, inwall = 0; float lx0 = px_, ly0 = py_;
+        for (int f = 0; f < 72000; f++) {
+            static int st = 128, rev = 0; if (f % 40 == 0) st = rand() % 256;
+            if (still >= 1 && rev == 0) rev = 70;                       /* як гравець: уперся — здай назад */
+            game_update(rev > 0 ? PSP_CTRL_SQUARE : PSP_CTRL_CROSS, 0, rev > 0 ? 255 - st : st, 128); if (rev > 0) rev--;
+            if (hit(px_, py_, ang)) inwall++;
+            if (f % 60 == 0) { if (dist(px_, py_, lx0, ly0) < 3) { if (++still == 3) { stuck_ep++; printf("  stuck at %d %d ang %.2f\n", (int)px_, (int)py_, ang); } } else still = 0; lx0 = px_; ly0 = py_; }
+        }
+        draw_frame(); snprintf(nm, sizeof nm, "%s/f_stress.ppm", dir); dump(nm);
+        printf("stress: застрягань (3 с без руху, з газом і задньою) = %d, кадрів у стіні = %d\n", stuck_ep, inwall);
     }
     game_update(0, PSP_CTRL_SELECT, 128, 128); draw_frame();
     snprintf(nm, sizeof nm, "%s/f_bigmap.ppm", dir); dump(nm);
