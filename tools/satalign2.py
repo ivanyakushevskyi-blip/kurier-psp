@@ -103,16 +103,7 @@ def rbf_field(rbf, cs=24):
     return f
 
 
-def main():
-    imgs = images()
-    ways = S.load_osm('data/osm_v3')
-    om = json.load(open(OLD + '/sat_map.json'))
-    x0, y0, x1, y1 = SA.map_grid()
-    # нова сітка: ціле число пікселів 0,32 м від старої
-    ox = int(np.ceil((om['x0'] - x0) / MPP)); oy = int(np.ceil((om['y0'] - y0) / MPP))
-    nx0 = om['x0'] - ox * MPP; ny0 = om['y0'] - oy * MPP
-    W = int(np.ceil((x1 - nx0) / MPP)); H = int(np.ceil((y1 - ny0) / MPP))
-    print('grid', W, H, 'old offset', ox, oy, flush=True)
+def fields(imgs, ways, nx0, ny0, W, H):
     # ---- 1) грубий прохід, 2 м
     s = 2.0; pad = 150
     gx0, gy0 = nx0 - pad, ny0 - pad
@@ -135,11 +126,33 @@ def main():
     f2 = rbf_field(rbf2)
     json.dump(dict(P1=P1.tolist(), S1=S1.tolist(), P2=P2.tolist(), S2=S2.tolist()), open('build/satalign2.json', 'w'))
 
+    return f1, f2
+
+
+def main():
+    imgs = images()
+    ways = S.load_osm('data/osm_v3')
+    om = json.load(open(OLD + '/sat_map.json'))
+    x0, y0, x1, y1 = SA.map_grid()
+    # нова сітка: ціле число пікселів 0,32 м від старої
+    ox = int(np.ceil((om['x0'] - x0) / MPP)); oy = int(np.ceil((om['y0'] - y0) / MPP))
+    nx0 = om['x0'] - ox * MPP; ny0 = om['y0'] - oy * MPP
+    W = int(np.ceil((x1 - nx0) / MPP)); H = int(np.ceil((y1 - ny0) / MPP))
+    print('grid', W, H, 'old offset', ox, oy, flush=True)
+    if os.path.exists('build/satalign2.json') and os.environ.get('REALIGN') != '1':
+        j = json.load(open('build/satalign2.json'))
+        P1, S1, P2, S2 = (np.array(j[k]) for k in ('P1', 'S1', 'P2', 'S2'))
+        f1 = rbf_field(RBFInterpolator(P1, S1, kernel='thin_plate_spline', smoothing=2000.0))
+        f2 = rbf_field(RBFInterpolator(P2, S2, kernel='thin_plate_spline', smoothing=800.0))
+    else:
+        f1, f2 = fields(imgs, ways, nx0, ny0, W, H)
+
     def total(X, Y):
         a, b = f2(X, Y); X2, Y2 = X + a, Y + b
         c, d = f1(X2, Y2)
         return a + c, b + d
     # ---- 3) підсумкова підкладка 0,32 м
+    if os.path.exists('build/sat_map.npy'): os.remove('build/sat_map.npy')     # не писати в спільний inode (жорсткі посилання)
     out = np.lib.format.open_memmap('build/sat_map.npy', 'w+', np.uint8, (H, W, 3))
     det = np.zeros((H, W), bool)
     old = np.load(OLD + '/sat_map.npy', mmap_mode='r'); odet = np.load(OLD + '/sat_detail_mask.npy')

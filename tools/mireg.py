@@ -29,8 +29,9 @@ def sat_classes(img_bgr, k=12, seed=0):
     valid = img_bgr.reshape(-1, 3).sum(1) > 0
     sample = lab[valid][np.random.default_rng(seed).choice(valid.sum(), min(200000, valid.sum()), replace=False)]
     _, _, C = cv2.kmeans(sample, k, None, (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.5), 3, cv2.KMEANS_PP_CENTERS)
-    d = ((lab[:, None, :] - C[None]) ** 2).sum(-1)
-    cl = d.argmin(1).astype(np.uint8) + 1
+    cl = np.empty(len(lab), np.uint8)
+    for i in range(0, len(lab), 1 << 20):                       # частинами: інакше на великій карті не вистачає пам'яті
+        cl[i:i + (1 << 20)] = ((lab[i:i + (1 << 20), None, :] - C[None]) ** 2).sum(-1).argmin(1).astype(np.uint8) + 1
     cl[~valid] = 0
     return cl.reshape(img_bgr.shape[:2])
 

@@ -193,6 +193,12 @@ def render(x0, y0, W, H, tree_out=None):
     gray32 = cv2.cvtColor(raw, cv2.COLOR_BGR2GRAY).astype(np.float32)
     tex = cv2.blur(warp(np.abs(cv2.Laplacian(cv2.GaussianBlur(gray32, (3, 3), 0), cv2.CV_32F))), (2, 2))
     tex = cv2.GaussianBlur(tex, (0, 0), 1.5)
+    # знімки Івана (0,785 м/пікс, розтягнуті до 0,32) дають ~2,1 раза слабшу текстуру, ніж детальні тайли
+    if os.path.exists('build/sat_detail_mask.npy'):
+        dm = np.load('build/sat_detail_mask.npy', mmap_mode='r')
+        draw_ = np.zeros((sy1 - sy0, sx1 - sx0), np.float32)
+        if cy1 > cy0 and cx1 > cx0: draw_[cy0 - sy0:cy1 - sy0, cx0 - sx0:cx1 - sx0] = dm[cy0:cy1, cx0:cx1]
+        tex *= 1.0 + 1.1 * (1.0 - warp(draw_))
     sm = cv2.medianBlur(sw.astype(np.uint8), 5).astype(np.float32)
     r, g, bl = sm[..., 0], sm[..., 1], sm[..., 2]
     mx = sm.max(-1); ch = mx - sm.min(-1); exg = 2 * g - r - bl
