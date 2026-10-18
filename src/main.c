@@ -376,6 +376,11 @@ static void update_player(unsigned btn, int lx) {
     }
     float moved = fabsf(px_ - ox_) + fabsf(py_ - oy_);
     if ((gas || brake) && moved < 0.02f) { if (++blocked_t > 90) unwedge(); } else blocked_t = 0;
+    /* крутиться в «кишені» 4 с з газом і не може виїхати — теж переставити */
+    static int win_t; static float wx, wy;
+    if (gas || brake) {
+        if (++win_t >= 240) { if (fabsf(px_ - wx) + fabsf(py_ - wy) < 6) unwedge(); win_t = 0; wx = px_; wy = py_; }
+    } else { win_t = 0; wx = px_; wy = py_; }
     unstick();
 }
 
