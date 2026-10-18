@@ -60,12 +60,29 @@ def roof_kind(rgb):
 
 # ---------------------------------------------------------------- дані
 _CACHE = {}
+OSM_DIR = 'data/osm_v3'
+
+
+def grid_pt(pt, grid='v1'):
+    """Точка в сітці 0,32 м: ручні дані, задані в старій сітці (v1), зсуваються на цілий зсув нової сітки."""
+    off = json.load(open('build/sat_map.json')).get('off', [0, 0]) if grid == 'v1' else [0, 0]
+    return (float(pt[0] + off[0]), float(pt[1] + off[1]))
 
 
 def data():
     if 'w' not in _CACHE:
         import citygen as CG
-        nodes, ntags, ways = CG.load('data/osm_v2')
+        nodes, ntags, ways = CG.load(OSM_DIR)
+        # лише те, що в межах сітки (з запасом), + рамки для швидкого відбору у вікні
+        meta = json.load(open('build/sat_map.json'))
+        GW, GH = meta['W'], meta['H']
+        keep = []
+        for w in ways:
+            a = np.array(w['pts'], np.float32)
+            bb = (a[:, 0].min(), a[:, 1].min(), a[:, 0].max(), a[:, 1].max())
+            if bb[2] < -300 or bb[3] < -300 or bb[0] > GW + 300 or bb[1] > GH + 300: continue
+            w['bb'] = bb; keep.append(w)
+        ways = keep
         _CACHE.update(w=ways, n=ntags, nodes=nodes, B=json.load(open('build/buildings.json'))['buildings'],
                       SAT=(json.load(open('build/ms_buildings.json')) if os.path.exists('build/ms_buildings.json') else
                            json.load(open('build/sat_houses.json')) if os.path.exists('build/sat_houses.json') else []) +
@@ -73,9 +90,12 @@ def data():
         # ручні кольори дахів ключових будівель (data/roof_overrides.json, точки в сітці 0,32 м)
         if os.path.exists('data/roof_overrides.json'):
             for o in json.load(open('data/roof_overrides.json')):
+                pt = grid_pt(o['pt'], o.get('grid', 'v1'))
                 for b in _CACHE['B'] + _CACHE['SAT']:
-                    if cv2.pointPolygonTest(np.array(b['q'], np.float32), tuple(map(float, o['pt'])), False) >= 0:
+                    if cv2.pointPolygonTest(np.array(b['q'], np.float32), pt, False) >= 0:
                         b['roof'] = o['roof']
+        for b in _CACHE['B'] + _CACHE['SAT']:
+            a = np.array(b['q'], np.float32); b['bb'] = (a[:, 0].min(), a[:, 1].min(), a[:, 0].max(), a[:, 1].max())
     return _CACHE
 
 
@@ -115,10 +135,14 @@ def render(x0, y0, W, H, tree_out=None):
         xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
         return not (max(xs) < -m or min(xs) > W + m or max(ys) < -m or min(ys) > H + m)
 
+    def near(bb, m=60):
+        return not (bb[2] * K - x0 < -m or bb[0] * K - x0 > W + m or bb[3] * K - y0 < -m or bb[1] * K - y0 > H + m)
     ways = []
     for w in D['w']:
+        if not near(w['bb']): continue
         pts = [to(p) for p in w['pts']]
         if visible(pts): ways.append((w, pts))
+    BL = [(i, b) for i, b in enumerate(D['B'] + D['SAT']) if near(b['bb'], 40)]
 
     # ---------- класи землі
     G_YARD, G_GRASS, G_WATER, G_SIDE, G_ROAD, G_PATH, G_PED, G_RAIL, G_DIRT, G_PITCH, G_TRACK, G_PARK, G_PAVED, G_WOOD, G_SAND = range(1, 16)
@@ -178,7 +202,7 @@ def render(x0, y0, W, H, tree_out=None):
     ycls[(r > bl + 28) & (exg <= 6) & (ch > 34) & (mx > 110)] = 2
     ycls[dark] = 0
     _bm = Image.new('L', (W, H), 0); _d = ImageDraw.Draw(_bm)
-    for b in D['B'] + D['SAT']:
+    for _, b in BL:
         P = [to(p) for p in b['q']]
         if visible(P, 30): _d.polygon(P, fill=1)
     for w, pts in ways:
@@ -357,7 +381,7 @@ def render(x0, y0, W, H, tree_out=None):
 
     # ---------- будинки
     blds = []
-    for i, b in enumerate(D['B'] + D['SAT']):
+    for i, b in BL:
         pts = [to(p) for p in b['q']]
         if not visible(pts, 30): continue
         blds.append((i, b, pts))
@@ -504,17 +528,18 @@ def draw_tree(img, x, y, rr, kind, rs):
     lit = (-xx - yy) / (rr + 1e-3)
     o = np.zeros(m.shape + (3,), np.uint8); o[:] = C[2]
     o[lit < -0.25] = C[1]; o[(lit > 0.35) & (dist > 1.5)] = C[3]
-    spk = (np.array([[rs.random() for _ in range(m.shape[1])] for _ in range(m.shape[0])]) < 0.06) & (lit > 0)
+    spk = (np.random.RandomState(rs.randrange(1 << 30)).rand(*m.shape) < 0.06) & (lit > 0)
     o[spk] = C[3]
-    edge = m & (dist < 1.01); o[edge] = C[0]
+    o[m & (dist < 1.01)] = C[0]
     ol = cv2.dilate(m.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool) & ~m
+    o[ol] = OUT
     x0, y0 = x - R, y - R
-    for yy_ in range(m.shape[0]):
-        Y = y0 + yy_
-        if not 0 <= Y < H: continue
-        for xx_ in np.nonzero(m[yy_] | ol[yy_])[0]:
-            X = x0 + xx_
-            if 0 <= X < W: img[Y, X] = o[yy_, xx_] if m[yy_, xx_] else OUT
+    ax0, ay0, ax1, ay1 = max(0, x0), max(0, y0), min(W, x0 + 2 * R + 1), min(H, y0 + 2 * R + 1)
+    if ax1 <= ax0 or ay1 <= ay0: return
+    sl = (slice(ay0 - y0, ay1 - y0), slice(ax0 - x0, ax1 - x0))
+    msk = (m | ol)[sl]
+    dst = img[ay0:ay1, ax0:ax1]
+    dst[msk] = o[sl][msk]
 
 
 if __name__ == '__main__':

@@ -408,10 +408,12 @@ static void update_street(void) {
     if (++street_t < 15) return;
     street_t = 0;
     float bd = 40.0f * 40.0f; int bi = -1;
+    float qx = freecam ? fcx : px_, qy = freecam ? fcy : py_;
     for (int i = 0; i < NSEGS; i++) {
         float x0 = SEGS[i][0], y0 = SEGS[i][1], x1 = SEGS[i][2], y1 = SEGS[i][3];
+        if ((x0 < qx - 40 && x1 < qx - 40) || (x0 > qx + 40 && x1 > qx + 40) ||
+            (y0 < qy - 40 && y1 < qy - 40) || (y0 > qy + 40 && y1 > qy + 40)) continue;     /* далекий відрізок */
         float dx = x1 - x0, dy = y1 - y0, L = dx * dx + dy * dy;
-        float qx = freecam ? fcx : px_, qy = freecam ? fcy : py_;
         float t = L > 0 ? ((qx - x0) * dx + (qy - y0) * dy) / L : 0; if (t < 0) t = 0; if (t > 1) t = 1;
         float ex = x0 + dx * t - qx, ey = y0 + dy * t - qy, d = ex * ex + ey * ey;
         if (d < bd) { bd = d; bi = SEGS[i][4]; }

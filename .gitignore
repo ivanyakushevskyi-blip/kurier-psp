@@ -9,3 +9,4 @@ src/*.elf
 src/*.SFO
 src/EBOOT.PBP
 __pycache__/
+build_v1/

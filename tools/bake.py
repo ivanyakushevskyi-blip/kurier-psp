@@ -50,15 +50,16 @@ with open(os.path.join(BUILD, 'MAP.BIN'), 'wb') as f:
 csizes = [len(c) for c in chunks]
 MAPBIN_SIZE = offs[-1]
 
-# ---- minimap (1/8): average colour -> nearest palette entry
+# ---- minimap (1/8): average colour -> nearest palette entry (рядками, щоб не тримати всю карту в RGB)
 pal = np.array(PAL, np.float32)
-rgb = pal[np.clip(img, 0, len(PAL) - 1)]
 MS = 8
 mh, mw = H // MS, W // MS
-avg = rgb.reshape(mh, MS, mw, MS, 3).mean(axis=(1, 3))
+avg = np.zeros((mh, mw, 3), np.float32)
+for r0 in range(0, mh, 64):
+    r1 = min(mh, r0 + 64)
+    blk = pal[np.clip(img[r0 * MS:r1 * MS, :mw * MS], 0, len(PAL) - 1)]
+    avg[r0:r1] = blk.reshape(r1 - r0, MS, mw, MS, 3).mean(axis=(1, 3))
 playz = np.load(os.path.join(BUILD, 'play.npy'))
-bsolid = solid & playz
-solid_frac = bsolid.reshape(mh, MS, mw, MS).mean(axis=(1, 3))
 cand = list(range(MAP_START, MAP_START + len(MAP_COLORS)))
 ASPH_IDS = [MAP_START + k for k, c in enumerate(MAP_COLORS) if tuple(c) in [tuple(a) for a in CD.ASPH]]
 cp = pal[cand]
@@ -73,19 +74,18 @@ mini = best
 MINI_OFF = put(zlib.compress(mini.tobytes(), 9))
 MINI_ZLEN = len(blob) - MINI_OFF
 
-# ---- велика карта (SELECT): 1/32 від повної
-BS_ = 32
+# ---- велика карта (SELECT): вміщається в екран PSP (≤ 470×250), крок кратний мінікарті
+FB = 4
+while (W // (MS * FB)) > 470 or (H // (MS * FB)) > 250: FB += 1
+BS_ = MS * FB
 bh, bw = H // BS_, W // BS_
-mm = best_lit[:bh * 4, :bw * 4]
-big = mm[::4, ::4].copy()
-# дороги/дахи краще видно, якщо брати мінімальну яскравість у блоці 4x4 (тонкі вулиці не губляться)
-lum = pal[np.clip(mm, 0, len(PAL) - 1)].mean(-1).reshape(bh, 4, bw, 4)
-idx = lum.reshape(bh, 4, bw, 4).transpose(0, 2, 1, 3).reshape(bh, bw, 16).argmin(-1)
-mmb = mm.reshape(bh, 4, bw, 4).transpose(0, 2, 1, 3).reshape(bh, bw, 16)
+mm = best_lit[:bh * FB, :bw * FB]
+# дороги краще видно, якщо блок з достатньою часткою асфальту малювати асфальтом (тонкі вулиці не губляться)
+mmb = mm.reshape(bh, FB, bw, FB).transpose(0, 2, 1, 3).reshape(bh, bw, FB * FB)
 roadish = np.isin(mmb, ASPH_IDS)
-big = np.where(roadish.sum(-1) >= 4, ASPH_IDS[0] if ASPH_IDS else mmb[:, :, 5], mmb[:, :, 5]).astype(np.uint8)
+big = np.where(roadish.sum(-1) >= FB * FB // 4, ASPH_IDS[0] if ASPH_IDS else mmb[:, :, FB * FB // 2], mmb[:, :, FB * FB // 2 + FB // 2]).astype(np.uint8)
 DK = np.array(dark_lut(), np.uint8)
-ob = outside[2::4, 2::4][:bh, :bw]
+ob = outside[FB // 2::FB, FB // 2::FB][:bh, :bw]
 big[ob] = DK[DK[big[ob]]]
 BIG_OFF = put(zlib.compress(big.tobytes(), 9))
 BIG_ZLEN = len(blob) - BIG_OFF

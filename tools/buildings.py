@@ -25,7 +25,7 @@ def main():
     meta = json.load(open('build/sat_map.json')); sat = np.load('build/sat_map.npy', mmap_mode='r')
     x0, y0, mpp = meta['x0'], meta['y0'], meta['mpp']; H, W = sat.shape[:2]
     det = np.load('build/sat_detail_mask.npy', mmap_mode='r')
-    ways = S.load_osm('data/osm_v2')
+    ways = S.load_osm('data/osm_v3')
     blds = []
     for p, t in ways:
         if 'building' not in t or len(p) < 4: continue

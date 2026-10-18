@@ -29,10 +29,12 @@ def build(src='data/manual_buildings.json', out='build/manual_buildings.json', d
     sat = np.load('build/sat_map.npy', mmap_mode='r')
     items = json.load(open(src))
     res = []
+    off = np.array(json.load(open('build/sat_map.json')).get('off', [0, 0]))
     for it in items:
-        if 'poly' in it: P = np.array(it['poly'], float)
+        o = off if it.get('grid', 'v1') == 'v1' else np.zeros(2, int)       # координати у старій сітці -> нова
+        if 'poly' in it: P = np.array(it['poly'], float) + o
         else:
-            P, _ = outline(it['rect'], sat)
+            P, _ = outline([it['rect'][0] + o[0], it['rect'][1] + o[1], it['rect'][2] + o[0], it['rect'][3] + o[1]], sat)
             if P is None: print('  no outline', it.get('name')); continue
         Pi = np.round(P).astype(np.int32)
         mk = np.zeros((int(Pi[:, 1].max()) - int(Pi[:, 1].min()) + 3, int(Pi[:, 0].max()) - int(Pi[:, 0].min()) + 3), np.uint8)
