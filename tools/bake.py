@@ -119,7 +119,7 @@ for e in LM:
 open(os.path.join(OUT, 'assets.bin'), 'wb').write(blob)
 
 # ---- шрифт: Rubik (OFL), пропорційний, 1 біт; розміри для sc = 1..5 (висота великих літер ≈ 8*sc)
-cps = list(range(32, 127)) + list(range(0x400, 0x460)) + [0x490, 0x491, 0x2019, 0x2116]
+cps = list(range(32, 127)) + [0xB7] + list(range(0x400, 0x460)) + [0x490, 0x491, 0x2014, 0x2019, 0x2116]
 FONT_PX = {1: 11, 2: 20, 3: 29, 4: 38, 5: 47}
 FD = os.path.join(HERE, 'fonts')
 font_bits = bytearray(); font_tabs = {}
