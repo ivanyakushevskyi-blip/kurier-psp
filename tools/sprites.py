@@ -150,6 +150,45 @@ def draw_golf(lit=False):
     return im
 
 
+CARTEX_W, CARTEX_H, CARTEX_LEN = 32, 16, 26     # текстура для графічного чипа: машина ~26 текселів завдовжки
+
+
+def _bleed(a):
+    """Колір прозорих текселів = колір найближчих непрозорих (щоб білінійне згладжування не давало темної облямівки)."""
+    rgb = a[..., :3].astype(np.float32); al = a[..., 3] > 8
+    out = rgb.copy(); filled = al.copy()
+    for _ in range(4):
+        acc = np.zeros_like(out); n = np.zeros(al.shape, np.float32)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                m = np.roll(np.roll(filled, dy, 0), dx, 1); c = np.roll(np.roll(out, dy, 0), dx, 1)
+                acc += c * m[..., None]; n += m
+        new = ~filled & (n > 0)
+        out[new] = acc[new] / n[new][:, None]; filled |= new
+    a = a.copy(); a[..., :3] = np.clip(out, 0, 255).astype(np.uint8)
+    return a
+
+
+def car_textures():
+    """RGBA 8888 (байти R,G,B,A) для GU: звичайна, зі стоп-сигналами, м'яка тінь. Ніс на схід, центр машини — центр текстури."""
+    from PIL import ImageFilter
+    k = CARTEX_LEN / 21.3                      # пікс текстури на одиницю креслення draw_golf
+    S = CAR_SZ * SS
+    cw, ch = CARTEX_W / k * SS, CARTEX_H / k * SS
+    box = (S / 2 - cw / 2, S / 2 - ch / 2, S / 2 + cw / 2, S / 2 + ch / 2)
+    out = []
+    for lit in (False, True):
+        im = draw_golf(lit).transform((CARTEX_W * 4, CARTEX_H * 4), Image.EXTENT, box, resample=Image.BICUBIC)
+        a = np.asarray(im.resize((CARTEX_W, CARTEX_H), Image.LANCZOS)).copy()
+        out.append(_bleed(a).tobytes())
+    sil = draw_golf(False).transform((CARTEX_W * 4, CARTEX_H * 4), Image.EXTENT, box, resample=Image.BICUBIC).split()[3]
+    sil = sil.resize((CARTEX_W, CARTEX_H), Image.LANCZOS).filter(ImageFilter.GaussianBlur(1.3))
+    al = (np.asarray(sil, np.float32) * 0.55).astype(np.uint8)
+    shd = np.zeros((CARTEX_H, CARTEX_W, 4), np.uint8); shd[..., 3] = al
+    out.append(shd.tobytes())
+    return out
+
+
 def car_frames(lit=False):
     base = draw_golf(lit)
     allowed = sum((R[k] for k in ('silver', 'glass', 'tire', 'ink', 'yellow', 'red', 'white')), [])

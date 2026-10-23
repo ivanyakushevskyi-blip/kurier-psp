@@ -24,7 +24,7 @@ blob = bytearray()
 
 
 def put(b):
-    while len(blob) % 4:
+    while len(blob) % 16:                     # 16 — вимога графічного чипа до адрес текстур
         blob.append(0)
     off = len(blob)
     blob.extend(b)
@@ -94,6 +94,7 @@ BIG_ZLEN = len(blob) - BIG_OFF
 fr = sprites.car_frames()
 SPR_OFF = put(b''.join(f.tobytes() for f in fr))
 SPR_LIT = put(b''.join(f.tobytes() for f in sprites.car_frames(lit=True)))
+CARTEX_OFF, CARTEX_LIT, CARTEX_SHD = (put(t) for t in sprites.car_textures())
 ICON_STO = put(sprites.icon('sto').tobytes())
 ICON_FUEL = put(sprites.icon('fuel').tobytes())
 ICON_SHOP = put(sprites.icon('shop').tobytes())
@@ -180,6 +181,8 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('#define SPR_OFF %d\n#define SPR_SZ %d\n#define SPR_N %d\n#define ICON_SHOP %d\n#define ICON_HOME %d\n#define ICON_SZ 16\n' % (SPR_OFF, sprites.CAR_SZ, sprites.NROT, ICON_SHOP, ICON_HOME))
     f.write('#define SPAWN_X %d\n#define SPAWN_Y %d\n' % tuple(md['spawn']))
     f.write('#define SPR_LIT %d\n#define ICON_STO %d\n#define ICON_FUEL %d\n' % (SPR_LIT, ICON_STO, ICON_FUEL))
+    f.write('#define CARTEX_OFF %d\n#define CARTEX_LIT %d\n#define CARTEX_SHD %d\n#define CARTEX_W %d\n#define CARTEX_H %d\n#define CARTEX_LEN %d\n'
+            % (CARTEX_OFF, CARTEX_LIT, CARTEX_SHD, sprites.CARTEX_W, sprites.CARTEX_H, sprites.CARTEX_LEN))
     widx = json.load(open(os.path.join(BUILD, 'water_idx.json'))) if os.path.exists(os.path.join(BUILD, 'water_idx.json')) else []
     f.write('static const uint8_t WATERIDX[256] = {%s};\n' % ','.join('1' if i in widx else '0' for i in range(256)))
     sto = md.get('sto') or [dict(x=md['spawn'][0], y=md['spawn'][1], name='СТО')]

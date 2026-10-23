@@ -23,7 +23,7 @@ python3 -I tools/bake.py build src
 
 if [[ "${1:-}" == "--host" ]]; then
   mkdir -p build/frames
-  gcc -DHOST -O2 -w -o build/host src/main.c src/assets_data.c -lm -lz
+  gcc -DHOST -O2 -w -o build/host src/main.c src/gfx.c src/assets_data.c -lm -lz
   ./build/host build/frames build/MAP.BIN
 fi
 

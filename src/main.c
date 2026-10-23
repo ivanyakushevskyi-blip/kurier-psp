@@ -44,8 +44,24 @@ typedef uint8_t u8;
 
 #include "assets.h"
 #include "pal_ids.h"
+#include "gfx.h"
 
-static u8 fb[SW * SH];
+static u8 __attribute__((aligned(16))) fb[SW * SH];       /* інтерфейс поверх світу (0 — прозоро); на титулі/карті — увесь кадр */
+/* ---- світ: процесор малює огляд 1:1 у буфер, графічний чип показує його з наближенням ZOOM і згладжуванням */
+#define ZOOM 1.25f
+#define VW (SW / ZOOM)                   /* огляд у пікселях карти: 384 x 217,6 */
+#define VH (SH / ZOOM)
+#define WW 388                           /* буфер світу: огляд + запас на субпіксельний зсув */
+#define WH 222
+#define W2S 784                          /* крок рядка буфера 2x (кратний 16) */
+static u8 __attribute__((aligned(16))) wbuf[WW * WH], wover[WW * WH];
+static u8 __attribute__((aligned(16))) w2[2 * WH * W2S], o2[2 * WH * W2S];
+static u8 *tg = fb; static int tgw = SW, tgh = SH;   /* куди малюють примітиви */
+static void target(u8 *b, int w, int h) { tg = b; tgw = w; tgh = h; }
+static int world_mode, over_used, wox, woy, ndim;
+static float viewx, viewy;                /* лівий верхній кут огляду у світі (з урахуванням струсу) */
+static struct { int on, lit, shadow; float x, y, a; uint32_t col; } carv;
+static float dimr[4][4]; static uint32_t dimc[4];
 static int tick;
 
 /* ================= map chunk cache (MAP.BIN) ================= */
@@ -116,14 +132,15 @@ static u8 map_px(int x, int y) {
     return chunk(x / CS, y / CS)[(y % CS) * CS + (x % CS)];
 }
 static void draw_map(int ox, int oy) {
-    int cy0 = oy / CS, cy1 = (oy + SH - 1) / CS, cx0 = ox / CS, cx1 = (ox + SW - 1) / CS;
+    if (ox < 0 || oy < 0) memset(tg, 0, (size_t)(tgw * tgh));
+    int cy0 = oy < 0 ? -1 : oy / CS, cy1 = (oy + tgh - 1) / CS, cx0 = ox < 0 ? -1 : ox / CS, cx1 = (ox + tgw - 1) / CS;
     for (int cy = cy0; cy <= cy1; cy++) for (int cx = cx0; cx <= cx1; cx++) {
         if (cx < 0 || cy < 0 || cx >= NCX || cy >= NCY) continue;
         const u8 *c = chunk(cx, cy);
         int x0 = cx * CS - ox, y0 = cy * CS - oy;
-        int sx0 = x0 < 0 ? 0 : x0, sx1 = x0 + CS > SW ? SW : x0 + CS;
-        int sy0 = y0 < 0 ? 0 : y0, sy1 = y0 + CS > SH ? SH : y0 + CS;
-        for (int sy = sy0; sy < sy1; sy++) memcpy(fb + sy * SW + sx0, c + (sy - y0) * CS + (sx0 - x0), (size_t)(sx1 - sx0));
+        int sx0 = x0 < 0 ? 0 : x0, sx1 = x0 + CS > tgw ? tgw : x0 + CS;
+        int sy0 = y0 < 0 ? 0 : y0, sy1 = y0 + CS > tgh ? tgh : y0 + CS;
+        for (int sy = sy0; sy < sy1; sy++) memcpy(tg + sy * tgw + sx0, c + (sy - y0) * CS + (sx0 - x0), (size_t)(sx1 - sx0));
     }
 }
 
@@ -138,25 +155,29 @@ static int is_solid(int x, int y) {
 
 /* ================= drawing ================= */
 static void hline(int x0, int x1, int y, u8 c) {
-    if (y < 0 || y >= SH) return;
+    if (y < 0 || y >= tgh) return;
     if (x0 > x1) { int t = x0; x0 = x1; x1 = t; }
-    if (x0 < 0) x0 = 0; if (x1 >= SW) x1 = SW - 1;
+    if (x0 < 0) x0 = 0; if (x1 >= tgw) x1 = tgw - 1;
     if (x0 > x1) return;
-    memset(fb + y * SW + x0, c, (size_t)(x1 - x0 + 1));
+    memset(tg + y * tgw + x0, c, (size_t)(x1 - x0 + 1));
 }
 static void rect(int x, int y, int w, int h, u8 c) { for (int j = 0; j < h; j++) hline(x, x + w - 1, y + j, c); }
-static void pset(int x, int y, u8 c) { if ((unsigned)x < SW && (unsigned)y < SH) fb[y * SW + x] = c; }
+static void pset(int x, int y, u8 c) { if ((unsigned)x < (unsigned)tgw && (unsigned)y < (unsigned)tgh) tg[y * tgw + x] = c; }
 static void darken_rect(int x, int y, int w, int h, int times) {
-    for (int j = y; j < y + h; j++) { if ((unsigned)j >= SH) continue;
-        for (int i = x; i < x + w; i++) { if ((unsigned)i >= SW) continue;
-            u8 *p = fb + j * SW + i; for (int t = 0; t < times; t++) *p = DARK[*p]; } }
+    if (world_mode && tg == fb) {              /* світ малює графічний чип — затемнення напівпрозорим шаром */
+        if (ndim < 4) { dimr[ndim][0] = x; dimr[ndim][1] = y; dimr[ndim][2] = w; dimr[ndim][3] = h; dimc[ndim++] = (uint32_t)(times >= 2 ? 0x90 : 0x55) << 24; }
+        return;
+    }
+    for (int j = y; j < y + h; j++) { if ((unsigned)j >= (unsigned)tgh) continue;
+        for (int i = x; i < x + w; i++) { if ((unsigned)i >= (unsigned)tgw) continue;
+            u8 *p = tg + j * tgw + i; for (int t = 0; t < times; t++) *p = DARK[*p]; } }
 }
 static void shadow_ell(float cx, float cy, float rx, float ry) {
     for (int y = (int)(cy - ry); y <= (int)(cy + ry); y++) {
-        if ((unsigned)y >= SH) continue;
+        if ((unsigned)y >= (unsigned)tgh) continue;
         float dy = (y + 0.5f - cy) / ry; if (dy * dy >= 1) continue;
         float w = rx * sqrtf(1 - dy * dy);
-        for (int x = (int)(cx - w); x <= (int)(cx + w); x++) if ((unsigned)x < SW) fb[y * SW + x] = DARK[fb[y * SW + x]];
+        for (int x = (int)(cx - w); x <= (int)(cx + w); x++) if ((unsigned)x < (unsigned)tgw) tg[y * tgw + x] = DARK[tg[y * tgw + x]];
     }
 }
 static void disc(float cx, float cy, float r, u8 c) {
@@ -186,9 +207,9 @@ static void tri(float x0, float y0, float x1, float y1, float x2, float y2, u8 c
 }
 static void blit(const u8 *src, int w, int h, int x, int y) {
     for (int j = 0; j < h; j++) {
-        int yy = y + j; if ((unsigned)yy >= SH) continue;
-        const u8 *r = src + j * w; u8 *d = fb + yy * SW;
-        for (int i = 0; i < w; i++) { int xx = x + i; u8 v = r[i]; if (v && (unsigned)xx < SW) d[xx] = v; }
+        int yy = y + j; if ((unsigned)yy >= (unsigned)tgh) continue;
+        const u8 *r = src + j * w; u8 *d = tg + yy * tgw;
+        for (int i = 0; i < w; i++) { int xx = x + i; u8 v = r[i]; if (v && (unsigned)xx < (unsigned)tgw) d[xx] = v; }
     }
 }
 
@@ -451,7 +472,7 @@ static void cargo_hit(float spd) {
 
 static int hit(float x, float y, float a) {
     float c = cosf(a), s = sinf(a);
-    static const float P[][2] = { { 0, 0 }, { 9, 0 }, { -9, 0 }, { 8, 3 }, { 8, -3 }, { -8, 3 }, { -8, -3 }, { 0, 3 }, { 0, -3 } };   /* Golf ~20x9 пікс, трохи менше за спрайт */
+    static const float P[][2] = { { 0, 0 }, { 7.5f, 0 }, { -7.5f, 0 }, { 6.5f, 3 }, { 6.5f, -3 }, { -6.5f, 3 }, { -6.5f, -3 }, { 0, 3 }, { 0, -3 } };   /* Golf 8,5 x ~3,9 м (17 x 8 пікс), колізія трохи вужча */
     for (int i = 0; i < 9; i++) {
         float lx = P[i][0], ly = P[i][1];
         if (is_solid((int)(x + lx * c - ly * s), (int)(y + lx * s + ly * c))) return 1;
@@ -685,10 +706,10 @@ static void update_repair(void) {
 static void update_camera(int snap) {
     /* динамічна: дивиться вперед за вектором швидкості, на швидкості доганяє швидше */
     float spd = sqrtf(vx_ * vx_ + vy_ * vy_), k = spd / VMAX; if (k > 1) k = 1;
-    float tx = px_ + vx_ * (40 + 45 * k) - SW / 2, ty = py_ + vy_ * (34 + 36 * k) - SH / 2 + 12;
+    float tx = px_ + vx_ * (32 + 36 * k) - VW / 2, ty = py_ + vy_ * (27 + 29 * k) - VH / 2 + 12;
     if (snap) { camx = tx; camy = ty; } else { float a = 0.06f + 0.05f * k; camx += (tx - camx) * a; camy += (ty - camy) * a; }
     if (camx < 0) camx = 0; if (camy < 0) camy = 0;
-    if (camx > MAP_W - SW) camx = MAP_W - SW; if (camy > MAP_H - SH) camy = MAP_H - SH;
+    if (camx > MAP_W - VW) camx = MAP_W - VW; if (camy > MAP_H - VH) camy = MAP_H - VH;
 }
 
 static void update_freecam(unsigned btn, int lx, int ly) {
@@ -699,9 +720,9 @@ static void update_freecam(unsigned btn, int lx, int ly) {
     if (abs(ly - 128) > 30) dy = (ly - 128) / 100.0f;
     float sp = (btn & PSP_CTRL_CROSS) ? 9.0f : 3.0f;
     fcx += dx * sp; fcy += dy * sp;
-    if (fcx < SW / 2) fcx = SW / 2; if (fcy < SH / 2) fcy = SH / 2;
-    if (fcx > MAP_W - SW / 2) fcx = MAP_W - SW / 2; if (fcy > MAP_H - SH / 2) fcy = MAP_H - SH / 2;
-    camx = fcx - SW / 2; camy = fcy - SH / 2;
+    if (fcx < VW / 2) fcx = VW / 2; if (fcy < VH / 2) fcy = VH / 2;
+    if (fcx > MAP_W - VW / 2) fcx = MAP_W - VW / 2; if (fcy > MAP_H - VH / 2) fcy = MAP_H - VH / 2;
+    camx = fcx - VW / 2; camy = fcy - VH / 2;
 }
 
 static void update_street(void) {
@@ -745,18 +766,18 @@ static const u8 *lm_frame(int i) {
 static void draw_landmarks(int ox, int oy) {
     for (int i = 0; i < NLM; i++) {
         int sx = LMS[i].x - ox, sy = LMS[i].y - oy, w = LMS[i].w, h = LMS[i].h;
-        if (sx < -w || sx > SW + w || sy < -4 || sy > SH + h) continue;
+        if (sx < -w || sx > tgw + w || sy < -4 || sy > tgh + h) continue;
         int bob = (int)floorf(sinf(tick * 0.07f + i * 1.7f) * 1.5f + 0.5f);
         shadow_ell(sx + 1.5f, sy + 0.5f, w * 0.45f, 3);
         blit(lm_frame(i), w, h, sx - w / 2, sy - h + 1 + bob);
     }
 }
 /* табличка з назвою: виїжджає збоку від позначки, назва друкується по літерах */
-static void draw_lm_labels(int ox, int oy) {
+static void draw_lm_labels(void) {
     char b[96];
     for (int i = 0; i < NLM; i++) {
         int t = lm_lab[i]; if (!t) continue;
-        int sx = LMS[i].x - ox, sy = LMS[i].y - oy, w = LMS[i].w, h = LMS[i].h;
+        int sx = (int)((LMS[i].x - viewx) * ZOOM), sy = (int)((LMS[i].y - viewy) * ZOOM), w = (int)(LMS[i].w * ZOOM), h = (int)(LMS[i].h * ZOOM);
         int bob = (int)floorf(sinf(tick * 0.07f + i * 1.7f) * 1.5f + 0.5f);
         const char *nm = LMS[i].name;
         int full = tw8(nm, 1) + 12;
@@ -789,7 +810,7 @@ static void panel(int x, int y, int w, int h) {
 }
 
 static void draw_target(float tx, float ty, const u8 *icon, u8 col, u8 coldark) {
-    float sx = tx - (int)camx, sy = ty - (int)camy;
+    float sx = (tx - viewx) * ZOOM, sy = (ty - viewy) * ZOOM;
     if (sx > 8 && sx < SW - 8 && sy > 20 && sy < SH - 44) {
         float r = 13 + sinf(tick * 0.15f) * 2.5f;
         ring(sx, sy, r + 1, C_ink_0, 1);
@@ -969,82 +990,97 @@ static void draw_hud(void) {
 static void update_particles(void) {
     for (int i = 0; i < NPART; i++) if (part[i].life > 0) { part[i].x += part[i].dx; part[i].y += part[i].dy; part[i].dx *= 0.95f; part[i].dy *= 0.95f; part[i].life--; }
 }
+/* бульбашки (тоне) — у шар над машиною; дим і пил малює графічний чип напівпрозорими плямами (render) */
 static void draw_particles(int ox, int oy) {
     for (int i = 0; i < NPART; i++) {
-        if (part[i].life <= 0) continue;
-        float t = 1.0f - (float)part[i].life / part[i].max;         /* 0 -> 1 */
-        float x = part[i].x - ox, y = part[i].y - oy;
-        if (part[i].kind == 3) { ring(x, y - t * 6, 1.5f + t * 2, C_white_2, 1); continue; }      /* бульбашки */
+        if (part[i].life <= 0 || part[i].kind != 3) continue;
+        float t = 1.0f - (float)part[i].life / part[i].max;
+        ring(part[i].x - ox, part[i].y - oy - t * 6, 1.5f + t * 2, C_white_2, 1); over_used = 1;
+    }
+}
+static uint32_t __attribute__((aligned(16))) puff_tex[16 * 16];      /* м'яка кругла пляма */
+static void puff_tex_init(void) {
+    for (int y = 0; y < 16; y++) for (int x = 0; x < 16; x++) {
+        float dx = (x + 0.5f - 8) / 8, dy = (y + 0.5f - 8) / 8, d = 1 - sqrtf(dx * dx + dy * dy);
+        if (d < 0) d = 0;
+        puff_tex[y * 16 + x] = ((uint32_t)(fminf(1, d * 1.6f) * 255) << 24) | 0xFFFFFF;
+    }
+}
+static void render_particles(void) {
+    for (int i = 0; i < NPART; i++) {
+        if (part[i].life <= 0 || part[i].kind == 3) continue;
+        float t = 1.0f - (float)part[i].life / part[i].max;
         float r = part[i].kind == 1 ? 1.5f + t * 2 : 2.0f + t * 4.5f;
         u8 c = part[i].kind == 2 ? (t < 0.5f ? C_ink_2 : C_white_0) : (t < 0.4f ? C_white_2 : (t < 0.75f ? C_white_1 : C_white_0));
         if (part[i].kind == 1) c = C_yellow_3;
-        /* «прозорість» — розріджена шахівниця в кінці життя */
-        int sparse = t > 0.7f;
-        for (int yy = (int)(y - r); yy <= (int)(y + r); yy++) for (int xx = (int)(x - r); xx <= (int)(x + r); xx++) {
-            if ((xx - x) * (xx - x) + (yy - y) * (yy - y) > r * r) continue;
-            if (sparse && ((xx + yy + tick) & 1)) continue;
-            pset(xx, yy, c);
-        }
+        float a = (part[i].kind == 1 ? 0.9f : 0.8f) * (1 - t * t);
+        gfx_quad(puff_tex, 16, 16, (part[i].x - viewx) * ZOOM, (part[i].y - viewy) * ZOOM, 0, r * ZOOM * 1.3f, r * ZOOM * 1.3f,
+                 (PALETTE[c] & 0xFFFFFF) | ((uint32_t)(a * 255) << 24));
     }
 }
 
 static void draw_world(void) {
-    int ox = (int)camx, oy = (int)camy;
-    if (bump > 0) { int a = shake * bump / 10 + 1; ox += (rand() % (2 * a + 1)) - a; oy += (rand() % (2 * a + 1)) - a; if (ox < 0) ox = 0; if (oy < 0) oy = 0;
-        if (ox > MAP_W - SW) ox = MAP_W - SW; if (oy > MAP_H - SH) oy = MAP_H - SH; }
+    /* огляд (з наближенням ZOOM); струс — у пікселях карти */
+    float vx = camx, vy = camy;
+    if (bump > 0) { int a = shake * bump / 10 + 1; vx += (rand() % (2 * a + 1)) - a; vy += (rand() % (2 * a + 1)) - a; }
+    if (vx < 0) vx = 0; if (vy < 0) vy = 0; if (vx > MAP_W - VW) vx = MAP_W - VW; if (vy > MAP_H - VH) vy = MAP_H - VH;
+    viewx = vx; viewy = vy;
+    int ox = (int)floorf(vx) - 1, oy = (int)floorf(vy) - 1;
+    wox = ox; woy = oy;
+    /* ---- шар під машиною: карта, сліди, значки, пам'ятки */
+    target(wbuf, WW, WH);
     draw_map(ox, oy);
     for (int i = 0; i < skid_n; i++) {                           /* сліди шин */
         int x = skid[i][0] - ox, y = skid[i][1] - oy;
-        if ((unsigned)x < SW && (unsigned)y < SH) { u8 *p = fb + y * SW + x; *p = DARK[DARK[*p]]; }
+        if ((unsigned)x < WW && (unsigned)y < WH) { u8 *p = wbuf + y * WW + x; *p = DARK[DARK[*p]]; }
     }
     for (int i = 0; i < NFUEL; i++) {                             /* АЗС */
         int x = FUELS[i].x - ox, y = FUELS[i].y - oy;
-        if (x > -16 && x < SW + 16 && y > -16 && y < SH + 16) blit(assets_bin + ICON_FUEL, ICON_SZ, ICON_SZ, x - 8, y - 8);
+        if (x > -16 && x < WW + 16 && y > -16 && y < WH + 16) blit(assets_bin + ICON_FUEL, ICON_SZ, ICON_SZ, x - 8, y - 8);
     }
     for (int i = 0; i < NSTO; i++) {                              /* СТО */
         int x = STOS[i].x - ox, y = STOS[i].y - oy;
-        if (x > -16 && x < SW + 16 && y > -16 && y < SH + 16) blit(assets_bin + ICON_STO, ICON_SZ, ICON_SZ, x - 8, y - 8);
+        if (x > -16 && x < WW + 16 && y > -16 && y < WH + 16) blit(assets_bin + ICON_STO, ICON_SZ, ICON_SZ, x - 8, y - 8);
     }
     draw_landmarks(ox, oy);
-    if (freecam) {
-        draw_lm_labels(ox, oy);
-        int cx = SW / 2, cy = SH / 2;
-        rect(cx - 7, cy, 5, 1, C_white_2); rect(cx + 3, cy, 5, 1, C_white_2);
-        rect(cx, cy - 7, 1, 5, C_white_2); rect(cx, cy + 3, 1, 5, C_white_2);
-        return;
-    }
-    float sx = px_ - ox, sy = py_ - oy;
-    int fi = (int)floorf(ang / (2 * PI_F) * SPR_N + 0.5f);
-    fi = ((fi % SPR_N) + SPR_N) % SPR_N;
-    const u8 *spr = assets_bin + ((braking || evac) ? SPR_LIT : SPR_OFF) + fi * SPR_SZ * SPR_SZ;
-    if (evac == EV_DROWN) {
-        /* тоне: машина темнішає й «осідає» — видно все менше рядків */
-        int keep = SPR_SZ - evac_t * SPR_SZ / 110; if (keep < 0) keep = 0;
-        u8 tmp[SPR_SZ * SPR_SZ];
-        for (int i = 0; i < SPR_SZ * SPR_SZ; i++) { u8 v = spr[i]; if (v) { v = DARK[v]; if (evac_t > 40) v = DARK[v]; } tmp[i] = v; }
-        int y0 = (SPR_SZ - keep) / 2;
-        blit(tmp + y0 * SPR_SZ, SPR_SZ, keep, (int)sx - SPR_SZ / 2, (int)sy - SPR_SZ / 2 + y0);
-        ring(sx, sy, 8 + (evac_t % 30) / 3.0f, C_white_1, 1);
-    } else {
-        shadow_ell(sx + 2, sy + 2, 11, 6);
-        blit(spr, SPR_SZ, SPR_SZ, (int)sx - SPR_SZ / 2, (int)sy - SPR_SZ / 2);
-    }
-    /* арки: будинок над проїздом малюється поверх машини */
-    for (int i = 0; i < NARCH; i++) {
-        const Arch *A = &ARCHES[i];
-        int x0 = (int)px_ - 16, x1 = (int)px_ + 16, y0 = (int)py_ - 16, y1 = (int)py_ + 16;
-        if (x1 < A->x0 || x0 > A->x1 || y1 < A->y0 || y0 > A->y1) continue;
-        for (int y = y0; y <= y1; y++) for (int x = x0; x <= x1; x++) {
-            int in = 0;
-            for (int a = 0, b = A->n - 1; a < A->n; b = a++) {
-                int ya = A->p[a][1], yb = A->p[b][1];
-                if ((ya > y) != (yb > y) && x < (A->p[b][0] - A->p[a][0]) * (y - ya) / (float)(yb - ya) + A->p[a][0]) in = !in;
+    /* ---- шар над машиною: будинки над арками, дим, бульбашки */
+    target(wover, WW, WH);
+    memset(wover, 0, sizeof wover); over_used = 0;
+    carv.on = 0;
+    if (!freecam) {
+        carv.on = 1; carv.shadow = 1; carv.lit = braking || evac;
+        carv.x = (px_ - vx) * ZOOM; carv.y = (py_ - vy) * ZOOM; carv.a = ang; carv.col = 0xFFFFFFFF;
+        if (evac == EV_DROWN) {
+            /* тоне: темнішає й зникає під водою */
+            float f = 1.0f - evac_t / 110.0f; if (f < 0) f = 0;
+            uint32_t l = evac_t > 40 ? 0x60 : 0x98, al = (uint32_t)(f * 255);
+            carv.col = (al << 24) | (l << 16) | (l << 8) | l; carv.shadow = 0;
+            ring(px_ - ox, py_ - oy, 8 + (evac_t % 30) / 3.0f, C_white_1, 1); over_used = 1;
+        }
+        for (int i = 0; i < NARCH; i++) {                         /* арки: будинок над проїздом — поверх машини */
+            const Arch *A = &ARCHES[i];
+            int x0 = (int)px_ - 16, x1 = (int)px_ + 16, y0 = (int)py_ - 16, y1 = (int)py_ + 16;
+            if (x1 < A->x0 || x0 > A->x1 || y1 < A->y0 || y0 > A->y1) continue;
+            over_used = 1;
+            for (int y = y0; y <= y1; y++) for (int x = x0; x <= x1; x++) {
+                int in = 0;
+                for (int a = 0, b = A->n - 1; a < A->n; b = a++) {
+                    int ya = A->p[a][1], yb = A->p[b][1];
+                    if ((ya > y) != (yb > y) && x < (A->p[b][0] - A->p[a][0]) * (y - ya) / (float)(yb - ya) + A->p[a][0]) in = !in;
+                }
+                if (in) pset(x - ox, y - oy, map_px(x, y));
             }
-            if (in) pset(x - ox, y - oy, map_px(x, y));
         }
     }
     draw_particles(ox, oy);
-    draw_lm_labels(ox, oy);
+    /* ---- екранні позначки — у шар інтерфейсу */
+    target(fb, SW, SH);
+    if (freecam) {
+        int cx = SW / 2, cy = SH / 2;
+        rect(cx - 7, cy, 5, 1, C_white_2); rect(cx + 3, cy, 5, 1, C_white_2);
+        rect(cx, cy - 7, 1, 5, C_white_2); rect(cx, cy + 3, 1, 5, C_white_2);
+    }
+    draw_lm_labels();
 }
 
 static void draw_bigmap(void) {
@@ -1069,6 +1105,7 @@ static void draw_bigmap(void) {
 
 static void draw_frame(void) {
     char b[64];
+    world_mode = 0; ndim = 0; target(fb, SW, SH);
     if (state == S_TITLE) {
         camx = SPAWN_X - SW / 2 + sinf(tick * 0.004f) * 300; camy = SPAWN_Y - SH / 2 - 200 + cosf(tick * 0.003f) * 180;
         if (camx < 0) camx = 0; if (camy < 0) camy = 0;
@@ -1093,6 +1130,8 @@ static void draw_frame(void) {
         return;
     }
     if (state == S_BIGMAP) { draw_bigmap(); return; }
+    world_mode = 1;
+    memset(fb, 0, sizeof fb);
     draw_world();
     if (freecam) {
         if (street_i >= 0) otext8_c(244, 10, 1, C_white_2, C_ink_0, STREETS[street_i]);
@@ -1159,7 +1198,7 @@ static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
     if (evac) { update_evac(); update_camera(0); update_street(); prefetch((int)camx, (int)camy, 0, 0); return; }
     if (pressed & PSP_CTRL_LTRIGGER) {
         freecam = !freecam;
-        if (freecam) { fcx = camx + SW / 2; fcy = camy + SH / 2; stop_car(); }
+        if (freecam) { fcx = camx + VW / 2; fcy = camy + VH / 2; stop_car(); }
         else update_camera(1);
     }
     if (freecam) update_freecam(btn, lx, ly);
@@ -1182,13 +1221,36 @@ static void assets_init(void) {
 }
 
 /* ================= platform ================= */
-static void present(u32 *dst) {
-    const u8 *s = fb;
-    for (int y = 0; y < SH; y++) {
-        u32 *d = dst + y * STRIDE;
-        for (int x = 0; x < SW; x += 4) { d[x] = PALETTE[s[x]]; d[x + 1] = PALETTE[s[x + 1]]; d[x + 2] = PALETTE[s[x + 2]]; d[x + 3] = PALETTE[s[x + 3]]; }
-        s += SW;
+/* 8-бітний буфер -> 2x (кожен піксель 2x2): «чітке» згладжування — білінійне лише на межах пікселів */
+static void expand2(const u8 *src, u8 *dst) {
+    for (int y = 0; y < WH; y++) {
+        const u8 *q = src + y * WW; uint16_t *r = (uint16_t *)(dst + 2 * y * W2S);
+        for (int x = 0; x < WW; x++) r[x] = (uint16_t)(q[x] * 0x0101);
+        memcpy(dst + (2 * y + 1) * W2S, r, 2 * WW);
     }
+}
+static void render(void *target_buf) {
+    if (!world_mode) {
+        gfx_begin(target_buf);
+        gfx_layer8(fb, SW, SW, SH, 0, 0, 1, 0, 0);
+        gfx_end();
+        return;
+    }
+    expand2(wbuf, w2);
+    if (over_used) expand2(wover, o2);
+    gfx_begin(target_buf);
+    float sx = (wox - viewx) * ZOOM, sy = (woy - viewy) * ZOOM;
+    gfx_layer8(w2, W2S, 2 * WW, 2 * WH, sx, sy, ZOOM / 2, 0, 1);
+    if (carv.on) {
+        float k = 17.0f / CARTEX_LEN * ZOOM, hx = CARTEX_W / 2 * k, hy = CARTEX_H / 2 * k;     /* 8,5 м = 17 пікс карти */
+        if (carv.shadow) gfx_quad((const uint32_t *)(assets_bin + CARTEX_SHD), CARTEX_W, CARTEX_H, carv.x + 1.6f * ZOOM, carv.y + 2.2f * ZOOM, carv.a, hx * 1.04f, hy * 1.12f, 0xFFFFFFFF);
+        gfx_quad((const uint32_t *)(assets_bin + (carv.lit ? CARTEX_LIT : CARTEX_OFF)), CARTEX_W, CARTEX_H, carv.x, carv.y, carv.a, hx, hy, carv.col);
+    }
+    if (over_used) gfx_layer8(o2, W2S, 2 * WW, 2 * WH, sx, sy, ZOOM / 2, 1, 1);
+    render_particles();
+    for (int i = 0; i < ndim; i++) gfx_rect(dimr[i][0], dimr[i][1], dimr[i][2], dimr[i][3], dimc[i]);
+    gfx_layer8(fb, SW, SW, SH, 0, 0, 1, 1, 0);
+    gfx_end();
 }
 
 #ifndef HOST
@@ -1203,7 +1265,7 @@ static u32 *vw[2];
 static void *vp[2];
 static int back = 1;
 static void flip(void) {
-    present(vw[back]);
+    render((void *)(uintptr_t)(back * BUFSZ));
     sceDisplayWaitVblankStart();
     sceDisplaySetFrameBuf(vp[back], STRIDE, PSP_DISPLAY_PIXEL_FORMAT_8888, PSP_DISPLAY_SETBUF_IMMEDIATE);
     back ^= 1;
@@ -1231,6 +1293,7 @@ int main(int argc, char **argv) {
     }
     load_save();
     assets_init();
+    gfx_init(PALETTE); puff_tex_init();
     sceCtrlSetSamplingCycle(0);
     sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
     srand(sceKernelGetSystemTimeLow());
@@ -1248,7 +1311,7 @@ int main(int argc, char **argv) {
 #else
 static u32 hostfb[STRIDE * SH];
 static void dump(const char *name) {
-    present(hostfb);
+    render(hostfb);
     FILE *f = fopen(name, "wb"); fprintf(f, "P6\n%d %d\n255\n", SW, SH);
     for (int y = 0; y < SH; y++) for (int x = 0; x < SW; x++) {
         u32 c = hostfb[y * STRIDE + x]; fputc(c & 255, f); fputc((c >> 8) & 255, f); fputc((c >> 16) & 255, f);
@@ -1263,6 +1326,7 @@ int main(int argc, char **argv) {
     remove(save_path);
     snprintf(map_path, sizeof map_path, "%s", argc > 2 ? argv[2] : "build/MAP.BIN");
     assets_init();
+    gfx_init(PALETTE); puff_tex_init();
     if (map_err) { printf("MAP.BIN error %d\n", map_err); return 1; }
     /* title */
     for (int i = 0; i < 40; i++) { game_update(0, 0, 128, 128); }
