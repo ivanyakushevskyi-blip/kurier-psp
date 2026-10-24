@@ -599,7 +599,8 @@ static void unwedge(void) {
         }
 }
 
-static void stop_car(void) { vx_ = vy_ = 0; vel = 0; }
+static float wheel;                                           /* кут передніх коліс, -1..1 */
+static void stop_car(void) { vx_ = vy_ = 0; vel = 0; wheel = 0; }
 
 /* ---- ефекти: дим з-під коліс, сліди шин, пара з-під капота, бульбашки */
 #define NPART 64
@@ -672,16 +673,15 @@ static void update_player(unsigned btn, int lx) {
     int off = sfc == 1;
     int walk = sfc == 3 || sfc == 4;                          /* тротуар / бордюр */
     float vmax = off ? 0.50f : VMAX;                         /* 1,31 пікс/кадр ≈ 141 км/год; на спідометрі — 140 */
-    if (walk) vmax = 0.28f;                                   /* по тротуару ~30 км/год */
-    /* бордюр: заїзд з дороги на тротуар — трусить і різко гальмує, на швидкості б'є підвіску */
+    if (walk) vmax = VMAX * 0.9f;                             /* тротуаром можна їхати майже як дорогою (як у GTA) */
+    /* бордюр: як у GTA — легкий підскок і ледь відчутна втрата швидкості, без ушкоджень */
     static int prev_sfc;
-    if (walk && prev_sfc != 3 && prev_sfc != 4 && fabsf(vf) > 0.14f) {
+    if (walk && prev_sfc != 3 && prev_sfc != 4 && fabsf(vf) > 0.1f) {
         float k = fabsf(vf);
-        vf *= k > 0.6f ? 0.42f : (k > 0.35f ? 0.55f : 0.7f);
-        bump = 8; shake = (int)(2 + k * 5);
-        if (k > 0.46f) { health -= (k - 0.46f) * 38.0f; cargo_hit(k * 0.8f); }
-        for (int q = 0; q < 3; q++) puff(px_ + fx * 7, py_ + fy * 7, (rand() % 5 - 2) * 0.06f, (rand() % 5 - 2) * 0.06f, 18, 0);
-    } else if (!walk && (prev_sfc == 3 || prev_sfc == 4) && fabsf(vf) > 0.3f) { vf *= 0.88f; bump = 4; shake = 2; }   /* з бордюра вниз */
+        vf *= k > 0.6f ? 0.95f : 0.97f;
+        bump = 5; shake = k > 0.6f ? 2 : 1;
+        puff(px_ + fx * 7, py_ + fy * 7, (rand() % 5 - 2) * 0.06f, (rand() % 5 - 2) * 0.06f, 14, 0);
+    } else if (!walk && (prev_sfc == 3 || prev_sfc == 4) && fabsf(vf) > 0.3f) { vf *= 0.98f; bump = 3; shake = 1; }   /* з бордюра вниз */
     prev_sfc = sfc;
     int heavy = ostate == O_DROP && otype == T_HEAVY;
     if (heavy) vmax *= 0.7f;
@@ -700,15 +700,25 @@ static void update_player(unsigned btn, int lx) {
     float grip = off ? 0.10f : 0.24f;
     if (hand) { grip = 0.035f; vf -= vf * 0.006f + (vf > 0 ? 0.004f : -0.004f); braking = 1; }
     vr *= 1.0f - grip;
-    /* поворот: залежить від швидкості; на великій — плавніше */
+    /* кермо як у справжньої машини: повертають передні колеса, кузов обертається навколо задньої осі.
+       Кут коліс доходить до цілі плавно; швидкість повороту пропорційна швидкості (на місці не крутиться);
+       на великій швидкості кут коліс менший. Мінімальний радіус ~13 пікс (≈0,75 довжини авто — аркадно тісніше за реальне). */
+    wheel += (steer - wheel) * 0.22f;
     float sp = fabsf(vf);
-    float turn = sp / 0.22f; if (turn > 1) turn = 1;
-    if ((gas || brake) && turn < 0.35f) turn = 0.35f;           /* аркадно: вивернути від стіни майже з місця */
-    turn *= 1.0f - 0.38f * (sp / VMAX);
-    if (hand) turn *= 1.45f;
-    float na = ang + steer * 0.058f * turn * (vf < 0 ? -1 : 1);
+    float lock = 1.0f - 0.55f * (sp / VMAX);
+    float yaw = vf * wheel * lock / 13.0f;
+    if (hand) yaw *= 1.45f;
+    if (yaw > 0.07f) yaw = 0.07f; if (yaw < -0.07f) yaw = -0.07f;
+    float na = ang + yaw;
     if (na > PI_F) na -= 2 * PI_F; if (na < -PI_F) na += 2 * PI_F;
-    if (!hit(px_, py_, na)) ang = na;
+    {
+        const float RA = 5.0f;                                /* центр кузова — на 5 пікс попереду задньої осі */
+        float nfx = cosf(na), nfy = sinf(na);
+        float qx = px_ + RA * (nfx - fx), qy = py_ + RA * (nfy - fy);
+        if (hand && sp > 0.35f) { qx = px_; qy = py_; }        /* у заносі — обертання навколо центру */
+        if (!hit(qx, qy, na)) { ang = na; px_ = qx; py_ = qy; }
+        else if (!hit(px_, py_, na)) ang = na;
+    }
     /* вектор швидкості у світі: інерція — повертається за кузовом через зчеплення */
     vx_ = fx * vf + rx * vr; vy_ = fy * vf + ry * vr;
     drifting = fabsf(vr) > 0.16f && sp > 0.3f;
