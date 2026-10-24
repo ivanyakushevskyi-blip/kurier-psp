@@ -19,6 +19,8 @@ python3 -I tools/manualbld.py
 python3 -I tools/buildings.py
 python3 -I tools/msbld.py
 python3 -I tools/citybuild.py
+python3 -I tools/poifix.py
+python3 -I tools/lmbuild.py
 python3 -I tools/bake.py build src
 
 if [[ "${1:-}" == "--host" ]]; then

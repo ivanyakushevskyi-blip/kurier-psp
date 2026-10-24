@@ -35,6 +35,15 @@ def zone(key):
     return z[iy[:, None], jx[None, :]]
 
 
+def arch_poly(Q, nmax=64):
+    """контур будинку над аркою — не більше nmax вершин (раніше обрізався до 24 → дах трикутником)"""
+    eps = 1.0
+    while True:
+        q = cv2.approxPolyDP(np.asarray(Q, np.float32), eps, True)[:, 0, :]
+        if len(q) <= nmax: return [[int(round(x)), int(round(y))] for x, y in q]
+        eps *= 1.4
+
+
 BLK = 'build/blocks_ss%d' % SS            # готові блоки (продовження після перерви)
 
 
@@ -153,8 +162,7 @@ def main(nproc=2):
             for b in D['B'] + D['SAT']:
                 Q = np.array(b['q'], np.float32) * K
                 if any(cv2.pointPolygonTest(Q, (float(x), float(y)), False) >= 0 for x, y in P.tolist()):
-                    q = cv2.approxPolyDP(Q.astype(np.float32), 1.0, True)[:, 0, :]
-                    ARCH_ROOFS.append([[int(round(x)), int(round(y))] for x, y in q[:24]])
+                    ARCH_ROOFS.append(arch_poly(Q))
     # паркани, сараї, теплиці (з деталей карти): тверді
     seen = set()
     for kind, pts in EXTRA_SOLID:
@@ -232,7 +240,7 @@ def mapdata(D, cls, solid, play):
     MG = CG.MG
     # точки забору/доставки — на проїжджій частині або паркуванні, де вміщається машина
     free = cv2.erode((~solid & play).astype(np.uint8), np.ones((9, 9), np.uint8)).astype(bool)
-    access = np.isin(cls, (G_ROAD, G_PARK)) & free
+    access = (cls == G_ROAD) & free                  # лише проїжджа частина (не парки й кущі)
 
     def gp(p): return (p[0] * K, p[1] * K)
 

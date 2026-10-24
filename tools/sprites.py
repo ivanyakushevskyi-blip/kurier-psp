@@ -182,8 +182,8 @@ def car_textures():
         a = np.asarray(im.resize((CARTEX_W, CARTEX_H), Image.LANCZOS)).copy()
         out.append(_bleed(a).tobytes())
     sil = draw_golf(False).transform((CARTEX_W * 4, CARTEX_H * 4), Image.EXTENT, box, resample=Image.BICUBIC).split()[3]
-    sil = sil.resize((CARTEX_W, CARTEX_H), Image.LANCZOS).filter(ImageFilter.GaussianBlur(1.3))
-    al = (np.asarray(sil, np.float32) * 0.55).astype(np.uint8)
+    sil = sil.resize((CARTEX_W, CARTEX_H), Image.LANCZOS).filter(ImageFilter.GaussianBlur(0.9))
+    al = (np.asarray(sil, np.float32) * 0.42).astype(np.uint8)
     shd = np.zeros((CARTEX_H, CARTEX_W, 4), np.uint8); shd[..., 3] = al
     out.append(shd.tobytes())
     return out

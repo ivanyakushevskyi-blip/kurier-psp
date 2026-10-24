@@ -220,7 +220,7 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     fuel = md.get('fuel') or [dict(x=md['spawn'][0], y=md['spawn'][1], name='АЗС')]
     f.write('static const Sto FUELS[] = {%s};\n#define NFUEL %d\n' % (','.join('{%d,%d,%s}' % (a['x'], a['y'], cstr(a['name'])) for a in fuel), len(fuel)))
     ar = md.get('arches', [])
-    f.write('typedef struct { int16_t n, x0, y0, x1, y1; int16_t p[24][2]; } Arch;\n')
+    f.write('typedef struct { int16_t n, x0, y0, x1, y1; int16_t p[64][2]; } Arch;\n')
     f.write('static const Arch ARCHES[] = {%s};\n#define NARCH %d\n' % (','.join('{%d,%d,%d,%d,%d,{%s}}' % (len(q), min(a for a, b in q), min(b for a, b in q), max(a for a, b in q), max(b for a, b in q), ','.join('{%d,%d}' % (a, b) for a, b in q)) for q in ar) or '{0}', len(ar)))
     # смуги для помічника: відрізки осі дороги + сітка 128 пікс
     lanes = md.get('lanes', [])

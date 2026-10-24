@@ -591,7 +591,37 @@ static int open_spot(float x, float y) {
     return !hit(x, y, ang);
 }
 static void stop_car(void);
+/* найближче місце на дорозі (осі доріг з помічника смуги): права смуга, машина вздовж дороги */
+static int road_spot(float x, float y, float maxd, float *rx, float *ry, float *ra) {
+    if (NLANE == 0) return 0;
+    int gx0 = (int)x / LANE_G, gy0 = (int)y / LANE_G, found = 0; float best = maxd * maxd;
+    for (int gy = gy0 - 1; gy <= gy0 + 1; gy++) for (int gx = gx0 - 1; gx <= gx0 + 1; gx++) {
+        if (gx < 0 || gy < 0 || gx >= LANE_GW || gy >= LANE_GH) continue;
+        int c = gy * LANE_GW + gx;
+        for (uint32_t k = LANE_CELL[c]; k < LANE_CELL[c + 1]; k++) {
+            const int16_t *L = LANES[LANE_IDX[k]];
+            float x0 = L[0], y0 = L[1], dx = L[2] - x0, dy = L[3] - y0, l2 = dx * dx + dy * dy;
+            if (l2 < 1) continue;
+            float ln = sqrtf(l2), ux = dx / ln, uy = dy / ln;
+            for (int q = 0; q <= 4; q++) {                          /* кілька точок уздовж відрізка навколо проекції */
+                float t = ((x - x0) * dx + (y - y0) * dy) / l2 + (q - 2) * 12.0f / ln;
+                if (t < 0) t = 0; if (t > 1) t = 1;
+                float cx = x0 + dx * t, cy = y0 + dy * t, hx = ux, hy = uy;
+                if (!L[5] && L[4] > 4) {                            /* двостороння: права смуга з того боку, де ми */
+                    float side = (x - cx) * (-uy) + (y - cy) * ux;
+                    if (side < 0) { hx = -ux; hy = -uy; }
+                    cx += -hy * L[4]; cy += hx * L[4];
+                }
+                float d2 = (cx - x) * (cx - x) + (cy - y) * (cy - y), a = atan2f(hy, hx);
+                if (d2 < best && !hit(cx, cy, a)) { best = d2; *rx = cx; *ry = cy; *ra = a; found = 1; }
+            }
+        }
+    }
+    return found;
+}
 static void unwedge(void) {
+    float rx, ry, ra;
+    if (road_spot(px_, py_, 190, &rx, &ry, &ra)) { px_ = rx; py_ = ry; ang = ra; stop_car(); blocked_t = 0; return; }
     for (int r = 6; r <= 120; r += 3)
         for (int k = 0; k < 24; k++) {
             float a = k * (2 * PI_F / 24), x = px_ + cosf(a) * r, y = py_ + sinf(a) * r;
@@ -788,6 +818,7 @@ static void update_evac(void) {
     money -= cost;
     if (ostate != O_NONE) { ostate = O_NONE; n_offers = 0; owait = 200; }
     px_ = STOS[k].x; py_ = STOS[k].y; stop_car(); health = 100; evac = EV_NONE;
+    { float rx, ry, ra; if (road_spot(px_, py_, 190, &rx, &ry, &ra)) { px_ = rx; py_ = ry; ang = ra; } }
     for (int r = 0; r < 200 && hit(px_, py_, ang); r += 2) px_ = STOS[k].x + r;
     unstick();
     char b[48]; snprintf(b, sizeof b, "ЕВАКУАЦІЯ НА СТО: -%d ГРН", cost);
@@ -1375,7 +1406,7 @@ static void render(void *target_buf) {
     gfx_layer16(wbuf, WW, WW, WH, sx, sy, ZOOM, 0, 0, 1);
     if (carv.on) {
         float k = 17.0f / CARTEX_LEN * ZOOM, hx = CARTEX_W / 2 * k, hy = CARTEX_H / 2 * k;     /* 8,5 м = 17 пікс карти */
-        if (carv.shadow) gfx_quad((const uint32_t *)(assets_bin + CARTEX_SHD), CARTEX_W, CARTEX_H, carv.x + 1.6f * ZOOM, carv.y + 2.2f * ZOOM, carv.a, hx * 1.04f, hy * 1.12f, 0xFFFFFFFF);
+        if (carv.shadow) gfx_quad((const uint32_t *)(assets_bin + CARTEX_SHD), CARTEX_W, CARTEX_H, carv.x + 0.6f * ZOOM, carv.y + 0.9f * ZOOM, carv.a, hx * 1.0f, hy * 1.06f, 0xFFFFFFFF);
         gfx_quad((const uint32_t *)(assets_bin + (carv.lit ? CARTEX_LIT : CARTEX_OFF)), CARTEX_W, CARTEX_H, carv.x, carv.y, carv.a, hx, hy, carv.col);
     }
     if (arch_used) gfx_layer16(warch, WW, WW, WH, sx, sy, ZOOM, 1, 1, 1);
