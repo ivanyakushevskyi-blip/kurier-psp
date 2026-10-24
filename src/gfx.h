@@ -18,6 +18,7 @@ void gfx_rect(float x, float y, float w, float h, uint32_t col);
 /* трикутники з 16-бітної текстури (fmt як у gfx_layer16), білінійно, зі змішуванням за альфою:
    uvxy — по 4 числа на вершину (u, v у текселях; x, y на екрані), nv кратне 3 */
 void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const float *uvxy, int nv);   /* напівпрозорий прямокутник */
-void gfx_end(void);
+void gfx_end(void);                     /* PSP: кадр відданий чипу, не чекаємо */
+void gfx_sync(void);                    /* дочекатися, поки чип домалює попередній кадр */
 
 #endif

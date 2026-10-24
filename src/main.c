@@ -46,29 +46,37 @@ typedef uint8_t u8;
 #include "pal_ids.h"
 #include "gfx.h"
 
-static u8 __attribute__((aligned(16))) fb[SW * SH];       /* інтерфейс поверх світу (0 — прозоро); на титулі/карті — увесь кадр */
+/* Буфери, з яких графічний чип бере текстури, — подвійні: поки чип малює кадр N з набору A,
+   процесор уже готує кадр N+1 у набір B (swap_bufs після кожного кадру на PSP) */
+static u8 __attribute__((aligned(16))) fb_[2][SW * SH];   /* інтерфейс поверх світу (0 — прозоро); на титулі/карті — увесь кадр */
+static u8 *fb = fb_[0];
 /* ---- світ: процесор малює огляд 1:1 у буфер, графічний чип показує його з наближенням ZOOM і згладжуванням */
 #define ZOOM 1.0f                         /* 1:1 — чітко (24.10.2026; 1,25 зі згладжуванням було мильно) */
 #define VW (SW / ZOOM)                   /* огляд у пікселях карти: 384 x 217,6 */
 #define VH (SH / ZOOM)
 #define WW 496                           /* буфер світу: огляд + запас на субпіксельний зсув (крок кратний 16) */
 #define WH 288
-static uint16_t __attribute__((aligned(16))) wbuf[WW * WH];     /* карта, 5650 */
-static uint16_t __attribute__((aligned(16))) warch[WW * WH];    /* будинки над арками, 5551 */
-static u8 __attribute__((aligned(16))) wover[WW * WH];
-static uint16_t __attribute__((aligned(16))) wroof[WW * WH];    /* дахи для паралаксу, 5551 (біт 15 — дах) */
+static uint16_t __attribute__((aligned(16))) wbuf_[2][WW * WH];     /* карта, 5650 */
+static uint16_t __attribute__((aligned(16))) warch_[2][WW * WH];    /* крони й будинки над арками, 5551 */
+static u8 __attribute__((aligned(16))) wover_[2][WW * WH];          /* бульбашки (індекси палітри, 0 — прозоро) */
+static uint16_t __attribute__((aligned(16))) wroof_[2][WW * WH];    /* дахи для паралаксу, 5551 (біт 15 — дах) */
+static uint16_t *wbuf = wbuf_[0], *warch = warch_[0], *wroof = wroof_[0]; static u8 *wover = wover_[0];
 #define MAXRV 12000
-static float roofv[MAXRV * 4]; static int nroofv;               /* трикутники дахів: u, v (тексель wroof), зсув x, y */          /* бульбашки (індекси палітри, 0 — прозоро) */
+static float roofv[MAXRV * 4]; static int nroofv;               /* трикутники дахів: u, v (тексель wroof), зсув x, y */
 static uint16_t PAL16[256];                                      /* палітра спрайтів -> 5650 */
-static int arch_used;
-static u8 *tg = fb; static int tgw = SW, tgh = SH;   /* куди малюють примітиви */
+static int arch_used, arch_used_s[2], buf_cur;
+static void swap_bufs(void) {
+    arch_used_s[buf_cur] = arch_used; buf_cur ^= 1; arch_used = arch_used_s[buf_cur];
+    fb = fb_[buf_cur]; wbuf = wbuf_[buf_cur]; warch = warch_[buf_cur]; wroof = wroof_[buf_cur]; wover = wover_[buf_cur];
+}
+static u8 *tg = fb_[0]; static int tgw = SW, tgh = SH;   /* куди малюють примітиви */
 static void target(u8 *b, int w, int h) { tg = b; tgw = w; tgh = h; }
 static int world_mode, over_used, wox, woy, ndim;
 static float viewx, viewy;                /* лівий верхній кут огляду у світі (з урахуванням струсу) */
 static struct { int on, lit, shadow; float x, y, a; uint32_t col; } carv;
 static float dimr[4][4]; static uint32_t dimc[4];
 static int tick;
-static int fps_shown = 60;                                       /* кадрів за секунду (показ у кутку, для тестів) */
+static int fps_shown = 60, cpu_ms10, gpu_ms10;                   /* кадри за секунду; час процесора й очікування чипа (0,1 мс) — показ у кутку, для тестів */
 
 /* ================= map chunk cache (MAP.BIN) ================= */
 #define NCHUNK (NCX * NCY)
@@ -189,7 +197,7 @@ static int surf(int x, int y) {
     return (c[ly * (CS / 2) + (lx >> 1)] >> ((lx & 1) * 4)) & 15;
 }
 static void draw_map16(int ox, int oy) {
-    if (ox < 0 || oy < 0) memset(wbuf, 0, sizeof wbuf);
+    if (ox < 0 || oy < 0) memset(wbuf, 0, WW * WH * 2);
     int cy0 = oy < 0 ? -1 : oy / CS, cy1 = (oy + WH - 1) / CS, cx0 = ox < 0 ? -1 : ox / CS, cx1 = (ox + WW - 1) / CS;
     for (int cy = cy0; cy <= cy1; cy++) for (int cx = cx0; cx <= cx1; cx++) {
         if (cx < 0 || cy < 0 || cx >= NCX || cy >= NCY) continue;
@@ -1138,7 +1146,8 @@ static void draw_hud(void) {
     u8 ink = C_ink_1;
     snprintf(w, sizeof w, "%d ГРН", money);
     u8 wc = money < 0 ? C_red_1 : C_green_0;
-    snprintf(w, sizeof w, "%d FPS", fps_shown); otext8(4, y0 - 12, 1, fps_shown >= 55 ? C_green_3 : C_red_3, C_ink_0, w);
+    { char f_[64]; snprintf(f_, sizeof f_, "%d FPS  CPU %d.%d  GPU %d.%d", fps_shown, cpu_ms10 / 10, cpu_ms10 % 10, gpu_ms10 / 10, gpu_ms10 % 10);
+      otext8(4, y0 - 12, 1, fps_shown >= 55 ? C_green_3 : C_red_3, C_ink_0, f_); }
     snprintf(w, sizeof w, "%d ГРН", money);
     /* вгорі: таймер ліворуч, вулиця по центру, радар праворуч, відстань під ним */
     if (ostate == O_DROP) {
@@ -1290,8 +1299,8 @@ static void draw_world(void) {
     draw_landmarks(ox, oy);
     /* ---- шар над машиною: будинки над арками, дим, бульбашки */
     target(wover, WW, WH);
-    memset(wover, 0, sizeof wover); over_used = 0;
-    if (arch_used) { memset(warch, 0, sizeof warch); arch_used = 0; }
+    memset(wover, 0, WW * WH); over_used = 0;
+    if (arch_used) { memset(warch, 0, WW * WH * 2); arch_used = 0; }
     PROF(1)
 #ifndef PARALLAX
 #define PARALLAX 1                                   /* плавний (дробовий зсув на графічному чипі); цілопіксельний смикався */
@@ -1364,7 +1373,7 @@ static void draw_world(void) {
 }
 
 static void draw_bigmap(void) {
-    memset(fb, C_ink_0, sizeof fb);
+    memset(fb, C_ink_0, SW * SH);
     int ox = (SW - BIG_W) / 2, oy = (SH - BIG_H) / 2;
     for (int y = 0; y < BIG_H; y++) memcpy(fb + (oy + y) * SW + ox, bigb + y * BIG_W, BIG_W);
     float qx = freecam ? fcx : px_, qy = freecam ? fcy : py_;
@@ -1390,7 +1399,7 @@ static void draw_frame(void) {
         camx = SPAWN_X - VW / 2 + sinf(tick * 0.004f) * 300; camy = SPAWN_Y - VH / 2 - 200 + cosf(tick * 0.003f) * 180;
         if (camx < 0) camx = 0; if (camy < 0) camy = 0;
         if (camx > MAP_W - VW) camx = MAP_W - VW; if (camy > MAP_H - VH) camy = MAP_H - VH;
-        world_mode = 1; memset(fb, 0, sizeof fb);
+        world_mode = 1; memset(fb, 0, SW * SH);
         draw_world();
         darken_rect(0, 30, SW, 150, 2);
         otext8_c(SW / 2, 46, 5, C_box_3, C_ink_0, "ПРОСКУРІВ");
@@ -1404,7 +1413,7 @@ static void draw_frame(void) {
         return;
     }
     if (map_err) {
-        memset(fb, C_ink_0, sizeof fb);
+        memset(fb, C_ink_0, SW * SH);
         otext8_c(SW / 2, 90, 2, C_red_3, C_ink_0, map_err == 1 ? "НЕМАЄ ФАЙЛУ MAP.BIN" : "MAP.BIN НЕ ВІД ЦІЄЇ ВЕРСІЇ");
         otext8_c(SW / 2, 130, 1, C_white_2, C_ink_0, "ПОКЛАДИ MAP.BIN ПОРУЧ З EBOOT.PBP");
         otext8_c(SW / 2, 146, 1, C_white_1, C_ink_0, "PSP/GAME/KURIERKHM/");
@@ -1412,7 +1421,7 @@ static void draw_frame(void) {
     }
     if (state == S_BIGMAP) { draw_bigmap(); return; }
     world_mode = 1;
-    memset(fb, 0, sizeof fb);
+    memset(fb, 0, SW * SH);
     draw_world();
     if (freecam) {
         if (street_i >= 0) otext8_c(244, 10, 1, C_white_2, C_ink_0, STREETS[street_i]);
@@ -1551,12 +1560,6 @@ static int loader_thread(SceSize args, void *argp) {
 static u32 *vw[2];
 static void *vp[2];
 static int back = 1;
-static void flip(void) {
-    render((void *)(uintptr_t)(back * BUFSZ));
-    sceDisplayWaitVblankStart();
-    sceDisplaySetFrameBuf(vp[back], STRIDE, PSP_DISPLAY_PIXEL_FORMAT_8888, PSP_DISPLAY_SETBUF_IMMEDIATE);
-    back ^= 1;
-}
 int main(int argc, char **argv) {
     int t = sceKernelCreateThread("cb", cb_thread, 0x11, 0xFA0, 0, NULL);
     if (t >= 0) sceKernelStartThread(t, 0, NULL);
@@ -1587,19 +1590,31 @@ int main(int argc, char **argv) {
     srand(sceKernelGetSystemTimeLow());
     SceCtrlData pad; unsigned old = 0;
     /* швидкість гри не залежить від кадрів: стільки кроків логіки, скільки минуло кадрових розгорток (до 3) */
-    unsigned lastv = sceDisplayGetVcount(), fps_t0 = sceKernelGetSystemTimeLow(); int fps_n = 0;
+    unsigned lastv = sceDisplayGetVcount(), fps_t0 = sceKernelGetSystemTimeLow(), cpu_acc = 0, gpu_acc = 0; int fps_n = 0, shown_any = 0;
     while (1) {
         sceCtrlPeekBufferPositive(&pad, 1);
         unsigned pressed = pad.Buttons & ~old;
         old = pad.Buttons;
         unsigned v = sceDisplayGetVcount(); int steps = (int)(v - lastv); lastv = v;
         if (steps < 1) steps = 1; if (steps > 3) steps = 3;
+        unsigned c0 = sceKernelGetSystemTimeLow();
         for (int i = 0; i < steps; i++) game_update(pad.Buttons, i == 0 ? pressed : 0, pad.Lx, pad.Ly);
         draw_frame();
-        flip();
-        fps_n++;
+        unsigned c1 = sceKernelGetSystemTimeLow();
+        /* конвеєр: дочекатися попереднього кадру чипа, показати його, віддати чипу цей кадр і одразу готувати наступний */
+        gfx_sync();
+        unsigned c2 = sceKernelGetSystemTimeLow();
+        sceDisplayWaitVblankStart();
+        if (shown_any) sceDisplaySetFrameBuf(vp[back ^ 1], STRIDE, PSP_DISPLAY_PIXEL_FORMAT_8888, PSP_DISPLAY_SETBUF_IMMEDIATE);
+        render((void *)(uintptr_t)(back * BUFSZ));
+        shown_any = 1; back ^= 1;
+        swap_bufs();
+        fps_n++; cpu_acc += c1 - c0; gpu_acc += c2 - c1;
         unsigned t = sceKernelGetSystemTimeLow();
-        if (t - fps_t0 >= 1000000) { fps_shown = fps_n; fps_n = 0; fps_t0 = t; }
+        if (t - fps_t0 >= 1000000) {
+            fps_shown = fps_n; cpu_ms10 = (int)(cpu_acc / fps_n / 100); gpu_ms10 = (int)(gpu_acc / fps_n / 100);
+            fps_n = 0; cpu_acc = gpu_acc = 0; fps_t0 = t;
+        }
     }
     return 0;
 }

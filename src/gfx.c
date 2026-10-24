@@ -9,7 +9,8 @@ static uint32_t __attribute__((aligned(16))) clut[256];
 #include <pspkernel.h>
 #include <pspgu.h>
 
-static unsigned int __attribute__((aligned(16))) dlist[1024 * 1024 / 4];
+static unsigned int __attribute__((aligned(16))) dlists[2][512 * 1024 / 4];
+static int dl_cur;
 
 typedef struct { float u, v; float x, y, z; } VT;
 typedef struct { float u, v; uint32_t c; float x, y, z; } VCT;
@@ -22,7 +23,7 @@ void gfx_init(const uint32_t *pal) {
     clut[0] = 0;                                         /* індекс 0 — прозорий */
     sceKernelDcacheWritebackRange(clut, sizeof clut);
     sceGuInit();
-    sceGuStart(GU_DIRECT, dlist);
+    sceGuStart(GU_DIRECT, dlists[0]);
     sceGuDrawBuffer(GU_PSM_8888, (void *)0, 512);
     sceGuOffset(2048 - 240, 2048 - 136);
     sceGuViewport(2048, 2048, 480, 272);
@@ -41,7 +42,8 @@ void gfx_init(const uint32_t *pal) {
 
 void gfx_begin(void *target) {
     sceKernelDcacheWritebackAll();                        /* текстури, які щойно намалював процесор */
-    sceGuStart(GU_DIRECT, dlist);
+    dl_cur ^= 1;
+    sceGuStart(GU_DIRECT, dlists[dl_cur]);
     sceGuDrawBufferList(GU_PSM_8888, target, 512);
     sceGuClearColor(0xFF000000);
     sceGuClear(GU_COLOR_BUFFER_BIT);
@@ -129,10 +131,8 @@ void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const fl
     sceGuDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, nv, 0, v);
 }
 
-void gfx_end(void) {
-    sceGuFinish();
-    sceGuSync(0, 0);
-}
+void gfx_end(void) { sceGuFinish(); }
+void gfx_sync(void) { sceGuSync(0, 0); }
 
 #else
 /* ================= ПК: програмна копія ================= */
@@ -257,4 +257,5 @@ void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const fl
     }
 }
 void gfx_end(void) {}
+void gfx_sync(void) {}
 #endif
