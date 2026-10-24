@@ -1273,7 +1273,10 @@ static void draw_world(void) {
     memset(wover, 0, sizeof wover); over_used = 0;
     if (arch_used) { memset(warch, 0, sizeof warch); arch_used = 0; }
     PROF(1)
-    if (!freecam && roofs_parallax(ox, oy, vx + VW / 2, vy + VH / 2)) arch_used = 1;
+#ifndef PARALLAX
+#define PARALLAX 0                                   /* вимкнено 24.10.2026: цілопіксельні зсуви смикаються, об'єму не дають */
+#endif
+    if (PARALLAX && !freecam && roofs_parallax(ox, oy, vx + VW / 2, vy + VH / 2)) arch_used = 1;
     PROF(2)
     carv.on = 0;
     if (!freecam && state != S_TITLE && NTREE > 0) {
