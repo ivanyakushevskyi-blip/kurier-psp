@@ -9,7 +9,7 @@ static uint32_t __attribute__((aligned(16))) clut[256];
 #include <pspkernel.h>
 #include <pspgu.h>
 
-static unsigned int __attribute__((aligned(16))) dlist[256 * 1024 / 4];
+static unsigned int __attribute__((aligned(16))) dlist[1024 * 1024 / 4];
 
 typedef struct { float u, v; float x, y, z; } VT;
 typedef struct { float u, v; uint32_t c; float x, y, z; } VCT;
@@ -115,6 +115,20 @@ void gfx_rect(float x, float y, float w, float h, uint32_t col) {
     sceGuDrawArray(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, 0, v);
 }
 
+void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const float *uvxy, int nv) {
+    if (nv < 3) return;
+    sceGuEnable(GU_TEXTURE_2D);
+    sceGuEnable(GU_BLEND);
+    sceGuTexMode(fmt ? GU_PSM_5551 : GU_PSM_5650, 0, 0, 0);
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+    sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+    sceGuTexImage(0, pow2(w), pow2(h), stride, tex);
+    sceGuTexFlush();
+    VT *v = (VT *)sceGuGetMemory(nv * sizeof(VT));
+    for (int i = 0; i < nv; i++) { v[i].u = uvxy[4 * i]; v[i].v = uvxy[4 * i + 1]; v[i].x = uvxy[4 * i + 2]; v[i].y = uvxy[4 * i + 3]; v[i].z = 0; }
+    sceGuDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, nv, 0, v);
+}
+
 void gfx_end(void) {
     sceGuFinish();
     sceGuSync(0, 0);
@@ -214,5 +228,33 @@ void gfx_rect(float x, float y, float w, float h, uint32_t col) {
         if ((unsigned)i < 480 && (unsigned)j < 272) blend(dst + j * 512 + i, p[0], p[1], p[2], p[3] / 255);
 }
 
+void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const float *uvxy, int nv) {
+    for (int t = 0; t + 2 < nv; t += 3) {
+        const float *A = uvxy + 4 * t, *B = A + 4, *C = A + 8;
+        float area = (B[2] - A[2]) * (C[3] - A[3]) - (B[3] - A[3]) * (C[2] - A[2]);
+        if (fabsf(area) < 1e-6f) continue;
+        int x0 = (int)floorf(fminf(A[2], fminf(B[2], C[2]))), x1 = (int)ceilf(fmaxf(A[2], fmaxf(B[2], C[2])));
+        int y0 = (int)floorf(fminf(A[3], fminf(B[3], C[3]))), y1 = (int)ceilf(fmaxf(A[3], fmaxf(B[3], C[3])));
+        if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0; if (x1 > 480) x1 = 480; if (y1 > 272) y1 = 272;
+        for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
+            float px = x + 0.5f, py = y + 0.5f;
+            float w0 = ((C[2] - B[2]) * (py - B[3]) - (C[3] - B[3]) * (px - B[2])) / area;
+            float w1 = ((A[2] - C[2]) * (py - C[3]) - (A[3] - C[3]) * (px - C[2])) / area;
+            float w2 = 1 - w0 - w1;
+            if (w0 < 0 || w1 < 0 || w2 < 0) continue;
+            float u = w0 * A[0] + w1 * B[0] + w2 * C[0], v = w0 * A[1] + w1 * B[1] + w2 * C[1];
+            float uu = u - 0.5f, vv = v - 0.5f; int iu = (int)floorf(uu), iv = (int)floorf(vv); float fu = uu - iu, fv = vv - iv;
+            float acc[4] = { 0, 0, 0, 0 };
+            for (int k = 0; k < 4; k++) {
+                int tu = iu + (k & 1), tv = iv + (k >> 1);
+                if (tu < 0) tu = 0; if (tv < 0) tv = 0; if (tu >= w) tu = w - 1; if (tv >= h) tv = h - 1;
+                float wgt = ((k & 1) ? fu : 1 - fu) * ((k >> 1) ? fv : 1 - fv), p[4];
+                fetch16(tex + tv * stride + tu, fmt, p);
+                for (int j = 0; j < 4; j++) acc[j] += p[j] * wgt;
+            }
+            blend(dst + y * 512 + x, acc[0], acc[1], acc[2], acc[3] / 255.0f);
+        }
+    }
+}
 void gfx_end(void) {}
 #endif

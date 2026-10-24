@@ -14,7 +14,10 @@ void gfx_layer16(const uint16_t *tex, int stride, int w, int h, float sx, float 
 /* RGBA-текстура tw*th (степені двійки), центр (cx,cy), поворот ang (рад), півширина/піввисота на екрані hx,hy,
    колір-множник col (0xAABBGGRR): затемнення й прозорість. */
 void gfx_quad(const uint32_t *tex, int tw, int th, float cx, float cy, float ang, float hx, float hy, uint32_t col);
-void gfx_rect(float x, float y, float w, float h, uint32_t col);   /* напівпрозорий прямокутник */
+void gfx_rect(float x, float y, float w, float h, uint32_t col);
+/* трикутники з 16-бітної текстури (fmt як у gfx_layer16), білінійно, зі змішуванням за альфою:
+   uvxy — по 4 числа на вершину (u, v у текселях; x, y на екрані), nv кратне 3 */
+void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const float *uvxy, int nv);   /* напівпрозорий прямокутник */
 void gfx_end(void);
 
 #endif

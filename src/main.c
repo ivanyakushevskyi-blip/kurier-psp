@@ -55,7 +55,10 @@ static u8 __attribute__((aligned(16))) fb[SW * SH];       /* інтерфейс 
 #define WH 288
 static uint16_t __attribute__((aligned(16))) wbuf[WW * WH];     /* карта, 5650 */
 static uint16_t __attribute__((aligned(16))) warch[WW * WH];    /* будинки над арками, 5551 */
-static u8 __attribute__((aligned(16))) wover[WW * WH];          /* бульбашки (індекси палітри, 0 — прозоро) */
+static u8 __attribute__((aligned(16))) wover[WW * WH];
+static uint16_t __attribute__((aligned(16))) wroof[WW * WH];    /* дахи для паралаксу, 5551 (біт 15 — дах) */
+#define MAXRV 12000
+static float roofv[MAXRV * 4]; static int nroofv;               /* трикутники дахів: u, v (тексель wroof), зсув x, y */          /* бульбашки (індекси палітри, 0 — прозоро) */
 static uint16_t PAL16[256];                                      /* палітра спрайтів -> 5650 */
 static int arch_used;
 static u8 *tg = fb; static int tgw = SW, tgh = SH;   /* куди малюють примітиви */
@@ -228,48 +231,65 @@ static int roof_span(int k, int y, int *xs) {       /* перетини конт
     for (int i = 1; i < m; i++) for (int j = i; j > 0 && xs[j] < xs[j - 1]; j--) { int t = xs[j]; xs[j] = xs[j - 1]; xs[j - 1] = t; }
     return m & ~1;
 }
+#define BLD_EO(k) (((const uint32_t *)(assets_bin + BLD_EO_OFF))[k])
+#define BLD_EP(i) ((const int16_t *)(assets_bin + BLD_EP_OFF) + 2 * (i))
+#define BLD_TO(k) (((const uint32_t *)(assets_bin + BLD_TO_OFF))[k])
+#define BLD_TR(i) ((const uint8_t *)(assets_bin + BLD_TR_OFF) + 3 * (i))
+/* Плавний паралакс: процесор лише готує текстуру дахів (wroof) і затемнює місце під ними в карті;
+   зсунуті дахи малює графічний чип трикутниками з дробовим зсувом і згладжуванням — без стрибків по пікселю. */
 static int roofs_parallax(int ox, int oy, float ccx, float ccy) {
+    nroofv = 0;
     if (NBLD == 0) return 0;
-    static int16_t vis[600][3]; int nv = 0;
+    static int16_t vis[600]; static float vsh[600][2]; int nv = 0;
     int cx0 = ox / CS - 3, cx1 = (ox + WW) / CS + 3, cy0 = oy / CS - 3, cy1 = (oy + WH) / CS + 3;
     if (cx0 < 0) cx0 = 0; if (cy0 < 0) cy0 = 0; if (cx1 >= NCX) cx1 = NCX - 1; if (cy1 >= NCY) cy1 = NCY - 1;
     for (int gy = cy0; gy <= cy1; gy++) for (int gx = cx0; gx <= cx1; gx++) {
         uint32_t k0 = BLD_CELL(gy * NCX + gx), k1 = BLD_CELL(gy * NCX + gx + 1);
         for (uint32_t k = k0; k < k1 && nv < 600; k++) {
             const int16_t *B = BLD(k);
-            float f = B[2] * KPAR;
-            int dx = (int)lroundf((B[0] - ccx) * f), dy = (int)lroundf((B[1] - ccy) * f);
-            if (dx > 4) dx = 4; if (dx < -4) dx = -4; if (dy > 4) dy = 4; if (dy < -4) dy = -4;
-            if (dx == 0 && dy == 0) continue;
-            vis[nv][0] = (int16_t)k; vis[nv][1] = (int16_t)dx; vis[nv][2] = (int16_t)dy; nv++;
+            float f = B[2] * KPAR, dx = (B[0] - ccx) * f, dy = (B[1] - ccy) * f, l = sqrtf(dx * dx + dy * dy);
+            if (l < 0.12f) continue;
+            if (l > 5) { dx *= 5 / l; dy *= 5 / l; }
+            vis[nv] = (int16_t)k; vsh[nv][0] = dx; vsh[nv][1] = dy; nv++;
         }
     }
     int xs[16];
-    /* один прохід: дах копіюється зі зсувом у шар над машиною, а місце під ним у шарі карти темнішає
-       (машина на дахах не буває; будинки над арками сюди не входять) */
+    /* 1) рамка навколо кожного даху — колір карти з нульовою альфою (щоб згладжування на краю брало колір землі) */
     for (int i = 0; i < nv; i++) {
-        int k = vis[i][0], dx = vis[i][1], dy = vis[i][2];
-        uint32_t p0 = BLD_PO(k), n = BLD(k)[3];
+        int k = vis[i]; uint32_t p0 = BLD_PO(k), n = BLD(k)[3];
+        int xa = 32767, xb = -32768, ya = 32767, yb = -32768;
+        for (uint32_t a = 0; a < n; a++) { const int16_t *P = BLD_PT(p0 + a); if (P[0] < xa) xa = P[0]; if (P[0] > xb) xb = P[0]; if (P[1] < ya) ya = P[1]; if (P[1] > yb) yb = P[1]; }
+        xa -= ox + 3; xb -= ox - 3; ya -= oy + 3; yb -= oy - 3;
+        if (xa < 0) xa = 0; if (ya < 0) ya = 0; if (xb > WW - 1) xb = WW - 1; if (yb > WH - 1) yb = WH - 1;
+        for (int y = ya; y <= yb; y++) { const uint16_t *s_ = wbuf + y * WW; uint16_t *d = wroof + y * WW; for (int x = xa; x <= xb; x++) d[x] = (uint16_t)(TO5551(s_[x]) & 0x7FFF); }
+    }
+    /* 2) сам дах (непрозорий) у wroof; місце під ним у карті — темніше; трикутники розширеного контуру — на графічний чип */
+    for (int i = 0; i < nv; i++) {
+        int k = vis[i]; uint32_t p0 = BLD_PO(k), n = BLD(k)[3];
         int ya = 32767, yb = -32768;
         for (uint32_t a = 0; a < n; a++) { int y = BLD_PT(p0 + a)[1]; if (y < ya) ya = y; if (y > yb) yb = y; }
         if (ya < oy) ya = oy; if (yb > oy + WH - 1) yb = oy + WH - 1;
         for (int y = ya; y <= yb; y++) {
-            int ly = y - oy, ty = ly + dy;
-            int m = roof_span(k, y, xs);
-            uint16_t *src = wbuf + ly * WW, *dst = (unsigned)ty < WH ? warch + ty * WW : 0;
+            int ly = y - oy, m = roof_span(k, y, xs);
+            uint16_t *src = wbuf + ly * WW, *d = wroof + ly * WW;
             for (int j = 0; j < m; j += 2) {
                 int xa = xs[j] - ox, xb = xs[j + 1] - ox;
                 if (xa < 0) xa = 0; if (xb > WW) xb = WW;
-                for (int x = xa; x < xb; x++) {
-                    uint16_t c = src[x];
-                    int tx = x + dx;
-                    if (dst && (unsigned)tx < WW) dst[tx] = TO5551(c);
-                    src[x] = (uint16_t)((c >> 1) & 0x7BEF);
-                }
+                for (int x = xa; x < xb; x++) { uint16_t c = src[x]; d[x] = TO5551(c); src[x] = (uint16_t)((c >> 1) & 0x7BEF); }
+            }
+        }
+        uint32_t e0 = BLD_EO(k), t0 = BLD_TO(k), t1 = BLD_TO(k + 1);
+        if (nroofv + (int)(t1 - t0) * 3 > MAXRV) break;
+        for (uint32_t t = t0; t < t1; t++) {
+            const uint8_t *T = BLD_TR(t);
+            for (int q = 0; q < 3; q++) {
+                const int16_t *P = BLD_EP(e0 + T[q]);
+                float *o = roofv + 4 * nroofv++;
+                o[0] = (float)(P[0] - ox); o[1] = (float)(P[1] - oy); o[2] = vsh[i][0]; o[3] = vsh[i][1];
             }
         }
     }
-    return nv > 0;
+    return nroofv > 0;
 }
 /* 16-бітні операції над шаром карти */
 #define DARK50(c) ((uint16_t)(((c) >> 1) & 0x7BEF))
@@ -1274,9 +1294,9 @@ static void draw_world(void) {
     if (arch_used) { memset(warch, 0, sizeof warch); arch_used = 0; }
     PROF(1)
 #ifndef PARALLAX
-#define PARALLAX 0                                   /* вимкнено 24.10.2026: цілопіксельні зсуви смикаються, об'єму не дають */
+#define PARALLAX 1                                   /* плавний (дробовий зсув на графічному чипі); цілопіксельний смикався */
 #endif
-    if (PARALLAX && !freecam && roofs_parallax(ox, oy, vx + VW / 2, vy + VH / 2)) arch_used = 1;
+    if (!(PARALLAX && !freecam && roofs_parallax(ox, oy, vx + VW / 2, vy + VH / 2))) nroofv = 0;
     PROF(2)
     carv.on = 0;
     if (!freecam && state != S_TITLE && NTREE > 0) {
@@ -1497,6 +1517,14 @@ static void render(void *target_buf) {
         if (carv.shadow) gfx_quad((const uint32_t *)(assets_bin + CARTEX_SHD), CARTEX_W, CARTEX_H, carv.x + 0.6f * ZOOM, carv.y + 0.9f * ZOOM, carv.a, hx * 1.0f, hy * 1.06f, 0xFFFFFFFF);
         gfx_quad((const uint32_t *)(assets_bin + (carv.lit ? CARTEX_LIT : CARTEX_OFF)), CARTEX_W, CARTEX_H, carv.x, carv.y, carv.a, hx, hy, carv.col);
     }
+    if (nroofv) {                                                   /* дахи з паралаксом — над машиною */
+        static float vv[MAXRV * 4];
+        for (int i = 0; i < nroofv; i++) {
+            const float *r = roofv + 4 * i; float *o = vv + 4 * i;
+            o[0] = r[0]; o[1] = r[1]; o[2] = sx + r[0] * ZOOM + r[2]; o[3] = sy + r[1] * ZOOM + r[3];
+        }
+        gfx_tris16(wroof, WW, WW, WH, 1, vv, nroofv);
+    }
     if (arch_used) gfx_layer16(warch, WW, WW, WH, sx, sy, ZOOM, 1, 1, ZOOM != 1.0f);
     if (over_used) gfx_layer8(wover, WW, WW, WH, sx, sy, ZOOM, 1, ZOOM != 1.0f);
     render_particles();
@@ -1662,6 +1690,7 @@ int main(int argc, char **argv) {
         int kmin = 999, kmax = 0, t100 = -1, t140 = -1, sl0 = sync_loads;
         for (int f = 0; f < 900 && dist(px_, py_, L[0], L[1]) < bl - 60; f++) {
             game_update(PSP_CTRL_CROSS, 0, 128, 128);
+            if (getenv("ANIM2") && f >= 120 && f < 300 && f % 2 == 0) { draw_frame(); snprintf(nm, sizeof nm, "%s/anim2_%03d.ppm", dir, (f - 120) / 2); dump(nm); }
             int k = (int)(fabsf(vel) * MPP * 60 * 3.6f + 0.5f); if (k > 140) k = 140;
             if (k >= 100 && t100 < 0) t100 = f;
             if (k >= 140 && t140 < 0) t140 = f;
@@ -1722,6 +1751,7 @@ int main(int argc, char **argv) {
         for (int f = 0; f < 600; f++) {
             double a = now_s(); game_update(PSP_CTRL_CROSS, 0, 128 + (int)(sinf(f * 0.02f) * 60), 128);
             double b = now_s(); draw_frame(); double c = now_s(); tu += b - a; td += c - b;
+            if (getenv("ANIM") && f >= 200 && f < 320 && f % 2 == 0) { snprintf(nm, sizeof nm, "%s/anim_%03d.ppm", dir, (f - 200) / 2); dump(nm); }
         }
         printf("prof us/frame: update %.0f draw %.0f | map %.0f marks %.0f roofs %.0f crowns+arch+car %.0f particles %.0f\n",
                tu / 600 * 1e6, td / 600 * 1e6, prof[0] / 600 * 1e6, prof[1] / 600 * 1e6, prof[2] / 600 * 1e6, prof[3] / 600 * 1e6, prof[4] / 600 * 1e6);
