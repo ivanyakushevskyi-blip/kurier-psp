@@ -602,6 +602,56 @@ def draw_roof(img, b, pts, rs, ss=1):
     dst[Os] = OUT if S_ == 1 else (S[0].astype(np.float32) * 0.55).astype(np.uint8)
 
 
+def _tree_v3(img, x, y, rr, kind, rs, ss):
+    """Реалістичніша крона (при надвибірці): купа листяних «хмаринок» з власною світлотінню, темні просвіти між ними,
+    дрібна фактура листя, м'який темний край. x, y, rr — у детальній сітці."""
+    H, W = img.shape[:2]
+    R = int(math.ceil(rr * 1.15)) + 2 * ss
+    yy, xx = np.mgrid[-R:R + 1, -R:R + 1].astype(np.float32)
+    C = [np.array(c, np.float32) for c in TREE[kind]]
+    jit = 1.0 + (rs.random() - 0.5) * 0.12                     # кожне дерево трохи іншого тону
+    C = [c * jit for c in C]
+    hgt = np.full(xx.shape, -1e9, np.float32)                  # «висота» поверхні крони
+    nx_ = np.zeros_like(xx); ny_ = np.zeros_like(xx)
+    n = 7 + int(rr / ss * 0.9)
+    pts = [(0.0, 0.0, rr * 0.62)]
+    for _ in range(n):
+        a = rs.random() * 6.283; d = rr * (0.25 + 0.5 * math.sqrt(rs.random())); r = rr * (0.28 + 0.22 * rs.random())
+        pts.append((math.cos(a) * d, math.sin(a) * d, r))
+    for cx, cy, r in pts:                                       # кожна хмаринка — півсфера; видима та, що вища
+        q = 1 - ((xx - cx) ** 2 + (yy - cy) ** 2) / (r * r)
+        hz = np.sqrt(np.clip(q, 0, 1)) * r + (rr - math.hypot(cx, cy)) * 0.35
+        upd = (q > 0) & (hz > hgt)
+        hgt[upd] = hz[upd]
+        nx_[upd] = ((xx - cx) / r)[upd]; ny_[upd] = ((yy - cy) / r)[upd]
+    m = hgt > -1e8
+    nz = np.sqrt(np.clip(1 - nx_ ** 2 - ny_ ** 2, 0, 1))
+    lam = np.clip((-nx_ * 0.55 - ny_ * 0.55 + nz * 0.63), 0, 1)       # світло з північного заходу, згори
+    leaf = _up(np.random.RandomState(rs.randrange(1 << 30)).rand((2 * R) // ss + 2, (2 * R) // ss + 2), ss)[:2 * R + 1, :2 * R + 1]
+    leaf = cv2.GaussianBlur(leaf.astype(np.float32), (0, 0), 0.35 * ss)
+    t = np.clip(lam * 1.15 + (leaf - 0.5) * 0.35, 0, 1)
+    # градієнт C0 (тінь) -> C1 -> C2 -> C3 (світло)
+    u = t * 3; i = np.clip(u.astype(int), 0, 2); f = (u - i)[..., None]
+    Cs = np.stack(C)
+    col = Cs[i] * (1 - f) + Cs[np.minimum(i + 1, 3)] * f
+    # самозатінення: нижчі місця (просвіти між хмаринками, край) темніші
+    hmax = hgt[m].max() if m.any() else 1
+    ao = np.clip(hgt / max(hmax, 1e-3), 0, 1)
+    col *= (0.62 + 0.38 * ao)[..., None]
+    # м'який край: покриття з невеликим розмиттям маски
+    cov = cv2.GaussianBlur(m.astype(np.float32), (0, 0), 0.45 * ss)
+    cov = np.clip(cov * 1.6 - 0.3, 0, 1) * m + np.clip(cov * 1.2 - 0.2, 0, 1) * ~m
+    x0, y0 = int(x) - R, int(y) - R
+    ax0, ay0, ax1, ay1 = max(0, x0), max(0, y0), min(W, x0 + 2 * R + 1), min(H, y0 + 2 * R + 1)
+    if ax1 <= ax0 or ay1 <= ay0: return
+    sl = (slice(ay0 - y0, ay1 - y0), slice(ax0 - x0, ax1 - x0))
+    a_ = cov[sl][..., None]
+    dst = img[ay0:ay1, ax0:ax1].astype(np.float32)
+    edge = (C[0] * 0.75)
+    colv = np.where(m[sl][..., None], col[sl], edge)
+    img[ay0:ay1, ax0:ax1] = np.clip(dst * (1 - a_) + colv * a_, 0, 255).astype(np.uint8)
+
+
 def draw_tree(img, x, y, rr, kind, rs, ss=1):
     """x, y, rr — у сітці img (при ss>1 img детальний, rr уже помножений на ss)."""
     H, W = img.shape[:2]
