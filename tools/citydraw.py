@@ -468,7 +468,7 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
 
     import citydetail as CDt
     import citygen as CG
-    ctx = CDt.Ctx(img=img, cls=cls, S=S, MF=MF, x0=x0, y0=y0, D=D, ways=ways, tofn=lambda nid: tof(CG.px(*D['nodes'][nid])))
+    ctx = CDt.Ctx(img=img, cls=cls, S=S, MF=MF, x0=x0, y0=y0, D=D, ways=ways, sat=sw, tofn=lambda nid: tof(CG.px(*D['nodes'][nid])))
     if S > 1: CDt.road_marks(ctx)
 
     # ---------- будинки
@@ -503,6 +503,11 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
     canopy |= park & ((tex > 3.0) | (mx < 70)) & (exg > -8)
     canopy &= ~cv2.dilate(bmask.astype(np.uint8), np.ones((7, 7), np.uint8)).astype(bool)
     canopy &= ~np.isin(clsb, (G_ROAD, G_RAIL, G_WATER, G_PITCH, G_TRACK, G_SAND))
+    if S > 1:                                                     # на ринках «крони» — це намети, не дерева
+        mk_ = np.zeros((H, W), np.uint8)
+        for w, pts, ptf in ways:
+            if w['closed'] and w['t'].get('amenity') == 'marketplace': cv2.fillPoly(mk_, [np.round(np.array(pts)).astype(np.int32)], 1)
+        canopy &= ~mk_.astype(bool)
     canopy = cv2.morphologyEx(canopy.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
     canopy = cv2.morphologyEx(canopy, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)).astype(bool)
     dist = cv2.distanceTransform(canopy.astype(np.uint8), cv2.DIST_L2, 5)
@@ -561,7 +566,7 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
 
     if S > 1:
         ctx.img = img
-        CDt.shore(ctx); CDt.flowerbeds(ctx)
+        CDt.shore(ctx); CDt.flowerbeds(ctx); CDt.cemetery(ctx)
         CDt.plots(ctx, blds, park, bmask, solid_out)
         CDt.playgrounds(ctx); CDt.benches(ctx); CDt.markets(ctx, bmaskf); CDt.fountains(ctx)
         CDt.park_furniture(ctx, park); CDt.planters(ctx); CDt.kiosks(ctx, solid_out)

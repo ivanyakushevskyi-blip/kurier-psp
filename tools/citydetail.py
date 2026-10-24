@@ -452,7 +452,8 @@ def _box(c, bx, by, L, Wd, ux, uy, kind, solid_out, rs=None):
 AWN = [((196, 52, 44), (236, 232, 222)), ((44, 120, 70), (236, 232, 222)), ((40, 86, 160), (236, 232, 222)),
        ((214, 160, 40), (120, 70, 40)), ((150, 40, 60), None), ((60, 60, 66), None), ((214, 104, 40), None)]
 UMB = [(196, 52, 44), (40, 120, 70), (236, 232, 222), (214, 170, 40), (40, 86, 160), (110, 70, 50)]
-TENT = [(52, 96, 176), (196, 56, 48), (232, 230, 220), (46, 128, 74), (226, 178, 46), (140, 60, 130)]
+TENT = [(198, 202, 208), (176, 182, 190), (220, 222, 224), (150, 156, 164), (64, 104, 164), (56, 86, 136), (232, 232, 230),
+        (198, 202, 208), (176, 182, 190), (150, 64, 52), (44, 112, 70), (214, 170, 52)]      # здебільшого метал, зрідка колір
 
 
 def _node_pts(c, pred):
@@ -531,35 +532,49 @@ def umbrella(c, x, y, col, rs):
 
 
 def markets(c, bmask):
-    """Ринок: ряди наметів із гребенем (різні кольори), проходи між рядами; лише на вільному мощенні."""
+    """Ринок: охайні ряди павільйонів (суцільні дахи зі швами між секціями), проходи між парами рядів.
+    Напрямок рядів — зі знімка (переважний напрямок ліній у межах ринку), інакше — за формою ділянки."""
     img, cls = c.img, c.cls
     H, W = cls.shape
+    satf = cv2.resize(c.sat.astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR) if getattr(c, 'sat', None) is not None else None
+    ROOF = [(196, 200, 206), (178, 184, 192), (214, 216, 220), (160, 166, 174), (202, 204, 206)]
+    ACC = [(62, 104, 172), (166, 66, 54), (52, 122, 76), (214, 170, 52)]
     for item in _node_pts(c, lambda t: t.get('amenity') == 'marketplace'):
         if len(item) < 3: continue
         P = item[2]
         m = np.zeros((H, W), np.uint8); cv2.fillPoly(m, [np.round(P).astype(np.int32)], 1)
-        m = m.astype(bool) & ~cv2.dilate(bmask.astype(np.uint8), np.ones((c.S * 3 + 1,) * 2, np.uint8)).astype(bool) & np.isin(cls, (1, 7, 13, 9, 12))
+        m = m.astype(bool) & ~cv2.dilate(bmask.astype(np.uint8), np.ones((c.S * 2 + 1,) * 2, np.uint8)).astype(bool) & ~np.isin(cls, (5,))
         if m.sum() < c.m(10) ** 2: continue
         (cx, cy), (rw, rh), a = cv2.minAreaRect(P.astype(np.float32))
-        a = math.radians(a); ux, uy = math.cos(a), math.sin(a); nx, ny = -uy, ux
-        tw, td, aisle = c.m(3.0), c.m(2.6), c.m(3.2)
-        ext = max(rw, rh)
-        for i in np.arange(-ext / 2, ext / 2, tw):
-            for j in np.arange(-ext / 2, ext / 2, 2 * td + aisle):
-                for side in (0, 1):
-                    px_ = cx + ux * (i + tw / 2) + nx * (j + side * td + td / 2); py_ = cy + uy * (i + tw / 2) + ny * (j + side * td + td / 2)
-                    if not (0 <= px_ < W and 0 <= py_ < H): continue
-                    if not m[int(py_), int(px_)]: continue
-                    rs = _rng(*c.world((px_, py_)), 31)
-                    col = np.array(TENT[rs.randrange(len(TENT))], np.float32)
-                    q = np.array([[-tw / 2 + 1, -td / 2 + 1], [tw / 2 - 1, -td / 2 + 1], [tw / 2 - 1, td / 2 - 1], [-tw / 2 + 1, td / 2 - 1]])
-                    R = np.array([[ux, nx], [uy, ny]])
-                    Q = q @ R.T + [px_, py_]
-                    cv2.fillPoly(img, [np.round(Q + [c.m(0.4), c.m(0.6)]).astype(np.int32)], (90, 88, 84))
-                    h1 = np.array([q[0], q[1], (q[1] + q[2]) / 2, (q[0] + q[3]) / 2]) @ R.T + [px_, py_]
-                    h2 = np.array([(q[0] + q[3]) / 2, (q[1] + q[2]) / 2, q[2], q[3]]) @ R.T + [px_, py_]
-                    cv2.fillPoly(img, [np.round(h1).astype(np.int32)], tuple(int(v) for v in np.clip(col * 1.1 + 8, 0, 255)))
-                    cv2.fillPoly(img, [np.round(h2).astype(np.int32)], tuple(int(v) for v in col * 0.82))
+        ang = math.radians(a) + (math.pi / 2 if rw < rh else 0)
+        if satf is not None and satf[m].mean() > 45:                  # напрямок рядів зі знімка (тензор структури)
+            lum = cv2.GaussianBlur(satf.mean(-1), (0, 0), c.S)
+            gx = cv2.Sobel(lum, cv2.CV_32F, 1, 0); gy = cv2.Sobel(lum, cv2.CV_32F, 0, 1)
+            jxx, jyy, jxy = (gx * gx)[m].sum(), (gy * gy)[m].sum(), (gx * gy)[m].sum()
+            ang = 0.5 * math.atan2(2 * jxy, jxx - jyy) + math.pi / 2           # уздовж ліній, а не поперек
+        ux, uy = math.cos(ang), math.sin(ang); nx, ny = -uy, ux
+        yy, xx = np.nonzero(m)
+        al = (xx - cx) * ux + (yy - cy) * uy; ac = (xx - cx) * nx + (yy - cy) * ny
+        depth, aisle, sec = c.m(3.2), c.m(3.6), c.m(5.5)
+        period = 2 * depth + aisle
+        ph = np.mod(ac, period)
+        row = ph < 2 * depth
+        side = (ph >= depth).astype(int)
+        rid = np.floor(ac / period).astype(int) * 2 + side
+        sid = np.floor(al / sec).astype(int)
+        h = (rid * 73856093 ^ sid * 19349663 ^ int(c.x0) * 0 ^ 0) & 0xFFFF
+        col = np.array(ROOF, np.float32)[h % len(ROOF)]
+        accm = (h % 17) == 0
+        col[accm] = np.array(ACC, np.float32)[(h[accm] // 17) % len(ACC)]
+        # світло: половина даху до північного заходу світліша
+        inrow = np.mod(ph, depth) / depth
+        col *= (1.06 - 0.12 * inrow)[:, None]
+        seam = (np.mod(al, sec) < c.S * 0.5) | (np.mod(ph, depth) < c.S * 0.4)
+        col[seam] *= 0.8
+        out = np.where(row[:, None], col, np.array((84, 86, 92), np.float32))
+        shadow = (~row) & (ph < 2 * depth + c.S * 2.2)
+        out[shadow] *= 0.7
+        img[yy, xx] = np.clip(out, 0, 255).astype(np.uint8)
 
 
 def fountains(c):
@@ -834,3 +849,38 @@ def planters(c):
                     for k in range(6):
                         a = rs.random() * 6.283; d = rs.random() * c.m(0.5)
                         cv2.circle(img, (int(x + math.cos(a) * d), int(y + math.sin(a) * d)), max(1, c.S // 3), FL[rs.randrange(4)], -1)
+
+
+def cemetery(c):
+    """Кладовище: ряди могил (огорожа, плита, пам'ятник) уздовж довшої сторони ділянки, проходи між рядами."""
+    img, cls, S = c.img, c.cls, c.S
+    H, W = cls.shape
+    STONE = [(70, 70, 74), (38, 38, 42), (150, 150, 146), (196, 194, 188), (110, 96, 88), (60, 64, 70)]
+    for item in _node_pts(c, lambda t: t.get('landuse') == 'cemetery' or t.get('amenity') == 'grave_yard'):
+        if len(item) < 3: continue
+        P = item[2]
+        m = np.zeros((H, W), np.uint8); cv2.fillPoly(m, [np.round(P).astype(np.int32)], 1)
+        m = m.astype(bool) & np.isin(cls, (1, 2, 9, 13, 14))
+        if m.sum() < c.m(15) ** 2: continue
+        ys, xs = np.nonzero(m)
+        img[ys, xs] = (img[ys, xs] * 0.8 + np.array((70, 92, 54)) * 0.2).astype(np.uint8)
+        (cx, cy), (rw, rh), a = cv2.minAreaRect(P.astype(np.float32))
+        a = math.radians(a)
+        if rw < rh: a += math.pi / 2
+        ux, uy = math.cos(a), math.sin(a); nx, ny = -uy, ux
+        ext = max(rw, rh) / 2 + c.m(5)
+        for j in np.arange(-ext, ext, c.m(3.0)):
+            if int(round(j / c.m(3.0))) % 5 == 4: continue                 # прохід
+            for i in np.arange(-ext, ext, c.m(2.3)):
+                x, y = cx + ux * i + nx * j, cy + uy * i + ny * j
+                if not (0 <= x < W and 0 <= y < H) or not m[int(y), int(x)]: continue
+                rs = _rng(*c.world((x, y)), 121)
+                if rs.random() < 0.18: continue
+                if rs.random() < 0.6:                                      # огорожа
+                    q = np.array([[-c.m(0.95), -c.m(1.25)], [c.m(0.95), -c.m(1.25)], [c.m(0.95), c.m(1.25)], [-c.m(0.95), c.m(1.25)]])
+                    R = np.array([[ux, nx], [uy, ny]])
+                    cv2.polylines(img, [np.round(q @ R.T + [x, y]).astype(np.int32)], True, (44, 46, 50), max(1, int(c.m(0.08))))
+                col = STONE[rs.randrange(len(STONE))]
+                _rect(img, x + c.m(0.2), y + c.m(0.25), c.m(1.6), c.m(0.75), nx, ny, (60, 66, 52))
+                _rect(img, x, y, c.m(1.6), c.m(0.75), nx, ny, col)
+                _rect(img, x - nx * c.m(0.75), y - ny * c.m(0.75), c.m(0.25), c.m(0.8), ux, uy, tuple(int(v * 0.8) for v in col))
