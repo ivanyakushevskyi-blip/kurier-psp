@@ -55,8 +55,7 @@ static u8 __attribute__((aligned(16))) fb[SW * SH];       /* інтерфейс 
 #define WH 288
 static uint16_t __attribute__((aligned(16))) wbuf[WW * WH];     /* карта, 5650 */
 static uint16_t __attribute__((aligned(16))) warch[WW * WH];    /* будинки над арками, 5551 */
-static u8 __attribute__((aligned(16))) wover[WW * WH];
-static u8 wsol[WW * WH];                                          /* твердість огляду (для паралаксу дахів) */          /* бульбашки (індекси палітри, 0 — прозоро) */
+static u8 __attribute__((aligned(16))) wover[WW * WH];          /* бульбашки (індекси палітри, 0 — прозоро) */
 static uint16_t PAL16[256];                                      /* палітра спрайтів -> 5650 */
 static int arch_used;
 static u8 *tg = fb; static int tgw = SW, tgh = SH;   /* куди малюють примітиви */
@@ -66,6 +65,7 @@ static float viewx, viewy;                /* лівий верхній кут о
 static struct { int on, lit, shadow; float x, y, a; uint32_t col; } carv;
 static float dimr[4][4]; static uint32_t dimc[4];
 static int tick;
+static int fps_shown = 60;                                       /* кадрів за секунду (показ у кутку, для тестів) */
 
 /* ================= map chunk cache (MAP.BIN) ================= */
 #define NCHUNK (NCX * NCY)
@@ -194,12 +194,7 @@ static void draw_map16(int ox, int oy) {
         int x0 = cx * CS - ox, y0 = cy * CS - oy;
         int sx0 = x0 < 0 ? 0 : x0, sx1 = x0 + CS > WW ? WW : x0 + CS;
         int sy0 = y0 < 0 ? 0 : y0, sy1 = y0 + CS > WH ? WH : y0 + CS;
-        const u8 *sb = (const u8 *)c + CPX;
-        for (int sy = sy0; sy < sy1; sy++) {
-            memcpy(wbuf + sy * WW + sx0, c + (sy - y0) * CS + (sx0 - x0), (size_t)(sx1 - sx0) * 2);
-            const u8 *r = sb + (sy - y0) * (CS / 8); u8 *d = wsol + sy * WW;
-            for (int sx = sx0; sx < sx1; sx++) { int lx = sx - x0; d[sx] = (r[lx >> 3] >> (lx & 7)) & 1; }
-        }
+        for (int sy = sy0; sy < sy1; sy++) memcpy(wbuf + sy * WW + sx0, c + (sy - y0) * CS + (sx0 - x0), (size_t)(sx1 - sx0) * 2);
     }
 }
 
@@ -213,6 +208,16 @@ static void draw_map16(int ox, int oy) {
 #define KPAR 0.0008f
 #endif
 #define TO5551(c) ((uint16_t)(0x8000 | ((c) & 31) | ((((c) >> 6) & 31) << 5) | (((c) >> 11) << 10)))
+#ifdef HOST
+#include <time.h>
+static double prof[8];
+static double now_s(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
+#define PROF0 double _pt = now_s();
+#define PROF(i) { double _n = now_s(); prof[i] += _n - _pt; _pt = _n; }
+#else
+#define PROF0
+#define PROF(i)
+#endif
 static int roof_span(int k, int y, int *xs) {       /* перетини контуру з рядком y (світові коорд.), відсортовані */
     uint32_t p0 = BLD_PO(k), n = BLD(k)[3]; int m = 0;
     for (uint32_t a = 0, b = n - 1; a < n; b = a++) {
@@ -240,30 +245,30 @@ static int roofs_parallax(int ox, int oy, float ccx, float ccy) {
         }
     }
     int xs[16];
-    for (int pass = 0; pass < 2; pass++)                 /* 0 — затемнити місце під дахом, 1 — зсунутий дах */
-        for (int i = 0; i < nv; i++) {
-            int k = vis[i][0], dx = pass ? vis[i][1] : 0, dy = pass ? vis[i][2] : 0;
-            uint32_t p0 = BLD_PO(k), n = BLD(k)[3];
-            int ya = 32767, yb = -32768;
-            for (uint32_t a = 0; a < n; a++) { int y = BLD_PT(p0 + a)[1]; if (y < ya) ya = y; if (y > yb) yb = y; }
-            if (ya < oy) ya = oy; if (yb > oy + WH - 1) yb = oy + WH - 1;
-            for (int y = ya - 1; y <= yb + 1; y++) {
-                int ly = y - oy; if ((unsigned)ly >= WH) continue;
-                int ty = ly + dy; if ((unsigned)ty >= WH) continue;
-                int m = roof_span(k, y < ya ? ya : (y > yb ? yb : y), xs);
-                for (int j = 0; j < m; j += 2) {
-                    int xa = xs[j] - 1 - ox, xb = xs[j + 1] + 1 - ox;
-                    if (xa < 0) xa = 0; if (xb > WW) xb = WW;
-                    const uint16_t *src = wbuf + ly * WW; const u8 *so = wsol + ly * WW; uint16_t *dst = warch + ty * WW;
-                    for (int x = xa; x < xb; x++) {
-                        if (!so[x]) continue;
-                        int tx = x + dx; if ((unsigned)tx >= WW) continue;
-                        uint16_t c = src[x];
-                        dst[tx] = pass ? TO5551(c) : TO5551((uint16_t)(((c) >> 1) & 0x7BEF));
-                    }
+    /* один прохід: дах копіюється зі зсувом у шар над машиною, а місце під ним у шарі карти темнішає
+       (машина на дахах не буває; будинки над арками сюди не входять) */
+    for (int i = 0; i < nv; i++) {
+        int k = vis[i][0], dx = vis[i][1], dy = vis[i][2];
+        uint32_t p0 = BLD_PO(k), n = BLD(k)[3];
+        int ya = 32767, yb = -32768;
+        for (uint32_t a = 0; a < n; a++) { int y = BLD_PT(p0 + a)[1]; if (y < ya) ya = y; if (y > yb) yb = y; }
+        if (ya < oy) ya = oy; if (yb > oy + WH - 1) yb = oy + WH - 1;
+        for (int y = ya; y <= yb; y++) {
+            int ly = y - oy, ty = ly + dy;
+            int m = roof_span(k, y, xs);
+            uint16_t *src = wbuf + ly * WW, *dst = (unsigned)ty < WH ? warch + ty * WW : 0;
+            for (int j = 0; j < m; j += 2) {
+                int xa = xs[j] - ox, xb = xs[j + 1] - ox;
+                if (xa < 0) xa = 0; if (xb > WW) xb = WW;
+                for (int x = xa; x < xb; x++) {
+                    uint16_t c = src[x];
+                    int tx = x + dx;
+                    if (dst && (unsigned)tx < WW) dst[tx] = TO5551(c);
+                    src[x] = (uint16_t)((c >> 1) & 0x7BEF);
                 }
             }
         }
+    }
     return nv > 0;
 }
 /* 16-бітні операції над шаром карти */
@@ -1113,6 +1118,8 @@ static void draw_hud(void) {
     u8 ink = C_ink_1;
     snprintf(w, sizeof w, "%d ГРН", money);
     u8 wc = money < 0 ? C_red_1 : C_green_0;
+    snprintf(w, sizeof w, "%d FPS", fps_shown); otext8(4, y0 - 12, 1, fps_shown >= 55 ? C_green_3 : C_red_3, C_ink_0, w);
+    snprintf(w, sizeof w, "%d ГРН", money);
     /* вгорі: таймер ліворуч, вулиця по центру, радар праворуч, відстань під ним */
     if (ostate == O_DROP) {
         int s_ = otimer / 60; snprintf(b, sizeof b, "%d:%02d", s_ / 60, s_ % 60);
@@ -1245,7 +1252,9 @@ static void draw_world(void) {
     int ox = (int)floorf(vx) - 1, oy = (int)floorf(vy) - 1;
     wox = ox; woy = oy;
     /* ---- шар під машиною: карта, сліди, значки, пам'ятки */
+    PROF0
     draw_map16(ox, oy);
+    PROF(0)
     for (int i = 0; i < skid_n; i++) {                           /* сліди шин */
         int x = skid[i][0] - ox, y = skid[i][1] - oy;
         if ((unsigned)x < WW && (unsigned)y < WH) { uint16_t *p = wbuf + y * WW + x; *p = DARK50(*p); }
@@ -1263,7 +1272,9 @@ static void draw_world(void) {
     target(wover, WW, WH);
     memset(wover, 0, sizeof wover); over_used = 0;
     if (arch_used) { memset(warch, 0, sizeof warch); arch_used = 0; }
+    PROF(1)
     if (!freecam && roofs_parallax(ox, oy, vx + VW / 2, vy + VH / 2)) arch_used = 1;
+    PROF(2)
     carv.on = 0;
     if (!freecam && state != S_TITLE && NTREE > 0) {
         /* крони над машиною: пікселі крони з карти — поверх машини (непрозоро) */
@@ -1316,7 +1327,9 @@ static void draw_world(void) {
             }
         }
     }
+    PROF(3)
     draw_particles(ox, oy);
+    PROF(4)
     /* ---- екранні позначки — у шар інтерфейсу */
     target(fb, SW, SH);
     if (freecam) {
@@ -1542,13 +1555,20 @@ int main(int argc, char **argv) {
     sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
     srand(sceKernelGetSystemTimeLow());
     SceCtrlData pad; unsigned old = 0;
+    /* швидкість гри не залежить від кадрів: стільки кроків логіки, скільки минуло кадрових розгорток (до 3) */
+    unsigned lastv = sceDisplayGetVcount(), fps_t0 = sceKernelGetSystemTimeLow(); int fps_n = 0;
     while (1) {
         sceCtrlPeekBufferPositive(&pad, 1);
         unsigned pressed = pad.Buttons & ~old;
         old = pad.Buttons;
-        game_update(pad.Buttons, pressed, pad.Lx, pad.Ly);
+        unsigned v = sceDisplayGetVcount(); int steps = (int)(v - lastv); lastv = v;
+        if (steps < 1) steps = 1; if (steps > 3) steps = 3;
+        for (int i = 0; i < steps; i++) game_update(pad.Buttons, i == 0 ? pressed : 0, pad.Lx, pad.Ly);
         draw_frame();
         flip();
+        fps_n++;
+        unsigned t = sceKernelGetSystemTimeLow();
+        if (t - fps_t0 >= 1000000) { fps_shown = fps_n; fps_n = 0; fps_t0 = t; }
     }
     return 0;
 }
@@ -1692,6 +1712,17 @@ int main(int argc, char **argv) {
     for (int f = 0; f < 400; f++) { game_update(PSP_CTRL_CROSS, 0, 255, 60); draw_frame(); if (loads_frame > maxl) maxl = loads_frame; }
     snprintf(nm, sizeof nm, "%s/f_freecam.ppm", dir); dump(nm);
     printf("max chunk loads per frame in fast free camera: %d\n", maxl);
+    {   /* профіль: 600 кадрів їзди містом (час процесора ПК; PSP приблизно в 20-30 разів повільніша) */
+        game_update(0, PSP_CTRL_LTRIGGER, 128, 128);
+        evac = 0; health = 100; fuel = 100; state = S_PLAY; game_init();
+        memset(prof, 0, sizeof prof); double tu = 0, td = 0;
+        for (int f = 0; f < 600; f++) {
+            double a = now_s(); game_update(PSP_CTRL_CROSS, 0, 128 + (int)(sinf(f * 0.02f) * 60), 128);
+            double b = now_s(); draw_frame(); double c = now_s(); tu += b - a; td += c - b;
+        }
+        printf("prof us/frame: update %.0f draw %.0f | map %.0f marks %.0f roofs %.0f crowns+arch+car %.0f particles %.0f\n",
+               tu / 600 * 1e6, td / 600 * 1e6, prof[0] / 600 * 1e6, prof[1] / 600 * 1e6, prof[2] / 600 * 1e6, prof[3] / 600 * 1e6, prof[4] / 600 * 1e6);
+    }
     game_update(0, PSP_CTRL_LTRIGGER, 128, 128);
     game_update(0, PSP_CTRL_START, 128, 128); draw_frame();
     snprintf(nm, sizeof nm, "%s/f_pause.ppm", dir); dump(nm);
