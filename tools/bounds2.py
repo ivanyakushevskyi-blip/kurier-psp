@@ -54,7 +54,7 @@ def snap_roads(play, d, W, H):
     return out
 
 
-def main(src='data/bounds_v2.json', out='build/bounds.npz'):
+def main(src='data/bounds_v3.json', out='build/bounds.npz'):
     W = int((LON1 - LON0) * MLON / G); H = int((LAT1 - LAT_0) * MLAT / G)
     poly = np.array([((lo - LON0) * MLON / G, (LAT1 - la) * MLAT / G) for lo, la in json.load(open(src))], np.float32)
     m = np.zeros((H, W), np.uint8)

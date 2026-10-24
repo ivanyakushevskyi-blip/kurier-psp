@@ -541,8 +541,28 @@ static void cargo_hit(float spd) {
     }
 }
 
+/* дерева: x, y, радіус крони (пікс), за блоками карти 64x64 */
+#define TREE(k) ((const int16_t *)(assets_bin + TREE_OFF) + 3 * (k))
+#define TREE_CELL(i) (((const uint32_t *)(assets_bin + TREE_CELL_OFF))[i])
+/* стовбур 1 м (радіус 1 пікс) — як стіна; машина 8,5 м: півдовжина 7,5, півширина 3,5 (з запасом на стовбур) */
+static int trunk_hit(float x, float y, float c, float s) {
+    int cx = (int)x / CS, cy = (int)y / CS;
+    for (int gy = cy - 1; gy <= cy + 1; gy++) for (int gx = cx - 1; gx <= cx + 1; gx++) {
+        if (gx < 0 || gy < 0 || gx >= NCX || gy >= NCY) continue;
+        int k0 = TREE_CELL(gy * NCX + gx), k1 = TREE_CELL(gy * NCX + gx + 1);
+        for (int k = k0; k < k1; k++) {
+            const int16_t *T = TREE(k);
+            float dx = T[0] - x, dy = T[1] - y;
+            if (dx * dx + dy * dy > 120) continue;
+            float lx = dx * c + dy * s, ly = -dx * s + dy * c;
+            if (fabsf(lx) < 8.5f && fabsf(ly) < 4.0f) return 1;
+        }
+    }
+    return 0;
+}
 static int hit(float x, float y, float a) {
     float c = cosf(a), s = sinf(a);
+    if (NTREE > 0 && trunk_hit(x, y, c, s)) return 1;
     static const float P[][2] = { { 0, 0 }, { 7.5f, 0 }, { -7.5f, 0 }, { 6.5f, 3 }, { 6.5f, -3 }, { -6.5f, 3 }, { -6.5f, -3 }, { 0, 3 }, { 0, -3 } };   /* Golf 8,5 x ~3,9 м (17 x 8 пікс), колізія трохи вужча */
     for (int i = 0; i < 9; i++) {
         float lx = P[i][0], ly = P[i][1];
@@ -615,7 +635,7 @@ static float lane_steer(void) {
         if (dot < 0.64f) continue;                           /* перехрестя / поворот — не заважаємо */
         float nx = -uy, ny = ux;                             /* праворуч від напрямку (y донизу) */
         float cx = x0 + dx * t, cy = y0 + dy * t;
-        float off = L[5] ? 0 : L[4];
+        float off = (L[5] || L[4] <= 4) ? 0 : L[4];            /* вузькі (≤7 м) двосторонні — по центру, ширші — праворуч */
         float lat = (px_ - cx) * nx + (py_ - cy) * ny - off;  /* >0 — правіше центру смуги */
         float d2 = (px_ - cx) * (px_ - cx) + (py_ - cy) * (py_ - cy);
         if (d2 < best) {
@@ -647,8 +667,21 @@ static void update_player(unsigned btn, int lx) {
 
     float fx = cosf(ang), fy = sinf(ang), rx = -fy, ry = fx;
     float vf = vx_ * fx + vy_ * fy, vr = vx_ * rx + vy_ * ry;
-    int off = surf((int)px_, (int)py_) == 1;
+    int sfc = surf((int)px_, (int)py_);
+    int off = sfc == 1;
+    int walk = sfc == 3 || sfc == 4;                          /* тротуар / бордюр */
     float vmax = off ? 0.50f : VMAX;                         /* 1,31 пікс/кадр ≈ 141 км/год; на спідометрі — 140 */
+    if (walk) vmax = 0.28f;                                   /* по тротуару ~30 км/год */
+    /* бордюр: заїзд з дороги на тротуар — трусить і різко гальмує, на швидкості б'є підвіску */
+    static int prev_sfc;
+    if (walk && prev_sfc != 3 && prev_sfc != 4 && fabsf(vf) > 0.14f) {
+        float k = fabsf(vf);
+        vf *= k > 0.6f ? 0.42f : (k > 0.35f ? 0.55f : 0.7f);
+        bump = 8; shake = (int)(2 + k * 5);
+        if (k > 0.46f) { health -= (k - 0.46f) * 38.0f; cargo_hit(k * 0.8f); }
+        for (int q = 0; q < 3; q++) puff(px_ + fx * 7, py_ + fy * 7, (rand() % 5 - 2) * 0.06f, (rand() % 5 - 2) * 0.06f, 18, 0);
+    } else if (!walk && (prev_sfc == 3 || prev_sfc == 4) && fabsf(vf) > 0.3f) { vf *= 0.88f; bump = 4; shake = 2; }   /* з бордюра вниз */
+    prev_sfc = sfc;
     int heavy = ostate == O_DROP && otype == T_HEAVY;
     if (heavy) vmax *= 0.7f;
     if (fuel <= 0) gas = 0;                                   /* пальне скінчилося */
@@ -1118,6 +1151,28 @@ static void draw_world(void) {
     memset(wover, 0, sizeof wover); over_used = 0;
     if (arch_used) { memset(warch, 0, sizeof warch); arch_used = 0; }
     carv.on = 0;
+    if (!freecam && state != S_TITLE && NTREE > 0) {
+        /* крони над машиною: пікселі крони з карти — поверх машини (непрозоро) */
+        int cx = (int)px_ / CS, cy = (int)py_ / CS;
+        for (int gy = cy - 1; gy <= cy + 1; gy++) for (int gx = cx - 1; gx <= cx + 1; gx++) {
+            if (gx < 0 || gy < 0 || gx >= NCX || gy >= NCY) continue;
+            int k0 = TREE_CELL(gy * NCX + gx), k1 = TREE_CELL(gy * NCX + gx + 1);
+            for (int k = k0; k < k1; k++) {
+                const int16_t *T = TREE(k);
+                float r = T[2] * 0.82f, dx = T[0] - px_, dy = T[1] - py_;
+                if (dx * dx + dy * dy > (r + 10) * (r + 10)) continue;
+                int ri = (int)r;
+                for (int yy = -ri; yy <= ri; yy++) for (int xx = -ri; xx <= ri; xx++) {
+                    if (xx * xx + yy * yy > r * r) continue;
+                    int wx = T[0] + xx, wy = T[1] + yy, lx = wx - ox, ly = wy - oy;
+                    if ((unsigned)lx >= WW || (unsigned)ly >= WH) continue;
+                    uint16_t c = map_px16(wx, wy);
+                    warch[ly * WW + lx] = (uint16_t)(0x8000 | (c & 31) | (((c >> 6) & 31) << 5) | ((c >> 11) << 10));
+                }
+                arch_used = 1;
+            }
+        }
+    }
     if (!freecam && state != S_TITLE) {
         carv.on = 1; carv.shadow = 1; carv.lit = braking || evac;
         carv.x = (px_ - vx) * ZOOM; carv.y = (py_ - vy) * ZOOM; carv.a = ang; carv.col = 0xFFFFFFFF;

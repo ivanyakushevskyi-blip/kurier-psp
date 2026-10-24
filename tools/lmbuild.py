@@ -39,10 +39,12 @@ def main():
     out = []
     for e in L:
         cands = []
-        for nid, t in D['n'].items():
+        if e.get('pos'):                                       # точка без назви в OSM (водонапірна вежа)
+            cands.append(({}, CG.px(*e['pos'])))
+        for nid, t in D['n'].items() if e['osm'] else ():
             if t.get('name') == e['osm'] and nid in D['nodes']:
                 cands.append((t, CG.px(*D['nodes'][nid])))
-        for w in D['w']:
+        for w in (D['w'] if e['osm'] else ()):
             if w['t'].get('name') == e['osm']:
                 cands.append((w['t'], tuple(np.array(w['pts']).mean(0))))
         if e.get('osm_tag'):

@@ -46,5 +46,9 @@
  {"id": "dendropark", "name": "Дендропарк", "osm": "Дендропарк", "osm_tag": "leisure=park", "tpl": "parksign"},
  {"id": "park_franka", "name": "Парк ім. Франка", "osm": "Парк імені Івана Франка", "tpl": "parksign"},
  {"id": "park_chekmana", "name": "Парк ім. Чекмана", "osm": "Парк імені Михайла Чекмана", "tpl": "parksign"},
- {"id": "stadion", "name": "Стадіон \"Поділля\"", "osm": "Поділля", "osm_tag": "leisure=stadium", "tpl": "stadium"}
+ {"id": "stadion", "name": "Стадіон \"Поділля\"", "osm": "Поділля", "osm_tag": "leisure=stadium", "tpl": "stadium"},
+ {"id": "khnu", "name": "Хмельницький національний університет", "osm": "ХНУ корпус 1", "tpl": "classic", "p": {"wall": "white", "cols": 6, "flag": true, "wide": true}},
+ {"id": "stare_kladovyshche", "name": "Старе кладовище", "osm": "Старе кладовище", "tpl": "stele", "p": {"h": 26, "col": "gray", "top": "cross"}},
+ {"id": "rechovyi_rynok", "name": "Речовий ринок", "osm": "Речовий ринок", "osm_tag": "amenity=marketplace", "tpl": "market"},
+ {"id": "dubivska_vezha", "name": "Дубівська вежа", "osm": "", "pos": [49.4068, 26.9876], "tpl": "watertower"}
 ]

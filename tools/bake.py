@@ -103,6 +103,17 @@ fr = sprites.car_frames()
 SPR_OFF = put(b''.join(f.tobytes() for f in fr))
 SPR_LIT = put(b''.join(f.tobytes() for f in sprites.car_frames(lit=True)))
 CARTEX_OFF, CARTEX_LIT, CARTEX_SHD = (put(t) for t in sprites.car_textures())
+# ---- дерева: стовбури (колізія) і крони (поверх машини), відсортовані за блоком карти 64x64
+_tr = json.load(open(os.path.join(BUILD, 'trees.json'))) if os.path.exists(os.path.join(BUILD, 'trees.json')) else []
+_pl = np.load(os.path.join(BUILD, 'play.npy'), mmap_mode='r')
+_tr = [t for t in _tr if 0 <= t[0] < W and 0 <= t[1] < H and _pl[int(t[1]), int(t[0])]]
+_tr.sort(key=lambda t: (t[1] // CS) * NCX + t[0] // CS)
+_cells = np.zeros(NCX * NCY + 1, np.uint32)
+for t in _tr: _cells[(t[1] // CS) * NCX + t[0] // CS + 1] += 1
+_cells = np.cumsum(_cells).astype(np.uint32)
+TREE_OFF = put(np.array([[t[0], t[1], int(round(t[2]))] for t in _tr] or [[0, 0, 0]], '<i2').tobytes())
+TREE_CELL_OFF = put(_cells.astype('<u4').tobytes())
+NTREE = len(_tr)
 ICON_STO = put(sprites.icon('sto').tobytes())
 ICON_FUEL = put(sprites.icon('fuel').tobytes())
 ICON_SHOP = put(sprites.icon('shop').tobytes())
@@ -189,6 +200,7 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('#define SPR_OFF %d\n#define SPR_SZ %d\n#define SPR_N %d\n#define ICON_SHOP %d\n#define ICON_HOME %d\n#define ICON_SZ 16\n' % (SPR_OFF, sprites.CAR_SZ, sprites.NROT, ICON_SHOP, ICON_HOME))
     f.write('#define SPAWN_X %d\n#define SPAWN_Y %d\n' % tuple(md['spawn']))
     f.write('#define SPR_LIT %d\n#define ICON_STO %d\n#define ICON_FUEL %d\n' % (SPR_LIT, ICON_STO, ICON_FUEL))
+    f.write('#define TREE_OFF %d\n#define TREE_CELL_OFF %d\n#define NTREE %d\n' % (TREE_OFF, TREE_CELL_OFF, NTREE))
     f.write('#define CARTEX_OFF %d\n#define CARTEX_LIT %d\n#define CARTEX_SHD %d\n#define CARTEX_W %d\n#define CARTEX_H %d\n#define CARTEX_LEN %d\n'
             % (CARTEX_OFF, CARTEX_LIT, CARTEX_SHD, sprites.CARTEX_W, sprites.CARTEX_H, sprites.CARTEX_LEN))
     widx = json.load(open(os.path.join(BUILD, 'water_idx.json'))) if os.path.exists(os.path.join(BUILD, 'water_idx.json')) else []

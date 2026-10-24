@@ -35,16 +35,32 @@ def zone(key):
     return z[iy[:, None], jx[None, :]]
 
 
+BLK = 'build/blocks_ss%d' % SS            # готові блоки (продовження після перерви)
+
+
 def render_block(args):
     bx, by = args
     w, h = min(B, W - bx), min(B, H - by)
-    tl = []
-    img, c = CD.render(bx - M, by - M, w + 2 * M, h + 2 * M, tree_out=tl, ss=SS)
+    fn = os.path.join(BLK, '%d_%d.npz' % (bx, by))
+    if os.path.exists(fn):
+        z = np.load(fn, allow_pickle=True)
+        return bx, by, z['img'], z['cls'], [tuple(t) for t in z['trees'].tolist()], list(z['solid'].tolist())
+    tl, so = [], []
+    img, c = CD.render(bx - M, by - M, w + 2 * M, h + 2 * M, tree_out=tl, ss=SS, solid_out=so)
     trees = [t for t in tl if bx <= t[0] < bx + w and by <= t[1] < by + h]
-    return bx, by, img[M:M + h, M:M + w].copy(), c[M:M + h, M:M + w].copy(), trees
+    img, c = img[M:M + h, M:M + w].copy(), c[M:M + h, M:M + w].copy()
+    so_ = np.empty(len(so), dtype=object); so_[:] = so
+    tr_ = np.empty(len(trees), dtype=object); tr_[:] = trees
+    np.savez(fn + '.tmp.npz', img=img, cls=c, trees=tr_, solid=so_)
+    os.replace(fn + '.tmp.npz', fn)
+    return bx, by, img, c, trees, so
+
+
+EXTRA_SOLID = []                             # паркани, сараї, теплиці (світові координати сітки гри)
 
 
 def render_all(jobs, rgb, cls, nproc):
+    os.makedirs(BLK, exist_ok=True)
     trees = []
     CD.data()                                    # кеш OSM/будинків до розгалуження процесів
     if nproc > 1:
@@ -53,9 +69,9 @@ def render_all(jobs, rgb, cls, nproc):
         it = pool.imap_unordered(render_block, jobs)
     else:
         it = map(render_block, jobs)
-    for k, (bx, by, img, c, tl) in enumerate(it):
+    for k, (bx, by, img, c, tl, so) in enumerate(it):
         h, w = c.shape
-        rgb[by:by + h, bx:bx + w] = img; cls[by:by + h, bx:bx + w] = c; trees.extend(tl)
+        rgb[by:by + h, bx:bx + w] = img; cls[by:by + h, bx:bx + w] = c; trees.extend(tl); EXTRA_SOLID.extend(so)
         print('  block %d/%d' % (k + 1, len(jobs)), bx, by, flush=True)
     if nproc > 1: pool.close(); pool.join()
     # ---- дерева одним проходом (без швів між блоками)
@@ -139,6 +155,16 @@ def main(nproc=2):
                 if any(cv2.pointPolygonTest(Q, (float(x), float(y)), False) >= 0 for x, y in P.tolist()):
                     q = cv2.approxPolyDP(Q.astype(np.float32), 1.0, True)[:, 0, :]
                     ARCH_ROOFS.append([[int(round(x)), int(round(y))] for x, y in q[:24]])
+    # паркани, сараї, теплиці (з деталей карти): тверді
+    seen = set()
+    for kind, pts in EXTRA_SOLID:
+        key = (kind, tuple(np.round(np.array(pts[:2], float).ravel(), 1)))
+        if key in seen: continue
+        seen.add(key)
+        P = np.round(np.array(pts, float)).astype(np.int32)
+        if kind == 'poly': cv2.fillPoly(solid, [P], 1)
+        else: cv2.polylines(solid, [P], True, 1, 2)
+    print('extra solids', len(seen), flush=True)
     solid = solid.astype(bool)                       # вода — не стіна: у неї можна заїхати (і втопити машину)
     solid |= ~play
     # ---- палітра карти: лічильник 24-бітних кольорів

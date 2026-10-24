@@ -511,7 +511,35 @@ def tpl_stadium():
     return [s.done()]
 
 
-TPL = dict(tower=lambda **k: [tower_facade()], statue=tpl_statue, stele=tpl_stele, flame=tpl_flame, fountain=tpl_fountain,
+def tpl_watertower():
+    """Водонапірна вежа: цегляний ствол, широкий бак з дахом-конусом."""
+    s = Spr(22, 46); cx, base = 11, 44
+    brick, brick_d = (176, 84, 60), (132, 62, 46)
+    s.poly([(cx - 5, base), (cx + 5, base), (cx + 4, base - 24), (cx - 4, base - 24)], brick)
+    s.rect(cx + 2, base - 24, cx + 5, base, brick_d)
+    for y in range(base - 22, base, 4): s.rect(cx - 4, y, cx + 4, y + 1, brick_d)
+    s.rect(cx - 1, base - 8, cx + 1, base - 1, (60, 40, 30))                          # двері
+    s.rect(cx - 9, base - 33, cx + 10, base - 24, (196, 190, 176)); s.rect(cx + 6, base - 33, cx + 10, base - 24, (160, 154, 140))
+    s.rect(cx - 9, base - 30, cx + 10, base - 29, (150, 146, 136))
+    s.poly([(cx - 10, base - 33), (cx + 11, base - 33), (cx + 1, base - 43), (cx, base - 43)], (90, 110, 104))
+    s.poly([(cx + 1, base - 43), (cx + 11, base - 33), (cx + 4, base - 33)], (70, 88, 82))
+    return [s.done()]
+
+
+def tpl_market():
+    """Ринок: ряд наметів-павільйонів під смугастими дахами."""
+    s = Spr(36, 24); base = 22
+    cols = [((60, 104, 172), (220, 226, 232)), ((196, 60, 50), (236, 232, 222)), ((46, 128, 74), (232, 232, 226))]
+    for i, (a, b) in enumerate(cols):
+        x0 = 2 + i * 11
+        s.rect(x0, base - 9, x0 + 10, base, (150, 120, 90)); s.rect(x0 + 1, base - 8, x0 + 9, base - 1, (110, 86, 64))
+        for k in range(5):
+            s.poly([(x0 + k * 2, base - 9), (x0 + k * 2 + 2, base - 9), (x0 + k * 2 + 2, base - 16), (x0 + k * 2, base - 15)], a if k % 2 == 0 else b)
+        s.poly([(x0, base - 15), (x0 + 10, base - 15), (x0 + 5, base - 20)], a)
+    return [s.done()]
+
+
+TPL = dict(watertower=tpl_watertower, market=tpl_market, tower=lambda **k: [tower_facade()], statue=tpl_statue, stele=tpl_stele, flame=tpl_flame, fountain=tpl_fountain,
            heli=tpl_heli, church=tpl_church, gothic=tpl_gothic, classic=tpl_classic, mansion=tpl_mansion, hotel=tpl_hotel,
            cinema=tpl_cinema, bus=tpl_bus, love=tpl_love, eiffel=tpl_eiffel, parksign=tpl_parksign, stadium=tpl_stadium)
 
