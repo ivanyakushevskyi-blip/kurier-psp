@@ -111,7 +111,16 @@ _tr.sort(key=lambda t: (t[1] // CS) * NCX + t[0] // CS)
 _cells = np.zeros(NCX * NCY + 1, np.uint32)
 for t in _tr: _cells[(t[1] // CS) * NCX + t[0] // CS + 1] += 1
 _cells = np.cumsum(_cells).astype(np.uint32)
-TREE_OFF = put(np.array([[t[0], t[1], int(round(t[2]))] for t in _tr] or [[0, 0, 0]], '<i2').tobytes())
+# густі гаї: стовбур-перешкода лише якщо поруч (12 пікс = 6 м) немає іншого — щоб між стовбурами завжди проходила машина;
+# решта дерев — лише крона (від'ємний радіус)
+_coll = np.zeros(len(_tr), bool); _grid = {}
+for i in sorted(range(len(_tr)), key=lambda i: -_tr[i][2]):
+    x, y = _tr[i][0], _tr[i][1]; gx, gy = x // 12, y // 12
+    if any((x - _tr[j][0]) ** 2 + (y - _tr[j][1]) ** 2 < 144 for a in (-1, 0, 1) for b in (-1, 0, 1) for j in _grid.get((gx + a, gy + b), ())):
+        continue
+    _coll[i] = 1; _grid.setdefault((gx, gy), []).append(i)
+print('trees', len(_tr), 'trunks', int(_coll.sum()))
+TREE_OFF = put(np.array([[t[0], t[1], max(1, int(round(t[2]))) * (1 if c else -1)] for t, c in zip(_tr, _coll)] or [[0, 0, 0]], '<i2').tobytes())
 TREE_CELL_OFF = put(_cells.astype('<u4').tobytes())
 NTREE = len(_tr)
 ICON_STO = put(sprites.icon('sto').tobytes())

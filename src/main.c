@@ -552,6 +552,7 @@ static int trunk_hit(float x, float y, float c, float s) {
         int k0 = TREE_CELL(gy * NCX + gx), k1 = TREE_CELL(gy * NCX + gx + 1);
         for (int k = k0; k < k1; k++) {
             const int16_t *T = TREE(k);
+            if (T[2] < 0) continue;                                  /* лише крона (густий гай) */
             float dx = T[0] - x, dy = T[1] - y;
             if (dx * dx + dy * dy > 120) continue;
             float lx = dx * c + dy * s, ly = -dx * s + dy * c;
@@ -1159,7 +1160,7 @@ static void draw_world(void) {
             int k0 = TREE_CELL(gy * NCX + gx), k1 = TREE_CELL(gy * NCX + gx + 1);
             for (int k = k0; k < k1; k++) {
                 const int16_t *T = TREE(k);
-                float r = T[2] * 0.82f, dx = T[0] - px_, dy = T[1] - py_;
+                float r = abs(T[2]) * 0.82f, dx = T[0] - px_, dy = T[1] - py_;
                 if (dx * dx + dy * dy > (r + 10) * (r + 10)) continue;
                 int ri = (int)r;
                 for (int yy = -ri; yy <= ri; yy++) for (int xx = -ri; xx <= ri; xx++) {
