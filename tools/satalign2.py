@@ -17,9 +17,40 @@ NAMES = ['khm', 'khm2', 'ozerna']
 OLD = 'build_v1'
 
 
+SOUTH = ['ternopilska', 'mazepy', 'pilotska', 'khnu']      # 24.10.2026: південь за колією, 0,336 м/пікс (хну 0,164)
+
+
 def images():
+    """(знімок, афінне «піксель -> метри», вага). Детальніші знімки мають більшу вагу там, де знімки перекриваються;
+    кольори південних підганяються під khm/khm2/ozerna за спільною ділянкою (без «латок» на стиках)."""
     init = json.load(open('data/khn_init.json'))
-    return [(cv2.imread('ref/khn/%s.jpg' % n), np.array(init[n][1])) for n in NAMES]
+    base = [(cv2.imread('ref/khn/%s.jpg' % n), np.array(init[n][1]), 1.0) for n in NAMES]
+    out = list(base)
+    if os.path.exists('data/khn_south_init.json'):
+        si = json.load(open('data/khn_south_init.json'))
+        for n in SOUTH:
+            if n not in si: continue
+            img = cv2.imread('ref/khn_south/%s.jpg' % n); M = np.array(si[n][1])
+            res = float(np.hypot(M[0, 0], M[1, 0]))
+            if res < MPP * 0.8: img = cv2.GaussianBlur(img, (0, 0), 0.45 * MPP / res)     # проти мерехтіння при зменшенні
+            img = match_colors(img, M, out)
+            out.append((img, M, min(10.0, (0.785 / res) ** 2)))
+            print('  south', n, 'res %.3f m/px' % res, flush=True)
+    return out
+
+
+def match_colors(img, M, base):
+    """Гістограмна відповідність кольорів знімка до основних знімків у спільній ділянці."""
+    h, w = img.shape[:2]
+    yy, xx = np.mgrid[h // 20:h - h // 20:6, w // 20:w - w // 20:6].astype(np.float32)
+    X = M[0, 0] * xx + M[0, 1] * yy + M[0, 2]; Y = M[1, 0] * xx + M[1, 1] * yy + M[1, 2]
+    ref = mosaic(base, X, Y).reshape(-1, 3)
+    src = img[yy.astype(int), xx.astype(int)].reshape(-1, 3)
+    ok = ref.sum(1) > 0
+    if ok.sum() < 5000: print('    мало перекриття для кольорів', ok.sum()); return img
+    qs = np.linspace(0, 100, 101)
+    lut = np.stack([np.interp(np.arange(256), np.percentile(src[ok, k], qs), np.percentile(ref[ok, k], qs)) for k in range(3)]).clip(0, 255).astype(np.uint8)
+    return np.stack([lut[k][img[..., k]] for k in range(3)], -1)
 
 
 def feather(h, w):
@@ -31,7 +62,8 @@ def feather(h, w):
 def mosaic(imgs, X, Y):
     """Колір у точках (X, Y) метрів (масиви float32) зі знімків Івана з м'якими швами."""
     acc = np.zeros(X.shape + (3,), np.float32); ws = np.zeros(X.shape, np.float32)
-    for img, M in imgs:
+    for it in imgs:
+        img, M = it[0], it[1]; wt = it[2] if len(it) > 2 else 1.0
         Mi = np.linalg.inv(M)
         u = (Mi[0, 0] * X + Mi[0, 1] * Y + Mi[0, 2]).astype(np.float32)
         v = (Mi[1, 0] * X + Mi[1, 1] * Y + Mi[1, 2]).astype(np.float32)
@@ -41,6 +73,7 @@ def mosaic(imgs, X, Y):
         if key not in mosaic.fw: mosaic.fw[key] = feather(h, w)
         a = cv2.remap(img, u, v, cv2.INTER_LINEAR, borderValue=0).astype(np.float32)
         b = cv2.remap(mosaic.fw[key], u, v, cv2.INTER_LINEAR, borderValue=0)
+        b = b * wt
         acc += a * b[..., None]; ws += b
     ok = ws > 1e-3
     out = np.zeros(X.shape + (3,), np.uint8)
