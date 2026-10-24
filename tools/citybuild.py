@@ -63,6 +63,7 @@ def render_all(jobs, rgb, cls, nproc):
         if SS > 1: CD.draw_tree_aa(rgb, x, y, rr, kind, random.Random(x * 7919 + y), SS)
         else: CD.draw_tree(rgb, x, y, rr, kind, random.Random(x * 7919 + y))
     print('trees', len(trees), flush=True)
+    json.dump([[int(x), int(y), round(float(rr), 1), k] for x, y, rr, k in trees], open('build/trees.json', 'w'))
 
 
 ARCH_ROOFS = []
@@ -124,7 +125,7 @@ def main(nproc=2):
     for w in D['w']:
         if CD.drivable(w['t']):
             P = np.round(np.array(w['pts']) * K).astype(np.int32)
-            cv2.polylines(solid, [P], False, 0, max(2, int((CD.ROAD_W[w['t']['highway']] - 1.5) / CD.MPP)))
+            cv2.polylines(solid, [P], False, 0, max(2, int(CD.ROAD_W[w['t']['highway']] / CD.MPP)))     # уся ширина: будинки не залазять на дорогу
     print('dropped buildings on roads', D.get('dropped'), flush=True)
     # арки: дорога під будинком (tunnel=building_passage / covered) — проїзна
     for w in D['w']:
@@ -189,6 +190,10 @@ def main(nproc=2):
     surf = np.zeros((H, W), np.uint8)
     surf[np.isin(cls, (G_GRASS, G_DIRT, G_WOOD, G_SAND, G_PITCH))] = 1
     surf[cls == G_WATER] = 2
+    walk = np.isin(cls, (G_SIDE, G_PED))
+    surf[walk] = 3                                                     # тротуар
+    surf[walk & (cv2.dilate((cls == G_ROAD).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0)] = 4   # бордюр
+    del walk
     np.save('build/surf.npy', surf); del surf
     mapdata(D, cls, solid, play)
     pv = rgb[::3, ::3].copy(); pl = play[::3, ::3]; pv[~pl] = (pv[~pl] * 0.5).astype(np.uint8)

@@ -514,7 +514,7 @@ def render(x0, y0, W, H, tree_out=None, ss=1):
     # проїжджа частина завжди видна: дах, що трохи наліз на дорогу, обрізається (крім арок)
     rm = Image.new('L', (WF, HF), 0); drm = ImageDraw.Draw(rm)
     for w, pts, ptf in ways:
-        if drivable(w['t']): drm.line(ptf, fill=1, width=max(1, int((ROAD_W[w['t']['highway']] - 1.5) / MF)))
+        if drivable(w['t']): drm.line(ptf, fill=1, width=max(1, int(ROAD_W[w['t']['highway']] / MF)))      # уся ширина проїжджої частини
     rmask = (np.array(rm) > 0) & (cls == G_ROAD)
     img[rmask] = img_ground[rmask]
 
