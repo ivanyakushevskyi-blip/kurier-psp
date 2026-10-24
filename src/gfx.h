@@ -9,6 +9,8 @@ void gfx_begin(void *target);            /* PSP: зсув буфера кадр�
 /* 8-бітний шар (індекси палітри): w*h текселів з кроком stride, лівий верхній кут на екрані (sx,sy), масштаб scale.
    alpha=1 — індекс 0 прозорий, змішування; linear=1 — білінійне згладжування. stride кратний 16, адреса вирівняна на 16. */
 void gfx_layer8(const uint8_t *tex, int stride, int w, int h, float sx, float sy, float scale, int alpha, int linear);
+/* 16-бітний шар: fmt 0 — 5650 (непрозорий), 1 — 5551 (біт 15 — непрозорість). stride кратний 8. */
+void gfx_layer16(const uint16_t *tex, int stride, int w, int h, float sx, float sy, float scale, int fmt, int alpha, int linear);
 /* RGBA-текстура tw*th (степені двійки), центр (cx,cy), поворот ang (рад), півширина/піввисота на екрані hx,hy,
    колір-множник col (0xAABBGGRR): затемнення й прозорість. */
 void gfx_quad(const uint32_t *tex, int tw, int th, float cx, float cy, float ang, float hx, float hy, uint32_t col);

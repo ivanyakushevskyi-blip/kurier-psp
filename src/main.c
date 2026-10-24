@@ -51,11 +51,13 @@ static u8 __attribute__((aligned(16))) fb[SW * SH];       /* інтерфейс 
 #define ZOOM 1.25f
 #define VW (SW / ZOOM)                   /* огляд у пікселях карти: 384 x 217,6 */
 #define VH (SH / ZOOM)
-#define WW 388                           /* буфер світу: огляд + запас на субпіксельний зсув */
-#define WH 222
-#define W2S 784                          /* крок рядка буфера 2x (кратний 16) */
-static u8 __attribute__((aligned(16))) wbuf[WW * WH], wover[WW * WH];
-static u8 __attribute__((aligned(16))) w2[2 * WH * W2S], o2[2 * WH * W2S];
+#define WW 400                           /* буфер світу: огляд + запас на субпіксельний зсув (крок кратний 16) */
+#define WH 224
+static uint16_t __attribute__((aligned(16))) wbuf[WW * WH];     /* карта, 5650 */
+static uint16_t __attribute__((aligned(16))) warch[WW * WH];    /* будинки над арками, 5551 */
+static u8 __attribute__((aligned(16))) wover[WW * WH];          /* бульбашки (індекси палітри, 0 — прозоро) */
+static uint16_t PAL16[256];                                      /* палітра спрайтів -> 5650 */
+static int arch_used;
 static u8 *tg = fb; static int tgw = SW, tgh = SH;   /* куди малюють примітиви */
 static void target(u8 *b, int w, int h) { tg = b; tgw = w; tgh = h; }
 static int world_mode, over_used, wox, woy, ndim;
@@ -67,8 +69,11 @@ static int tick;
 /* ================= map chunk cache (MAP.BIN) ================= */
 #define NCHUNK (NCX * NCY)
 #define CSB (CS * CS / 8)
+#define CPX (CS * CS * 2)                  /* пікселі 5650 */
+#define CSF (CS * CS / 2)                  /* поверхня: 4 біти на піксель */
+#define CHB (CPX + CSB + CSF)
 #define NCACHE 200
-static u8 cache[NCACHE][CS * CS + CSB];
+static u8 __attribute__((aligned(16))) cache[NCACHE][CHB];
 static int cache_key[NCACHE];
 static unsigned cache_used[NCACHE];
 static int16_t slot_of[NCHUNK];
@@ -77,15 +82,15 @@ static uint32_t moff[NCHUNK + 1];
 static FILE *mapf, *mapf2;
 static char map_path[512] = "MAP.BIN";
 static int map_err;                       /* 1 = немає файлу, 2 = не той файл */
-static u8 zbuf[8192];
+static u8 zbuf[CHB + 1024];
 static int loads_frame;
-static const u8 empty_chunk[CS * CS + CSB];
+static const u8 __attribute__((aligned(16))) empty_chunk[CHB];
 
 static int map_open(void) {
     mapf = fopen(map_path, "rb"); mapf2 = fopen(map_path, "rb");
     if (!mapf) { map_err = 1; return 0; }
     char mg[4]; uint32_t h[3];
-    if (fread(mg, 1, 4, mapf) != 4 || memcmp(mg, "KHM1", 4) || fread(h, 4, 3, mapf) != 3 || h[0] != NCX || h[1] != NCY || h[2] != CS ||
+    if (fread(mg, 1, 4, mapf) != 4 || memcmp(mg, "KHM2", 4) || fread(h, 4, 3, mapf) != 3 || h[0] != NCX || h[1] != NCY || h[2] != CS ||
         fread(moff, 4, NCHUNK + 1, mapf) != NCHUNK + 1 || moff[NCHUNK] != MAPBIN_SIZE) { map_err = 2; fclose(mapf); mapf = NULL; return 0; }
     return 1;
 }
@@ -104,9 +109,9 @@ static int pick_slot(void) {
 }
 static void read_chunk(FILE *f, u8 *zb, int k, u8 *dst) {
     uint32_t n = moff[k + 1] - moff[k];
-    uLongf len = CS * CS + CSB;
+    uLongf len = CHB;
     if (!f || n > sizeof zbuf || fseek(f, (long)moff[k], SEEK_SET) || fread(zb, 1, n, f) != n || uncompress(dst, &len, zb, n) != Z_OK)
-        memset(dst, 0, CS * CS + CSB);
+        memset(dst, 0, CHB);
 }
 static int sync_loads;
 static int chunk_load(int k) {                 /* синхронно — лише якщо видимий блок ще не підвантажився */
@@ -129,9 +134,9 @@ static const u8 *chunk(int cx, int cy) {
 #define NREQ 128
 #define NSTAGE 16
 static volatile int req_k[NREQ]; static volatile unsigned req_w, req_r;
-static u8 stage[NSTAGE][CS * CS + CSB]; static volatile int stage_k[NSTAGE]; static volatile unsigned st_w, st_r;
+static u8 stage[NSTAGE][CHB]; static volatile int stage_k[NSTAGE]; static volatile unsigned st_w, st_r;
 static u8 pending[NCHUNK];
-static u8 zbuf2[8192];
+static u8 zbuf2[CHB + 1024];
 static int loader_step(void) {                 /* потік-завантажувач: одне замовлення */
     if (req_r == req_w || st_w - st_r >= NSTAGE) return 0;
     int k = req_k[req_r % NREQ], i = st_w % NSTAGE;
@@ -145,7 +150,7 @@ static void install_ready(void) {              /* основний потік: �
         int i = st_r % NSTAGE, k = stage_k[i];
         if (slot_of[k] < 0) {
             int b = pick_slot();
-            memcpy(cache[b], stage[i], CS * CS + CSB);
+            memcpy(cache[b], stage[i], CHB);
             cache_key[b] = k; slot_of[k] = (int16_t)b; cache_used[b] = ++ctick;
         }
         pending[k] = 0;
@@ -168,20 +173,45 @@ static void prefetch(int ox, int oy, float dx, float dy) {
     install_ready();
 #endif
 }
-static u8 map_px(int x, int y) {
+static uint16_t map_px16(int x, int y) {
     if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return 0;
-    return chunk(x / CS, y / CS)[(y % CS) * CS + (x % CS)];
+    return ((const uint16_t *)chunk(x / CS, y / CS))[(y % CS) * CS + (x % CS)];
 }
-static void draw_map(int ox, int oy) {
-    if (ox < 0 || oy < 0) memset(tg, 0, (size_t)(tgw * tgh));
-    int cy0 = oy < 0 ? -1 : oy / CS, cy1 = (oy + tgh - 1) / CS, cx0 = ox < 0 ? -1 : ox / CS, cx1 = (ox + tgw - 1) / CS;
+/* поверхня: 0 тверда, 1 ґрунт/трава, 2 вода */
+static int surf(int x, int y) {
+    if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return 0;
+    const u8 *c = chunk(x / CS, y / CS) + CPX + CSB;
+    int lx = x % CS, ly = y % CS;
+    return (c[ly * (CS / 2) + (lx >> 1)] >> ((lx & 1) * 4)) & 15;
+}
+static void draw_map16(int ox, int oy) {
+    if (ox < 0 || oy < 0) memset(wbuf, 0, sizeof wbuf);
+    int cy0 = oy < 0 ? -1 : oy / CS, cy1 = (oy + WH - 1) / CS, cx0 = ox < 0 ? -1 : ox / CS, cx1 = (ox + WW - 1) / CS;
     for (int cy = cy0; cy <= cy1; cy++) for (int cx = cx0; cx <= cx1; cx++) {
         if (cx < 0 || cy < 0 || cx >= NCX || cy >= NCY) continue;
-        const u8 *c = chunk(cx, cy);
+        const uint16_t *c = (const uint16_t *)chunk(cx, cy);
         int x0 = cx * CS - ox, y0 = cy * CS - oy;
-        int sx0 = x0 < 0 ? 0 : x0, sx1 = x0 + CS > tgw ? tgw : x0 + CS;
-        int sy0 = y0 < 0 ? 0 : y0, sy1 = y0 + CS > tgh ? tgh : y0 + CS;
-        for (int sy = sy0; sy < sy1; sy++) memcpy(tg + sy * tgw + sx0, c + (sy - y0) * CS + (sx0 - x0), (size_t)(sx1 - sx0));
+        int sx0 = x0 < 0 ? 0 : x0, sx1 = x0 + CS > WW ? WW : x0 + CS;
+        int sy0 = y0 < 0 ? 0 : y0, sy1 = y0 + CS > WH ? WH : y0 + CS;
+        for (int sy = sy0; sy < sy1; sy++) memcpy(wbuf + sy * WW + sx0, c + (sy - y0) * CS + (sx0 - x0), (size_t)(sx1 - sx0) * 2);
+    }
+}
+/* 16-бітні операції над шаром карти */
+#define DARK50(c) ((uint16_t)(((c) >> 1) & 0x7BEF))
+#define DARK75(c) ((uint16_t)((c) - (((c) >> 2) & 0x39E7)))
+static void blit16(const u8 *src, int w, int h, int x, int y) {
+    for (int j = 0; j < h; j++) {
+        int yy = y + j; if ((unsigned)yy >= WH) continue;
+        const u8 *r = src + j * w; uint16_t *d = wbuf + yy * WW;
+        for (int i = 0; i < w; i++) { int xx = x + i; u8 v = r[i]; if (v && (unsigned)xx < WW) d[xx] = PAL16[v]; }
+    }
+}
+static void shadow_ell16(float cx, float cy, float rx, float ry) {
+    for (int y = (int)(cy - ry); y <= (int)(cy + ry); y++) {
+        if ((unsigned)y >= WH) continue;
+        float dy = (y + 0.5f - cy) / ry; if (dy * dy >= 1) continue;
+        float w = rx * sqrtf(1 - dy * dy);
+        for (int x = (int)(cx - w); x <= (int)(cx + w); x++) if ((unsigned)x < WW) wbuf[y * WW + x] = DARK75(wbuf[y * WW + x]);
     }
 }
 
@@ -189,7 +219,7 @@ static void draw_map(int ox, int oy) {
 static u8 bigb[BIG_W * BIG_H];
 static int is_solid(int x, int y) {
     if (x < 6 || y < 6 || x >= MAP_W - 6 || y >= MAP_H - 6) return 1;
-    const u8 *c = chunk(x / CS, y / CS) + CS * CS;
+    const u8 *c = chunk(x / CS, y / CS) + CPX;
     int lx = x % CS, ly = y % CS;
     return (c[ly * (CS / 8) + (lx >> 3)] >> (lx & 7)) & 1;
 }
@@ -600,7 +630,7 @@ static float lane_steer(void) {
     return out;
 }
 
-static int on_water(float x, float y) { return WATERIDX[map_px((int)x, (int)y)]; }
+static int on_water(float x, float y) { return surf((int)x, (int)y) == 2; }
 
 static void update_player(unsigned btn, int lx) {
     float steer = 0;
@@ -617,7 +647,7 @@ static void update_player(unsigned btn, int lx) {
 
     float fx = cosf(ang), fy = sinf(ang), rx = -fy, ry = fx;
     float vf = vx_ * fx + vy_ * fy, vr = vx_ * rx + vy_ * ry;
-    int off = OFFROAD[map_px((int)px_, (int)py_)];
+    int off = surf((int)px_, (int)py_) == 1;
     float vmax = off ? 0.50f : VMAX;                         /* 1,31 пікс/кадр ≈ 141 км/год; на спідометрі — 140 */
     int heavy = ostate == O_DROP && otype == T_HEAVY;
     if (heavy) vmax *= 0.7f;
@@ -807,10 +837,10 @@ static const u8 *lm_frame(int i) {
 static void draw_landmarks(int ox, int oy) {
     for (int i = 0; i < NLM; i++) {
         int sx = LMS[i].x - ox, sy = LMS[i].y - oy, w = LMS[i].w, h = LMS[i].h;
-        if (sx < -w || sx > tgw + w || sy < -4 || sy > tgh + h) continue;
+        if (sx < -w || sx > WW + w || sy < -4 || sy > WH + h) continue;
         int bob = (int)floorf(sinf(tick * 0.07f + i * 1.7f) * 1.5f + 0.5f);
-        shadow_ell(sx + 1.5f, sy + 0.5f, w * 0.45f, 3);
-        blit(lm_frame(i), w, h, sx - w / 2, sy - h + 1 + bob);
+        shadow_ell16(sx + 1.5f, sy + 0.5f, w * 0.45f, 3);
+        blit16(lm_frame(i), w, h, sx - w / 2, sy - h + 1 + bob);
     }
 }
 /* табличка з назвою: виїжджає збоку від позначки, назва друкується по літерах */
@@ -1069,26 +1099,26 @@ static void draw_world(void) {
     int ox = (int)floorf(vx) - 1, oy = (int)floorf(vy) - 1;
     wox = ox; woy = oy;
     /* ---- шар під машиною: карта, сліди, значки, пам'ятки */
-    target(wbuf, WW, WH);
-    draw_map(ox, oy);
+    draw_map16(ox, oy);
     for (int i = 0; i < skid_n; i++) {                           /* сліди шин */
         int x = skid[i][0] - ox, y = skid[i][1] - oy;
-        if ((unsigned)x < WW && (unsigned)y < WH) { u8 *p = wbuf + y * WW + x; *p = DARK[DARK[*p]]; }
+        if ((unsigned)x < WW && (unsigned)y < WH) { uint16_t *p = wbuf + y * WW + x; *p = DARK50(*p); }
     }
     for (int i = 0; i < NFUEL; i++) {                             /* АЗС */
         int x = FUELS[i].x - ox, y = FUELS[i].y - oy;
-        if (x > -16 && x < WW + 16 && y > -16 && y < WH + 16) blit(assets_bin + ICON_FUEL, ICON_SZ, ICON_SZ, x - 8, y - 8);
+        if (x > -16 && x < WW + 16 && y > -16 && y < WH + 16) blit16(assets_bin + ICON_FUEL, ICON_SZ, ICON_SZ, x - 8, y - 8);
     }
     for (int i = 0; i < NSTO; i++) {                              /* СТО */
         int x = STOS[i].x - ox, y = STOS[i].y - oy;
-        if (x > -16 && x < WW + 16 && y > -16 && y < WH + 16) blit(assets_bin + ICON_STO, ICON_SZ, ICON_SZ, x - 8, y - 8);
+        if (x > -16 && x < WW + 16 && y > -16 && y < WH + 16) blit16(assets_bin + ICON_STO, ICON_SZ, ICON_SZ, x - 8, y - 8);
     }
     draw_landmarks(ox, oy);
     /* ---- шар над машиною: будинки над арками, дим, бульбашки */
     target(wover, WW, WH);
     memset(wover, 0, sizeof wover); over_used = 0;
+    if (arch_used) { memset(warch, 0, sizeof warch); arch_used = 0; }
     carv.on = 0;
-    if (!freecam) {
+    if (!freecam && state != S_TITLE) {
         carv.on = 1; carv.shadow = 1; carv.lit = braking || evac;
         carv.x = (px_ - vx) * ZOOM; carv.y = (py_ - vy) * ZOOM; carv.a = ang; carv.col = 0xFFFFFFFF;
         if (evac == EV_DROWN) {
@@ -1102,14 +1132,18 @@ static void draw_world(void) {
             const Arch *A = &ARCHES[i];
             int x0 = (int)px_ - 16, x1 = (int)px_ + 16, y0 = (int)py_ - 16, y1 = (int)py_ + 16;
             if (x1 < A->x0 || x0 > A->x1 || y1 < A->y0 || y0 > A->y1) continue;
-            over_used = 1;
+            arch_used = 1;
             for (int y = y0; y <= y1; y++) for (int x = x0; x <= x1; x++) {
                 int in = 0;
                 for (int a = 0, b = A->n - 1; a < A->n; b = a++) {
                     int ya = A->p[a][1], yb = A->p[b][1];
                     if ((ya > y) != (yb > y) && x < (A->p[b][0] - A->p[a][0]) * (y - ya) / (float)(yb - ya) + A->p[a][0]) in = !in;
                 }
-                if (in) pset(x - ox, y - oy, map_px(x, y));
+                int lx = x - ox, ly = y - oy;
+                if (in && (unsigned)lx < WW && (unsigned)ly < WH) {
+                    uint16_t c = map_px16(x, y);                           /* 5650 -> 5551, непрозорий */
+                    warch[ly * WW + lx] = (uint16_t)(0x8000 | (c & 31) | (((c >> 6) & 31) << 5) | ((c >> 11) << 10));
+                }
             }
         }
     }
@@ -1121,7 +1155,7 @@ static void draw_world(void) {
         rect(cx - 7, cy, 5, 1, C_white_2); rect(cx + 3, cy, 5, 1, C_white_2);
         rect(cx, cy - 7, 1, 5, C_white_2); rect(cx, cy + 3, 1, 5, C_white_2);
     }
-    draw_lm_labels();
+    if (state != S_TITLE) draw_lm_labels();
 }
 
 static void draw_bigmap(void) {
@@ -1148,10 +1182,11 @@ static void draw_frame(void) {
     char b[64];
     world_mode = 0; ndim = 0; target(fb, SW, SH);
     if (state == S_TITLE) {
-        camx = SPAWN_X - SW / 2 + sinf(tick * 0.004f) * 300; camy = SPAWN_Y - SH / 2 - 200 + cosf(tick * 0.003f) * 180;
+        camx = SPAWN_X - VW / 2 + sinf(tick * 0.004f) * 300; camy = SPAWN_Y - VH / 2 - 200 + cosf(tick * 0.003f) * 180;
         if (camx < 0) camx = 0; if (camy < 0) camy = 0;
-        if (camx > MAP_W - SW) camx = MAP_W - SW; if (camy > MAP_H - SH) camy = MAP_H - SH;
-        draw_map((int)camx, (int)camy);
+        if (camx > MAP_W - VW) camx = MAP_W - VW; if (camy > MAP_H - VH) camy = MAP_H - VH;
+        world_mode = 1; memset(fb, 0, sizeof fb);
+        draw_world();
         darken_rect(0, 30, SW, 150, 2);
         otext8_c(SW / 2, 46, 5, C_box_3, C_ink_0, "ПРОСКУРІВ");
         otext8_c(SW / 2, 100, 3, C_white_2, C_ink_0, "ЕКСПРЕС");
@@ -1262,14 +1297,6 @@ static void assets_init(void) {
 }
 
 /* ================= platform ================= */
-/* 8-бітний буфер -> 2x (кожен піксель 2x2): «чітке» згладжування — білінійне лише на межах пікселів */
-static void expand2(const u8 *src, u8 *dst) {
-    for (int y = 0; y < WH; y++) {
-        const u8 *q = src + y * WW; uint16_t *r = (uint16_t *)(dst + 2 * y * W2S);
-        for (int x = 0; x < WW; x++) r[x] = (uint16_t)(q[x] * 0x0101);
-        memcpy(dst + (2 * y + 1) * W2S, r, 2 * WW);
-    }
-}
 static void render(void *target_buf) {
     if (!world_mode) {
         gfx_begin(target_buf);
@@ -1277,21 +1304,23 @@ static void render(void *target_buf) {
         gfx_end();
         return;
     }
-    expand2(wbuf, w2);
-    if (over_used) expand2(wover, o2);
     gfx_begin(target_buf);
     float sx = (wox - viewx) * ZOOM, sy = (woy - viewy) * ZOOM;
-    gfx_layer8(w2, W2S, 2 * WW, 2 * WH, sx, sy, ZOOM / 2, 0, 1);
+    gfx_layer16(wbuf, WW, WW, WH, sx, sy, ZOOM, 0, 0, 1);
     if (carv.on) {
         float k = 17.0f / CARTEX_LEN * ZOOM, hx = CARTEX_W / 2 * k, hy = CARTEX_H / 2 * k;     /* 8,5 м = 17 пікс карти */
         if (carv.shadow) gfx_quad((const uint32_t *)(assets_bin + CARTEX_SHD), CARTEX_W, CARTEX_H, carv.x + 1.6f * ZOOM, carv.y + 2.2f * ZOOM, carv.a, hx * 1.04f, hy * 1.12f, 0xFFFFFFFF);
         gfx_quad((const uint32_t *)(assets_bin + (carv.lit ? CARTEX_LIT : CARTEX_OFF)), CARTEX_W, CARTEX_H, carv.x, carv.y, carv.a, hx, hy, carv.col);
     }
-    if (over_used) gfx_layer8(o2, W2S, 2 * WW, 2 * WH, sx, sy, ZOOM / 2, 1, 1);
+    if (arch_used) gfx_layer16(warch, WW, WW, WH, sx, sy, ZOOM, 1, 1, 1);
+    if (over_used) gfx_layer8(wover, WW, WW, WH, sx, sy, ZOOM, 1, 1);
     render_particles();
     for (int i = 0; i < ndim; i++) gfx_rect(dimr[i][0], dimr[i][1], dimr[i][2], dimr[i][3], dimc[i]);
     gfx_layer8(fb, SW, SW, SH, 0, 0, 1, 1, 0);
     gfx_end();
+}
+static void pal16_init(void) {
+    for (int i = 0; i < 256; i++) { u32 c = PALETTE[i]; PAL16[i] = (uint16_t)(((c & 255) >> 3) | (((c >> 8) & 255) >> 2) << 5 | (((c >> 16) & 255) >> 3) << 11); }
 }
 
 #ifndef HOST
@@ -1338,7 +1367,7 @@ int main(int argc, char **argv) {
     }
     load_save();
     assets_init();
-    gfx_init(PALETTE); puff_tex_init();
+    gfx_init(PALETTE); puff_tex_init(); pal16_init();
     { int lt = sceKernelCreateThread("loader", loader_thread, 0x30, 0x4000, 0, NULL); if (lt >= 0) sceKernelStartThread(lt, 0, NULL); }
     sceCtrlSetSamplingCycle(0);
     sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
@@ -1372,7 +1401,7 @@ int main(int argc, char **argv) {
     remove(save_path);
     snprintf(map_path, sizeof map_path, "%s", argc > 2 ? argv[2] : "build/MAP.BIN");
     assets_init();
-    gfx_init(PALETTE); puff_tex_init();
+    gfx_init(PALETTE); puff_tex_init(); pal16_init();
     if (map_err) { printf("MAP.BIN error %d\n", map_err); return 1; }
     /* title */
     for (int i = 0; i < 40; i++) { game_update(0, 0, 128, 128); }
@@ -1464,7 +1493,7 @@ int main(int argc, char **argv) {
     {   /* вода: знайти водний піксель біля дороги й заїхати */
         int found = 0;
         for (int y = 200; y < MAP_H - 200 && !found; y += 16) for (int x = 200; x < MAP_W - 200 && !found; x += 16)
-            if (WATERIDX[map_px(x, y)] && !is_solid(x - 40, y) && !WATERIDX[map_px(x - 40, y)] && WATERIDX[map_px(x + 12, y)] && WATERIDX[map_px(x + 30, y)]) {
+            if (surf(x, y) == 2 && !is_solid(x - 40, y) && surf(x - 40, y) != 2 && surf(x + 12, y) == 2 && surf(x + 30, y) == 2) {
                 px_ = x - 40; py_ = y; ang = 0; stop_car(); unstick(); found = 1;
             }
         int m0 = money, drowned = 0;

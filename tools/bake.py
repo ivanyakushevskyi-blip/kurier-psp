@@ -32,20 +32,28 @@ def put(b):
 
 
 # ---- map chunks -> окремий файл MAP.BIN поруч з EBOOT (карта завелика для вбудовування)
-#      формат: "KHM1", u32 NCX, u32 NCY, u32 CS, u32 off[NCX*NCY+1] (від початку файлу), далі zlib(пікселі CS*CS + біти твердості CS*CS/8)
+#      формат KHM2: "KHM2", u32 NCX, u32 NCY, u32 CS, u32 off[NCX*NCY+1] (від початку файлу), далі zlib(
+#        пікселі CS*CS u16 (PSP 5650: R біти 0-4, G 5-10, B 11-15) + біти твердості CS*CS/8 + поверхня CS*CS/2 (4 біти: 0 тверда, 1 ґрунт, 2 вода))
 import struct
+rgbm = np.load(os.path.join(BUILD, 'map_rgb.npy'), mmap_mode='r')
+surfm = np.load(os.path.join(BUILD, 'surf.npy'), mmap_mode='r')
 sbits = np.packbits(solid.astype(np.uint8), axis=1, bitorder='little')     # (H, W/8)
 chunks = []
 for cy in range(NCY):
+    band = np.asarray(rgbm[cy * CS:(cy + 1) * CS]).astype(np.uint16)
+    p565 = (band[..., 0] >> 3) | ((band[..., 1] >> 2) << 5) | ((band[..., 2] >> 3) << 11)
+    sb_ = np.asarray(surfm[cy * CS:(cy + 1) * CS])
+    s4 = (sb_[:, 0::2] & 15) | ((sb_[:, 1::2] & 15) << 4)
     for cx in range(NCX):
-        pxl = img[cy * CS:(cy + 1) * CS, cx * CS:(cx + 1) * CS].tobytes()
+        pxl = p565[:, cx * CS:(cx + 1) * CS].astype('<u2').tobytes()
         sb = sbits[cy * CS:(cy + 1) * CS, cx * CS // 8:(cx + 1) * CS // 8].tobytes()
-        chunks.append(zlib.compress(pxl + sb, 9))
+        su = s4[:, cx * CS // 2:(cx + 1) * CS // 2].astype(np.uint8).tobytes()
+        chunks.append(zlib.compress(pxl + sb + su, 9))
 hdr = 16 + 4 * (len(chunks) + 1)
 offs = [hdr]
 for c in chunks: offs.append(offs[-1] + len(c))
 with open(os.path.join(BUILD, 'MAP.BIN'), 'wb') as f:
-    f.write(b'KHM1' + struct.pack('<3I', NCX, NCY, CS) + struct.pack('<%dI' % len(offs), *offs))
+    f.write(b'KHM2' + struct.pack('<3I', NCX, NCY, CS) + struct.pack('<%dI' % len(offs), *offs))
     for c in chunks: f.write(c)
 csizes = [len(c) for c in chunks]
 MAPBIN_SIZE = offs[-1]

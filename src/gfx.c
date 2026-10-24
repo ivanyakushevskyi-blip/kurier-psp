@@ -69,6 +69,24 @@ void gfx_layer8(const uint8_t *tex, int stride, int w, int h, float sx, float sy
     }
 }
 
+void gfx_layer16(const uint16_t *tex, int stride, int w, int h, float sx, float sy, float scale, int fmt, int alpha, int linear) {
+    sceGuEnable(GU_TEXTURE_2D);
+    if (alpha) sceGuEnable(GU_BLEND); else sceGuDisable(GU_BLEND);
+    sceGuTexMode(fmt ? GU_PSM_5551 : GU_PSM_5650, 0, 0, 0);
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+    sceGuTexFilter(linear ? GU_LINEAR : GU_NEAREST, linear ? GU_LINEAR : GU_NEAREST);
+    int th = pow2(h);
+    for (int x0 = 0; x0 < w; x0 += 64) {
+        int sw = w - x0 < 64 ? w - x0 : 64;
+        sceGuTexImage(0, 128, th, stride, tex + x0);
+        sceGuTexFlush();
+        VT *v = (VT *)sceGuGetMemory(2 * sizeof(VT));
+        v[0].u = 0; v[0].v = 0; v[0].x = sx + x0 * scale; v[0].y = sy; v[0].z = 0;
+        v[1].u = (float)sw; v[1].v = (float)h; v[1].x = sx + (x0 + sw) * scale; v[1].y = sy + h * scale; v[1].z = 0;
+        sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, 0, v);
+    }
+}
+
 void gfx_quad(const uint32_t *tex, int tw, int th, float cx, float cy, float ang, float hx, float hy, uint32_t col) {
     sceGuEnable(GU_TEXTURE_2D);
     sceGuEnable(GU_BLEND);
@@ -119,6 +137,32 @@ static void blend(uint32_t *d, float r, float g, float b, float a) {
 }
 static void unpack(uint32_t c, float *p) { p[0] = c & 255; p[1] = (c >> 8) & 255; p[2] = (c >> 16) & 255; p[3] = c >> 24; }
 
+static void fetch16(const uint16_t *t, int fmt, float *p) {
+    uint16_t c = *t;
+    if (fmt) { p[0] = (c & 31) * 255 / 31.0f; p[1] = ((c >> 5) & 31) * 255 / 31.0f; p[2] = ((c >> 10) & 31) * 255 / 31.0f; p[3] = (c >> 15) ? 255 : 0; }
+    else { p[0] = (c & 31) * 255 / 31.0f; p[1] = ((c >> 5) & 63) * 255 / 63.0f; p[2] = (c >> 11) * 255 / 31.0f; p[3] = 255; }
+}
+void gfx_layer16(const uint16_t *tex, int stride, int w, int h, float sx, float sy, float scale, int fmt, int alpha, int linear) {
+    int x0 = (int)floorf(sx), y0 = (int)floorf(sy), x1 = (int)ceilf(sx + w * scale), y1 = (int)ceilf(sy + h * scale);
+    if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0; if (x1 > 480) x1 = 480; if (y1 > 272) y1 = 272;
+    for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
+        float u = (x + 0.5f - sx) / scale, v = (y + 0.5f - sy) / scale, c[4];
+        if (u < 0 || v < 0 || u >= w || v >= h) continue;
+        if (linear) {
+            float uu = u - 0.5f, vv = v - 0.5f; int iu = (int)floorf(uu), iv = (int)floorf(vv); float fu = uu - iu, fv = vv - iv;
+            float acc[4] = { 0, 0, 0, 0 };
+            for (int k = 0; k < 4; k++) {
+                int tu = iu + (k & 1), tv = iv + (k >> 1);
+                if (tu < 0) tu = 0; if (tv < 0) tv = 0; if (tu >= w) tu = w - 1; if (tv >= h) tv = h - 1;
+                float wgt = ((k & 1) ? fu : 1 - fu) * ((k >> 1) ? fv : 1 - fv), p[4];
+                fetch16(tex + tv * stride + tu, fmt, p);
+                for (int j = 0; j < 4; j++) acc[j] += p[j] * wgt;
+            }
+            memcpy(c, acc, sizeof c);
+        } else fetch16(tex + (int)v * stride + (int)u, fmt, c);
+        blend(dst + y * 512 + x, c[0], c[1], c[2], alpha ? c[3] / 255.0f : 1);
+    }
+}
 void gfx_layer8(const uint8_t *tex, int stride, int w, int h, float sx, float sy, float scale, int alpha, int linear) {
     int x0 = (int)floorf(sx), y0 = (int)floorf(sy), x1 = (int)ceilf(sx + w * scale), y1 = (int)ceilf(sy + h * scale);
     if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0; if (x1 > 480) x1 = 480; if (y1 > 272) y1 = 272;

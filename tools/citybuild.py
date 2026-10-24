@@ -16,7 +16,8 @@ K = CD.K
 CS = 64
 W = int(META['W'] * K) // CS * CS
 H = int(META['H'] * K) // CS * CS
-B, M = 1024, 64
+SS = int(os.environ.get('SS', '4'))              # надвибірка (згладжені краї); 1 — стара піксельна карта
+B, M = (1024 if SS == 1 else 512), 64
 LAT0, LON0 = 49.422, 26.995
 MLAT = 111320.0; MLON = 111320.0 * math.cos(math.radians(LAT0))
 G_YARD, G_GRASS, G_WATER, G_SIDE, G_ROAD, G_PATH, G_PED, G_RAIL, G_DIRT, G_PITCH, G_TRACK, G_PARK, G_PAVED, G_WOOD, G_SAND = range(1, 16)
@@ -38,7 +39,7 @@ def render_block(args):
     bx, by = args
     w, h = min(B, W - bx), min(B, H - by)
     tl = []
-    img, c = CD.render(bx - M, by - M, w + 2 * M, h + 2 * M, tree_out=tl)
+    img, c = CD.render(bx - M, by - M, w + 2 * M, h + 2 * M, tree_out=tl, ss=SS)
     trees = [t for t in tl if bx <= t[0] < bx + w and by <= t[1] < by + h]
     return bx, by, img[M:M + h, M:M + w].copy(), c[M:M + h, M:M + w].copy(), trees
 
@@ -59,7 +60,8 @@ def render_all(jobs, rgb, cls, nproc):
     if nproc > 1: pool.close(); pool.join()
     # ---- дерева одним проходом (без швів між блоками)
     for x, y, rr, kind in sorted(trees, key=lambda t: (t[1], t[0])):
-        CD.draw_tree(rgb, x, y, rr, kind, random.Random(x * 7919 + y))
+        if SS > 1: CD.draw_tree_aa(rgb, x, y, rr, kind, random.Random(x * 7919 + y), SS)
+        else: CD.draw_tree(rgb, x, y, rr, kind, random.Random(x * 7919 + y))
     print('trees', len(trees), flush=True)
 
 
@@ -100,11 +102,14 @@ def main(nproc=2):
         for bx in range(0, W, B):
             if margin[max(0, by - M):by + B + M, max(0, bx - M):bx + B + M].any(): jobs.append((bx, by))
     print('blocks', len(jobs), flush=True)
-    if os.environ.get('REUSE') == '1' and os.path.exists('build/rgb_cache.npy'):
+    if os.environ.get('REUSE') == '1' and os.path.exists('build/rgb_cache.npy') and os.path.exists('build/rgb_cache_ss%d' % SS):
         rgb = np.load('build/rgb_cache.npy'); cls = np.load('build/cls_cache.npy')    # лише пост-обробка (межа, палітра, mapdata)
     else:
         render_all(jobs, rgb, cls, nproc)
         np.save('build/rgb_cache.npy', rgb); np.save('build/cls_cache.npy', cls)
+        for f_ in os.listdir('build'):
+            if f_.startswith('rgb_cache_ss'): os.remove('build/' + f_)
+        open('build/rgb_cache_ss%d' % SS, 'w').close()
     # поза запасом — темне тло
     rgb[~margin] = CD.OUT
     play = zone('play')
@@ -177,6 +182,14 @@ def main(nproc=2):
     print('water palette ids', len(widx), flush=True)
     np.save('build/map.npy', mp_); np.save('build/solid.npy', solid); np.save('build/play.npy', play)
     del mp_
+    # ---- повнокольорова карта для гри (поза зоною приглушена) + поверхня: 0 тверда, 1 ґрунт/трава, 2 вода
+    for r0 in range(0, H, 512):
+        o = ~play[r0:r0 + 512]; blk = rgb[r0:r0 + 512]; blk[o] = (blk[o] * 0.72).astype(np.uint8)
+    np.save('build/map_rgb.npy', rgb)
+    surf = np.zeros((H, W), np.uint8)
+    surf[np.isin(cls, (G_GRASS, G_DIRT, G_WOOD, G_SAND, G_PITCH))] = 1
+    surf[cls == G_WATER] = 2
+    np.save('build/surf.npy', surf); del surf
     mapdata(D, cls, solid, play)
     pv = rgb[::3, ::3].copy(); pl = play[::3, ::3]; pv[~pl] = (pv[~pl] * 0.5).astype(np.uint8)
     cv2.imwrite('build/preview_full.jpg', pv[..., ::-1], [cv2.IMWRITE_JPEG_QUALITY, 88])
