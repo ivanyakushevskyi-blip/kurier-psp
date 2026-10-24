@@ -74,7 +74,7 @@ static unsigned cache_used[NCACHE];
 static int16_t slot_of[NCHUNK];
 static unsigned ctick;
 static uint32_t moff[NCHUNK + 1];
-static FILE *mapf;
+static FILE *mapf, *mapf2;
 static char map_path[512] = "MAP.BIN";
 static int map_err;                       /* 1 = немає файлу, 2 = не той файл */
 static u8 zbuf[8192];
@@ -82,7 +82,7 @@ static int loads_frame;
 static const u8 empty_chunk[CS * CS + CSB];
 
 static int map_open(void) {
-    mapf = fopen(map_path, "rb");
+    mapf = fopen(map_path, "rb"); mapf2 = fopen(map_path, "rb");
     if (!mapf) { map_err = 1; return 0; }
     char mg[4]; uint32_t h[3];
     if (fread(mg, 1, 4, mapf) != 4 || memcmp(mg, "KHM1", 4) || fread(h, 4, 3, mapf) != 3 || h[0] != NCX || h[1] != NCY || h[2] != CS ||
@@ -93,18 +93,25 @@ static void cache_init(void) {
     for (int i = 0; i < NCHUNK; i++) slot_of[i] = -1;
     for (int i = 0; i < NCACHE; i++) { cache_key[i] = -1; cache_used[i] = 0; }
 }
-static int chunk_load(int k) {
+static int pick_slot(void) {
     int best = 0;
     for (int i = 0; i < NCACHE; i++) {
         if (cache_key[i] < 0) { best = i; break; }
         if (cache_used[i] < cache_used[best]) best = i;
     }
     if (cache_key[best] >= 0) slot_of[cache_key[best]] = -1;
+    return best;
+}
+static void read_chunk(FILE *f, u8 *zb, int k, u8 *dst) {
     uint32_t n = moff[k + 1] - moff[k];
     uLongf len = CS * CS + CSB;
-    if (!mapf || n > sizeof zbuf || fseek(mapf, (long)moff[k], SEEK_SET) || fread(zbuf, 1, n, mapf) != n ||
-        uncompress(cache[best], &len, zbuf, n) != Z_OK)
-        memset(cache[best], 0, sizeof cache[best]);
+    if (!f || n > sizeof zbuf || fseek(f, (long)moff[k], SEEK_SET) || fread(zb, 1, n, f) != n || uncompress(dst, &len, zb, n) != Z_OK)
+        memset(dst, 0, CS * CS + CSB);
+}
+static int sync_loads;
+static int chunk_load(int k) {                 /* синхронно — лише якщо видимий блок ще не підвантажився */
+    int best = pick_slot(); sync_loads++;
+    read_chunk(mapf, zbuf, k, cache[best]);
     cache_key[best] = k; slot_of[k] = (int16_t)best; cache_used[best] = ++ctick;
     loads_frame++;
     return best;
@@ -117,15 +124,49 @@ static const u8 *chunk(int cx, int cy) {
     cache_used[s] = ++ctick;
     return cache[s];
 }
-/* підвантаження наперед: кільце чанків навколо екрана, не більше кількох за кадр */
+/* ---- фонове підвантаження: окремий потік читає й розпаковує блоки з картки (повільно, мс на блок),
+   основний лише копіює готові в кеш — кадр не чекає на картку пам'яті */
+#define NREQ 128
+#define NSTAGE 16
+static volatile int req_k[NREQ]; static volatile unsigned req_w, req_r;
+static u8 stage[NSTAGE][CS * CS + CSB]; static volatile int stage_k[NSTAGE]; static volatile unsigned st_w, st_r;
+static u8 pending[NCHUNK];
+static u8 zbuf2[8192];
+static int loader_step(void) {                 /* потік-завантажувач: одне замовлення */
+    if (req_r == req_w || st_w - st_r >= NSTAGE) return 0;
+    int k = req_k[req_r % NREQ], i = st_w % NSTAGE;
+    read_chunk(mapf2, zbuf2, k, stage[i]);
+    stage_k[i] = k;
+    st_w = st_w + 1; req_r = req_r + 1;
+    return 1;
+}
+static void install_ready(void) {              /* основний потік: готові блоки -> кеш */
+    while (st_r != st_w) {
+        int i = st_r % NSTAGE, k = stage_k[i];
+        if (slot_of[k] < 0) {
+            int b = pick_slot();
+            memcpy(cache[b], stage[i], CS * CS + CSB);
+            cache_key[b] = k; slot_of[k] = (int16_t)b; cache_used[b] = ++ctick;
+        }
+        pending[k] = 0;
+        st_r = st_r + 1;
+    }
+}
+/* кільце блоків навколо огляду (+2, у бік руху +3) — замовити у фоні */
 static void prefetch(int ox, int oy, float dx, float dy) {
-    int cx0 = ox / CS - 2, cx1 = (ox + SW) / CS + 2, cy0 = oy / CS - 2, cy1 = (oy + SH) / CS + 2;
+    install_ready();
+    int cx0 = ox / CS - 2, cx1 = (ox + (int)VW) / CS + 2, cy0 = oy / CS - 2, cy1 = (oy + (int)VH) / CS + 2;
     if (dx > 0.3f) cx1++; if (dx < -0.3f) cx0--; if (dy > 0.3f) cy1++; if (dy < -0.3f) cy0--;
-    for (int cy = cy0; cy <= cy1 && loads_frame < 4; cy++) for (int cx = cx0; cx <= cx1 && loads_frame < 4; cx++) {
+    for (int cy = cy0; cy <= cy1; cy++) for (int cx = cx0; cx <= cx1; cx++) {
         if (cx < 0 || cy < 0 || cx >= NCX || cy >= NCY) continue;
         int k = cy * NCX + cx;
-        if (slot_of[k] < 0) chunk_load(k);
+        if (slot_of[k] >= 0 || pending[k] || req_w - req_r >= NREQ) continue;
+        pending[k] = 1; req_k[req_w % NREQ] = k; req_w = req_w + 1;
     }
+#ifdef HOST
+    for (int n = 0; n < 4 && loader_step(); n++) loads_frame++;   /* ПК: без потоків, ≈ як раніше (≤4 за кадр) */
+    install_ready();
+#endif
 }
 static u8 map_px(int x, int y) {
     if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return 0;
@@ -1261,6 +1302,10 @@ static int cb_thread(SceSize args, void *argp) {
     sceKernelSleepThreadCB();
     return 0;
 }
+static int loader_thread(SceSize args, void *argp) {
+    while (1) { if (!loader_step()) sceKernelDelayThread(2000); }
+    return 0;
+}
 static u32 *vw[2];
 static void *vp[2];
 static int back = 1;
@@ -1294,6 +1339,7 @@ int main(int argc, char **argv) {
     load_save();
     assets_init();
     gfx_init(PALETTE); puff_tex_init();
+    { int lt = sceKernelCreateThread("loader", loader_thread, 0x30, 0x4000, 0, NULL); if (lt >= 0) sceKernelStartThread(lt, 0, NULL); }
     sceCtrlSetSamplingCycle(0);
     sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
     srand(sceKernelGetSystemTimeLow());
@@ -1392,7 +1438,7 @@ int main(int argc, char **argv) {
         float ux = (L[2] - L[0]) / bl, uy = (L[3] - L[1]) / bl;
         evac = 0; health = 100; fuel = 100; ostate = O_NONE; n_offers = 0; owait = 100000;
         px_ = L[0] + ux * 10 - uy * L[4]; py_ = L[1] + uy * 10 + ux * L[4]; ang = atan2f(uy, ux); stop_car(); unstick(); update_camera(1);
-        int kmin = 999, kmax = 0, t100 = -1, t140 = -1;
+        int kmin = 999, kmax = 0, t100 = -1, t140 = -1, sl0 = sync_loads;
         for (int f = 0; f < 900 && dist(px_, py_, L[0], L[1]) < bl - 60; f++) {
             game_update(PSP_CTRL_CROSS, 0, 128, 128);
             int k = (int)(fabsf(vel) * MPP * 60 * 3.6f + 0.5f); if (k > 140) k = 140;
@@ -1400,6 +1446,7 @@ int main(int argc, char **argv) {
             if (k >= 140 && t140 < 0) t140 = f;
             if (t140 >= 0) { if (k < kmin) kmin = k; if (k > kmax) kmax = k;}
         }
+        printf("speed run: frames that waited for memory stick = %d\n", sync_loads - sl0);
         printf("speed: segment %.0f m, 100 km/h after %.1f s, 140 after %.1f s, shown after that %d..%d\n", bl * MPP, t100 / 60.0f, t140 / 60.0f, kmin, kmax);
         /* занос на ручнику */
         for (int f = 0; f < 24; f++) { game_update(PSP_CTRL_CROSS | PSP_CTRL_RTRIGGER, 0, 255, 128); draw_frame(); }
