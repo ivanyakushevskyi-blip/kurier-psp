@@ -251,6 +251,10 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
     ycls = np.full((H, W), 3, np.uint8)
     ycls[exg > 6] = 1
     ycls[(r > bl + 28) & (exg <= 6) & (ch > 34) & (mx > 110)] = 2
+    sumc = r + g + bl + 1.0; gn = g / sumc; rn = r / sumc
+    if S > 1:                                                     # частки кольору: працює і в тіні, і восени
+        ycls[(gn > 0.352) & (gn > rn) & (ycls == 3)] = 1
+        ycls[(rn > 0.37) & (ch > 20) & (gn <= 0.352) & (ycls == 3)] = 2
     ycls[dark] = 0
     _bm = Image.new('L', (W, H), 0); _d = ImageDraw.Draw(_bm)
     for _, b in BL:
@@ -331,6 +335,21 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
     put(G_TRACK, np.full((HF, WF, 3), TRACK[1], np.uint8))
     put(G_SAND, pick([(206, 186, 140), (218, 200, 154), (228, 212, 168)], 0.3 + 0.4 * blob + 0.3 * (fine > 0.9)))
     put(G_YARD, pick(PAVED, 0.5 + 0.0 * blob))
+    if S > 1:
+        # відтінок поверхні зі знімка: лише «зелено» і «буро» (без синього відтінку тіней), згладжено
+        ssm = cv2.GaussianBlur(sw, (0, 0), 3.0)
+        sm_sum = ssm.sum(-1) + 1.0
+        gq, rq = ssm[..., 1] / sm_sum, ssm[..., 0] / sm_sum
+        lumq = np.clip((ssm.mean(-1) - 40) / 50, 0, 1)                 # у глибокій тіні знімку не довіряємо
+        green_ = np.clip((gq - 0.335) / 0.035, 0, 1) * lumq
+        brown_ = np.clip((rq - 0.345) / 0.035, 0, 1) * (1 - green_) * lumq
+        tint = 1 + green_[..., None] * (np.array([0.86, 1.10, 0.80]) - 1) + brown_[..., None] * (np.array([1.10, 0.98, 0.84]) - 1)
+        tint = cv2.resize(tint.astype(np.float32), (WF, HF), interpolation=cv2.INTER_LINEAR)
+        WGT = np.zeros(16, np.float32)
+        WGT[[G_GRASS, G_WOOD]] = 0.8; WGT[[G_DIRT, G_YARD]] = 0.7; WGT[G_PAVED] = 0.6; WGT[G_PED] = 0.3
+        WGT[G_PARK] = 0.3; WGT[G_SIDE] = 0.15; WGT[G_SAND] = 0.3
+        wgt = WGT[cls][..., None]
+        img = np.clip(img.astype(np.float32) * (1 + (tint - 1) * wgt), 0, 255).astype(np.uint8)
     road = cls == G_ROAD
     walk = np.isin(cls, (G_SIDE, G_PED))
     k3 = np.ones((2 * S + 1, 2 * S + 1), np.uint8)
@@ -473,6 +492,9 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
     # ---------- дерева зі знімка (у сітці гри)
     green = exg > 8; autumn = (r > bl + 30) & (ch > 34)
     canopy = (tex > 4.0) & (green | autumn | ((ch > 18) & (mx < 120) & (tex > 7))) & ~(mx < 40)
+    if S > 1:                                                     # більше крон: і в тіні, і восени
+        canopy |= (tex > 3.0) & ((gn > 0.35) | autumn) & (mx > 25)
+        canopy |= (mx < 70) & (tex > 4.5)                         # у глибокій тіні — за фактурою листя
     park = np.zeros((H, W), np.uint8)
     for w, pts, ptf in ways:
         if w['closed'] and (w['t'].get('leisure') == 'park' or w['t'].get('natural') == 'wood' or w['t'].get('landuse') == 'forest'):
@@ -484,16 +506,44 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
     canopy = cv2.morphologyEx(canopy.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
     canopy = cv2.morphologyEx(canopy, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)).astype(bool)
     dist = cv2.distanceTransform(canopy.astype(np.uint8), cv2.DIST_L2, 5)
-    pk = (dist == ndi.maximum_filter(dist, size=9)) & (dist >= 3.0)
+    pk = (dist == ndi.maximum_filter(dist, size=9 if S == 1 else 7)) & (dist >= 3.0)
     ys, xs = np.nonzero(pk); order = np.argsort(-dist[ys, xs])
     trees = []
     for y, x in zip(ys[order], xs[order]):
         rr = float(min(dist[y, x] * 1.25 + 2, 13))
-        if any((tx - x) ** 2 + (ty - y) ** 2 < (0.75 * (tr + rr)) ** 2 for tx, ty, tr, _ in trees): continue
+        if S > 1 and clsb[y, x] in (G_PATH, G_PED, G_SIDE): continue      # стежки лишаються видимими
+        ov_ = 0.75 if S == 1 else 0.58                            # густіша посадка: крони перекриваються, як у справжньому парку
+        if any((tx - x) ** 2 + (ty - y) ** 2 < (ov_ * (tr + rr)) ** 2 for tx, ty, tr, _ in trees): continue
         c = sm[max(0, y - 2):y + 3, max(0, x - 2):x + 3].reshape(-1, 3).mean(0)
         kind = 'g' if c[1] > c[0] + 2 else ('o' if c[0] > c[1] + 24 else 'y')
+        if S > 1 and kind == 'y' and c.max() < 95: kind = 'g'                     # темна (у тіні) крона — не осіння
         if kind == 'g' and c.max() < 92 and c[2] >= c[0] - 4: kind = 'c'           # темні синьо-зелені — хвойні
         trees.append((int(x), int(y), rr, kind))
+    if S > 1 and trees:                                           # другий прохід: дрібніші дерева в прогалинах суцільних крон
+        cov_ = np.zeros((H, W), np.uint8)
+        for tx, ty, tr, _ in trees: cv2.circle(cov_, (tx, ty), int(tr * 0.85), 1, -1)
+        gap = canopy & (cov_ == 0)
+        dg = cv2.distanceTransform(gap.astype(np.uint8), cv2.DIST_L2, 5)
+        pk2 = (dg == ndi.maximum_filter(dg, size=5)) & (dg >= 2.0)
+        ys2, xs2 = np.nonzero(pk2)
+        for y, x in zip(ys2[np.argsort(-dg[ys2, xs2])], xs2[np.argsort(-dg[ys2, xs2])]):
+            if clsb[y, x] in (G_PATH, G_PED, G_SIDE): continue
+            rr = float(min(dg[y, x] * 1.3 + 1.5, 7))
+            if any((tx - x) ** 2 + (ty - y) ** 2 < (0.5 * (tr + rr)) ** 2 for tx, ty, tr, _ in trees): continue
+            c = sm[max(0, y - 2):y + 3, max(0, x - 2):x + 3].reshape(-1, 3).mean(0)
+            kind = 'g' if (c[1] > c[0] + 2 or c.max() < 95) else ('o' if c[0] > c[1] + 24 else 'y')
+            trees.append((int(x), int(y), rr, kind))
+
+    if S > 1:
+        ctx.img = img
+        MAINF = CDt.main_mask(ctx)
+        CDt.road_wear(ctx, MAINF); CDt.sidewalk_tiles(ctx, MAINF)
+        img = ctx.img
+    if S > 1:                                                     # під густими кронами земля темніша: трава/листя
+        und = cv2.GaussianBlur(cv2.dilate(canopy.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(np.float32), (0, 0), 2.0)
+        und = cv2.resize(und, (WF, HF), interpolation=cv2.INTER_LINEAR)
+        und *= np.isin(cls, (G_YARD, G_GRASS, G_DIRT, G_PAVED, G_WOOD))
+        img = np.clip(img.astype(np.float32) * (1 - 0.45 * und[..., None]) + np.array((78, 102, 50), np.float32) * 0.45 * und[..., None], 0, 255).astype(np.uint8)
 
     # ---------- тіні (на південний схід), м'які краї
     shadow = np.zeros((HF, WF), np.uint8)
@@ -514,6 +564,7 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
         CDt.shore(ctx); CDt.flowerbeds(ctx)
         CDt.plots(ctx, blds, park, bmask, solid_out)
         CDt.playgrounds(ctx); CDt.benches(ctx); CDt.markets(ctx, bmaskf); CDt.fountains(ctx)
+        CDt.park_furniture(ctx, park); CDt.planters(ctx); CDt.kiosks(ctx, solid_out)
 
     # ---------- пляж
     sand = cls == G_SAND
@@ -569,6 +620,17 @@ def draw_roof(img, b, pts, rs, ss=1):
     per = float(np.sum(np.linalg.norm(np.diff(np.array(b['q']), axis=0), axis=1))) * SRC
     circ = 4 * math.pi * area / max(per, 1) ** 2
     kind = roof_kind(b.get('roof'))
+    rr_ = b.get('roof')
+    if S_ > 1 and (rr_ is None or max(rr_) < 48):           # колір даху в тіні не виміряти — типовий для міста, закріплений за будинком
+        h_ = int(abs(b['q'][0][0] * 7919 + b['q'][0][1] * 104729)) % 1000 / 1000.0
+        if bt in ('house', 'detached', 'semidetached_house', 'yes') and area < 300:
+            pal_ = [('red', .18), ('brown', .2), ('darkred', .08), ('orange', .06), ('metal', .12), ('gray', .12), ('green', .08), ('blue', .06), ('teal', .04), ('beige', .06)]
+        else:
+            pal_ = [('gray', .38), ('darkgray', .14), ('metal', .2), ('beige', .12), ('white', .1), ('teal', .06)]
+        acc_ = 0
+        for k_, p_ in pal_:
+            acc_ += p_
+            if h_ < acc_: kind = k_; break
     S = [np.array(c, np.uint8) for c in shades(ROOFS[kind])]
     out = np.zeros((h, w, 3), np.uint8)
     yy, xx = np.mgrid[0:h, 0:w]

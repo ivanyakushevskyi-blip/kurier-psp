@@ -683,3 +683,154 @@ def garage_seams(out, F, P, b, ss):
     a = (xx - cx) * ux + (yy - cy) * uy
     seam = F & (np.mod(a, 3.5 * 2 * ss) < 0.35 * ss)
     out[seam] = (out[seam] * 0.62).astype(np.uint8)
+
+
+# ---------------------------------------------------------------- група 4: широкі вулиці й парки
+def main_mask(c, extra_m=12):
+    """Смуга навколо широких вулиць (головні + пішохідні + площі), у детальній сітці."""
+    from citydraw import ROAD_W
+    S = c.S; H, W = c.cls.shape
+    main = np.zeros((H // S + 1, W // S + 1), np.uint8)
+    for h, ptf, w in _drive_ways(c):
+        if h in MAIN: cv2.polylines(main, [np.round(np.array(ptf) / S).astype(np.int32)], False, 1, int(c.m(ROAD_W[h] + extra_m) / S))
+    for w, pts, ptf in c.ways:
+        t = w['t']
+        if t.get('highway') == 'pedestrian' or t.get('place') == 'square':
+            if w['closed']: cv2.fillPoly(main, [np.round(np.array(ptf) / S).astype(np.int32)], 1)
+            else: cv2.polylines(main, [np.round(np.array(ptf) / S).astype(np.int32)], False, 1, 16)
+    return np.repeat(np.repeat(main, S, 0), S, 1)[:H, :W].astype(bool)
+
+
+def road_wear(c, mainf):
+    """Латки асфальту й люки на широких вулицях: менше «сірого полотна»."""
+    from citydraw import ROAD_W
+    img, cls = c.img, c.cls
+    H, W = cls.shape
+    road = (cls == 5)
+    for h, ptf, w in _drive_ways(c):
+        if h not in MAIN: continue
+        hw = c.m(ROAD_W[h]) / 2
+        for i in range(len(ptf) - 1):
+            (xa, ya), (xb, yb) = ptf[i], ptf[i + 1]; L = math.hypot(xb - xa, yb - ya)
+            if L < c.m(6): continue
+            ux, uy = (xb - xa) / L, (yb - ya) / L; nx, ny = -uy, ux
+            for s_ in np.arange(c.m(4), L - c.m(4), c.m(9)):
+                px_, py_ = xa + ux * s_, ya + uy * s_
+                rs = _rng(*c.world((px_, py_)), 71)
+                r = rs.random()
+                off = (rs.random() * 2 - 1) * hw * 0.8
+                qx, qy = px_ + nx * off, py_ + ny * off
+                if not (0 <= qx < W and 0 <= qy < H) or not road[int(qy), int(qx)]: continue
+                if r < 0.18:                                           # латка
+                    Lp, Wp = c.m(1.5 + rs.random() * 3), c.m(1 + rs.random() * 1.6)
+                    shade = 0.82 if rs.random() < 0.6 else 1.12
+                    m = np.zeros((int(Lp + Wp) * 2 + 4,) * 2, np.uint8); k = m.shape[0] // 2
+                    _rect(m, k, k, Lp, Wp, ux, uy, 1)
+                    ys, xs = np.nonzero(m); ys = ys + int(qy) - k; xs = xs + int(qx) - k
+                    ok = (ys >= 0) & (ys < H) & (xs >= 0) & (xs < W)
+                    ys, xs = ys[ok], xs[ok]; ok = road[ys, xs]; ys, xs = ys[ok], xs[ok]
+                    img[ys, xs] = np.clip(img[ys, xs] * shade, 0, 255).astype(np.uint8)
+                elif r < 0.30:                                         # люк
+                    cv2.circle(img, (int(qx), int(qy)), int(c.m(0.4)), (52, 54, 58), -1)
+                    cv2.circle(img, (int(qx), int(qy)), int(c.m(0.4)), (96, 98, 102), max(1, int(c.m(0.1))))
+
+
+def sidewalk_tiles(c, mainf):
+    """Плитка тротуарів широких вулиць: смуги кольору (сіра/теракотова/пісочна) — по-різному на різних кварталах."""
+    img, cls, S = c.img, c.cls, c.S
+    H, W = cls.shape
+    walk = np.isin(cls, (4, 7)) & mainf
+    if not walk.any(): return
+    yy, xx = np.mgrid[0:H, 0:W]
+    gx = xx // S + int(c.x0); gy = yy // S + int(c.y0)
+    zone = ((gx // 160) * 7 + (gy // 160) * 13) % 4                  # квартал ~80 м — свій візерунок
+    PAL = [((168, 108, 94), (176, 172, 164)), ((196, 178, 140), (168, 166, 160)), ((142, 144, 150), (182, 180, 174)), ((160, 96, 82), (196, 178, 140))]
+    out = img.astype(np.float32)
+    for z, (a, b) in enumerate(PAL):
+        m = walk & (zone == z)
+        if not m.any(): continue
+        band = ((gx + gy * 0) // 3 + (gy // 3)) % 4 == 0 if z % 2 else ((gx // 2 + gy // 2) % 3 == 0)
+        col = np.where(band[..., None], np.array(a, np.float32), np.array(b, np.float32))
+        out[m] = out[m] * 0.45 + col[m] * 0.55
+    img[:] = np.clip(out, 0, 255).astype(np.uint8)
+
+
+def park_furniture(c, park_b):
+    """Парки: лавки вздовж доріжок (по черзі з боків), невеликі ліхтарі, урни; клумба на перетині доріжок."""
+    img, S = c.img, c.S
+    H, W = c.cls.shape
+    pk = np.repeat(np.repeat(cv2.dilate(park_b.astype(np.uint8), np.ones((9, 9), np.uint8)), S, 0), S, 1)[:H, :W].astype(bool)
+    if not pk.any(): return
+    cnt = {}
+    for w, pts, ptf in c.ways:
+        t = w['t']
+        if t.get('highway') not in ('footway', 'path', 'pedestrian', 'cycleway'): continue
+        for nid in w['nds']: cnt[nid] = cnt.get(nid, 0) + 1
+        for i in range(len(ptf) - 1):
+            (xa, ya), (xb, yb) = ptf[i], ptf[i + 1]; L = math.hypot(xb - xa, yb - ya)
+            if L < c.m(5): continue
+            ux, uy = (xb - xa) / L, (yb - ya) / L; nx, ny = -uy, ux
+            for s_ in np.arange(c.m(6), L - c.m(3), c.m(13)):
+                px_, py_ = xa + ux * s_, ya + uy * s_
+                if not (0 <= px_ < W and 0 <= py_ < H) or not pk[int(py_), int(px_)]: continue
+                rs = _rng(*c.world((px_, py_)), 81)
+                sg = 1 if rs.random() < 0.5 else -1
+                r = rs.random()
+                bx, by = px_ + nx * sg * c.m(1.9), py_ + ny * sg * c.m(1.9)
+                if r < 0.45:
+                    _rect(img, bx + c.m(0.3), by + c.m(0.4), c.m(1.8), c.m(0.6), ux, uy, (90, 96, 84))
+                    _rect(img, bx, by, c.m(1.8), c.m(0.6), ux, uy, (146, 102, 64))
+                    _rect(img, bx + nx * sg * c.m(0.22), by + ny * sg * c.m(0.22), c.m(1.8), c.m(0.15), ux, uy, (112, 76, 46))
+                    if rs.random() < 0.4: bin_(c, bx + ux * c.m(1.5), by + uy * c.m(1.5))
+                elif r < 0.65:
+                    cv2.circle(img, (int(bx), int(by)), max(1, int(c.m(0.25))), POLE, -1)
+                    cv2.circle(img, (int(bx), int(by)), max(1, int(c.m(0.45))), (226, 226, 210), max(1, int(c.m(0.12))))
+    # клумби на перетинах доріжок у парках
+    FL = [(220, 60, 70), (240, 200, 60), (236, 236, 236), (186, 90, 200), (240, 130, 60)]
+    for nid, n in cnt.items():
+        if n < 3 or nid not in c.D['nodes']: continue
+        x, y = c.tofn(nid)
+        if not (0 <= x < W and 0 <= y < H) or not pk[int(y), int(x)]: continue
+        rs = _rng(*c.world((x, y)), 91)
+        if rs.random() < 0.5: continue
+        R = c.m(2.2 + rs.random() * 1.5)
+        cv2.circle(img, (int(x), int(y)), int(R + c.m(0.3)), (190, 186, 178), -1)
+        cv2.circle(img, (int(x), int(y)), int(R), (70, 112, 48), -1)
+        for k in range(int(R * R / (S * S) * 0.6)):
+            a = rs.random() * 6.283; d = math.sqrt(rs.random()) * R * 0.92
+            cv2.circle(img, (int(x + math.cos(a) * d), int(y + math.sin(a) * d)), max(1, S // 3), FL[rs.randrange(len(FL))], -1)
+
+
+def kiosks(c, solid_out=None):
+    img = c.img
+    for item in _node_pts(c, lambda t: t.get('shop') == 'kiosk' or t.get('amenity') == 'vending_machine' and False):
+        if len(item) > 2: continue
+        x, y = item[1]; rs = _rng(*c.world((x, y)), 101)
+        a = rs.random() * math.pi; ux, uy = math.cos(a), math.sin(a)
+        col = [(226, 226, 220), (60, 120, 180), (196, 64, 52), (80, 140, 80)][rs.randrange(4)]
+        _rect(img, x + c.m(0.5), y + c.m(0.7), c.m(3.0), c.m(2.4), ux, uy, (88, 88, 86))
+        _rect(img, x, y, c.m(3.0), c.m(2.4), ux, uy, col)
+        _rect(img, x, y, c.m(2.4), c.m(1.8), ux, uy, tuple(int(v * 0.86) for v in col))
+
+
+def planters(c):
+    """Вазони з квітами вздовж пішохідних вулиць."""
+    img = c.img; H, W = c.cls.shape
+    FL = [(220, 60, 70), (240, 200, 60), (236, 236, 236), (186, 90, 200)]
+    for w, pts, ptf in c.ways:
+        if w['t'].get('highway') != 'pedestrian' or w['closed']: continue
+        for i in range(len(ptf) - 1):
+            (xa, ya), (xb, yb) = ptf[i], ptf[i + 1]; L = math.hypot(xb - xa, yb - ya)
+            if L < c.m(8): continue
+            ux, uy = (xb - xa) / L, (yb - ya) / L; nx, ny = -uy, ux
+            for s_ in np.arange(c.m(5), L - c.m(3), c.m(16)):
+                for sg in (-1, 1):
+                    x, y = xa + ux * s_ + nx * sg * c.m(3.2), ya + uy * s_ + ny * sg * c.m(3.2)
+                    if not (0 <= x < W and 0 <= y < H) or c.cls[int(y), int(x)] not in (4, 7, 13): continue
+                    rs = _rng(*c.world((x, y)), 111)
+                    cv2.circle(img, (int(x + c.m(0.25)), int(y + c.m(0.3))), int(c.m(0.8)), (96, 96, 92), -1)
+                    cv2.circle(img, (int(x), int(y)), int(c.m(0.8)), (150, 146, 140), -1)
+                    cv2.circle(img, (int(x), int(y)), int(c.m(0.62)), (66, 104, 46), -1)
+                    for k in range(6):
+                        a = rs.random() * 6.283; d = rs.random() * c.m(0.5)
+                        cv2.circle(img, (int(x + math.cos(a) * d), int(y + math.sin(a) * d)), max(1, c.S // 3), FL[rs.randrange(4)], -1)
