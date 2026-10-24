@@ -38,9 +38,17 @@ import struct
 rgbm = np.load(os.path.join(BUILD, 'map_rgb.npy'), mmap_mode='r')
 surfm = np.load(os.path.join(BUILD, 'surf.npy'), mmap_mode='r')
 sbits = np.packbits(solid.astype(np.uint8), axis=1, bitorder='little')     # (H, W/8)
+import cv2
+SHARP = float(os.environ.get('SHARP', '0.6'))         # різкість карти (нерізка маска, сигма 0,8); 0 — вимкнено
 chunks = []
 for cy in range(NCY):
-    band = np.asarray(rgbm[cy * CS:(cy + 1) * CS]).astype(np.uint16)
+    if SHARP > 0:
+        y0 = max(0, cy * CS - 4); y1 = min(H, (cy + 1) * CS + 4)
+        bf = np.asarray(rgbm[y0:y1]).astype(np.float32)
+        bf = bf * (1 + SHARP) - cv2.GaussianBlur(bf, (0, 0), 0.8) * SHARP
+        band = np.clip(bf[cy * CS - y0:cy * CS - y0 + CS] + 0.5, 0, 255).astype(np.uint16)
+    else:
+        band = np.asarray(rgbm[cy * CS:(cy + 1) * CS]).astype(np.uint16)
     p565 = (band[..., 0] >> 3) | ((band[..., 1] >> 2) << 5) | ((band[..., 2] >> 3) << 11)
     sb_ = np.asarray(surfm[cy * CS:(cy + 1) * CS])
     s4 = (sb_[:, 0::2] & 15) | ((sb_[:, 1::2] & 15) << 4)
@@ -123,6 +131,36 @@ print('trees', len(_tr), 'trunks', int(_coll.sum()))
 TREE_OFF = put(np.array([[t[0], t[1], max(1, int(round(t[2]))) * (1 if c else -1)] for t, c in zip(_tr, _coll)] or [[0, 0, 0]], '<i2').tobytes())
 TREE_CELL_OFF = put(_cells.astype('<u4').tobytes())
 NTREE = len(_tr)
+# ---- будинки для паралаксу дахів: центр, висота (м), контур (≤32 вершини), відсортовані за блоком карти центру
+import cv2
+_D = CD.data()
+_arch = [np.array(q, np.float32) for q in md.get('arches', [])]
+_bl = []
+for b in _D['B'] + _D['SAT']:
+    Q = np.array(b['q'], np.float32) * CD.K
+    if len(Q) < 3: continue
+    cx, cy = Q.mean(0)
+    if not (0 <= cx < W and 0 <= cy < H) or not _pl[int(cy), int(cx)]: continue
+    if cv2.contourArea(Q) < 12: continue
+    if any(cv2.pointPolygonTest(A, (float(cx), float(cy)), False) >= 0 for A in _arch): continue     # будинки над арками — окремо
+    eps = 0.7
+    while True:
+        q = cv2.approxPolyDP(Q, eps, True)[:, 0, :]
+        if len(q) <= 32: break
+        eps *= 1.4
+    if len(q) < 3: continue
+    _bl.append((int(cx), int(cy), int(round(b.get('h') or 6)), np.round(q).astype(np.int16)))
+_bl.sort(key=lambda t: (t[1] // CS) * NCX + t[0] // CS)
+_bc = np.zeros(NCX * NCY + 1, np.uint32)
+for t in _bl: _bc[(t[1] // CS) * NCX + t[0] // CS + 1] += 1
+_bc = np.cumsum(_bc).astype(np.uint32)
+_po = np.zeros(len(_bl) + 1, np.uint32); _po[1:] = np.cumsum([len(t[3]) for t in _bl])
+BLD_OFF = put(np.array([[t[0], t[1], t[2], len(t[3])] for t in _bl] or [[0, 0, 0, 0]], '<i2').tobytes())
+BLD_PO_OFF = put(_po.astype('<u4').tobytes())
+BLD_PT_OFF = put((np.concatenate([t[3] for t in _bl]) if _bl else np.zeros((1, 2), np.int16)).astype('<i2').tobytes())
+BLD_CELL_OFF = put(_bc.astype('<u4').tobytes())
+NBLD = len(_bl)
+print('buildings for parallax', NBLD, 'points', int(_po[-1]))
 ICON_STO = put(sprites.icon('sto').tobytes())
 ICON_FUEL = put(sprites.icon('fuel').tobytes())
 ICON_SHOP = put(sprites.icon('shop').tobytes())
@@ -210,6 +248,7 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('#define SPAWN_X %d\n#define SPAWN_Y %d\n' % tuple(md['spawn']))
     f.write('#define SPR_LIT %d\n#define ICON_STO %d\n#define ICON_FUEL %d\n' % (SPR_LIT, ICON_STO, ICON_FUEL))
     f.write('#define TREE_OFF %d\n#define TREE_CELL_OFF %d\n#define NTREE %d\n' % (TREE_OFF, TREE_CELL_OFF, NTREE))
+    f.write('#define BLD_OFF %d\n#define BLD_PO_OFF %d\n#define BLD_PT_OFF %d\n#define BLD_CELL_OFF %d\n#define NBLD %d\n' % (BLD_OFF, BLD_PO_OFF, BLD_PT_OFF, BLD_CELL_OFF, NBLD))
     f.write('#define CARTEX_OFF %d\n#define CARTEX_LIT %d\n#define CARTEX_SHD %d\n#define CARTEX_W %d\n#define CARTEX_H %d\n#define CARTEX_LEN %d\n'
             % (CARTEX_OFF, CARTEX_LIT, CARTEX_SHD, sprites.CARTEX_W, sprites.CARTEX_H, sprites.CARTEX_LEN))
     widx = json.load(open(os.path.join(BUILD, 'water_idx.json'))) if os.path.exists(os.path.join(BUILD, 'water_idx.json')) else []
