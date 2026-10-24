@@ -31,7 +31,8 @@ TRACK = [(166, 76, 58), (184, 92, 70)]
 LINE = (236, 236, 230)
 TREE = {'g': [(30, 74, 40), (52, 104, 48), (78, 134, 58), (112, 164, 74)],
         'y': [(96, 82, 26), (156, 128, 34), (204, 166, 48), (232, 202, 96)],
-        'o': [(104, 50, 24), (164, 82, 34), (210, 116, 48), (236, 156, 84)]}
+        'o': [(104, 50, 24), (164, 82, 34), (210, 116, 48), (236, 156, 84)],
+        'c': [(18, 46, 40), (28, 70, 56), (44, 96, 70), (78, 130, 92)]}       # хвойні
 ROOFS = {   # базовий колір; відтінки рахуються
     'red': (176, 72, 50), 'darkred': (132, 56, 44), 'orange': (204, 108, 58), 'brown': (116, 84, 64),
     'gray': (136, 140, 146), 'darkgray': (92, 96, 104), 'metal': (182, 188, 194), 'white': (214, 216, 216),
@@ -168,7 +169,7 @@ def _up(a, S):
     return a if S == 1 else np.repeat(np.repeat(a, S, 0), S, 1)
 
 
-def render(x0, y0, W, H, tree_out=None, ss=1):
+def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
     """tree_out: якщо список — дерева не малюються, а додаються туди у світових координатах (малює citybuild один раз).
     ss: надвибірка — геометрія малюється в ss разів детальніше й зменшується з усередненням (згладжені краї).
     Візерунки (плитка, розмітка, шум) і аналіз знімка — у сітці гри, тож стиль той самий, що й при ss=1."""
@@ -323,6 +324,7 @@ def render(x0, y0, W, H, tree_out=None, ss=1):
     asph = pick(ASPH, 0.35 + 0.35 * blob + 0.3 * (fine > 0.93))
     put(G_ROAD, asph); put(G_PARK, pick(ASPH[1:], 0.4 + 0.4 * blob))
     rip = (np.sin(xx * 0.5 + yy * 0.15 + blob * 4) > 0.85)
+    if S > 1: rip = (fine > 0.975) & (np.sin(xx * 0.5 + yy * 0.15) > 0.3)      # рідкі відблиски, без смуг
     put(G_WATER, np.where(rip[..., None], np.array(WATER[2], np.uint8), pick(WATER[:2], 0.3 + 0.5 * blob)))
     put(G_RAIL, pick(BALLAST, fine))
     put(G_PITCH, np.where(((xx // 8) % 2 == 0)[..., None], np.array(PITCH[0], np.uint8), np.array(PITCH[1], np.uint8)))
@@ -354,16 +356,24 @@ def render(x0, y0, W, H, tree_out=None, ss=1):
             do.line(sh, fill=2, width=S)
     ova = np.array(ov); img[ova == 1] = SLEEPER; img[ova == 2] = RAIL
     # розмітка, переходи
+    _jc = {}
+    for h, pts, w in drive:
+        for k, nid in enumerate(w['nds']): _jc[nid] = _jc.get(nid, 0) + (1 if k in (0, len(w['nds']) - 1) else 2)
+    JN = {n for n, v in _jc.items() if v >= 3}
     mk = Image.new('L', (WF, HF), 0); dm = ImageDraw.Draw(mk)
     for h, pts, w in drive:
         if h not in ('primary', 'secondary', 'tertiary') or w['t'].get('oneway') == 'yes': continue
         s0 = 0.0
         for i in range(len(pts) - 1):
             (xa, ya), (xb, yb) = pts[i], pts[i + 1]; L = math.hypot(xb - xa, yb - ya); s_ = 0.0
-            while s_ < L:
+            Le = L
+            if S > 1 and L > 0:                                   # осьова не заходить у перехрестя
+                if w['nds'][i] in JN: s_ = min(L, (ROAD_W[h] / 2 + 3) / MF)
+                if w['nds'][i + 1] in JN: Le = max(0.0, L - (ROAD_W[h] / 2 + 3) / MF)
+            while s_ < Le:
                 ph = (s0 + s_) % (10 * S)
                 if ph < 5 * S:
-                    e = min(s_ + 5 * S - ph, L)
+                    e = min(s_ + 5 * S - ph, Le)
                     dm.line([(xa + (xb - xa) * s_ / L, ya + (yb - ya) * s_ / L), (xa + (xb - xa) * e / L, ya + (yb - ya) * e / L)], fill=1, width=S)
                     s_ = e
                 else: s_ += 10 * S - ph
@@ -437,6 +447,11 @@ def render(x0, y0, W, H, tree_out=None, ss=1):
             lane = (m > 0) & (np.round(d) % 3 == 0) & (d > 1)
             img[lane] = TRACK[0]
 
+    import citydetail as CDt
+    import citygen as CG
+    ctx = CDt.Ctx(img=img, cls=cls, S=S, MF=MF, x0=x0, y0=y0, D=D, ways=ways, tofn=lambda nid: tof(CG.px(*D['nodes'][nid])))
+    if S > 1: CDt.road_marks(ctx)
+
     # ---------- будинки
     blds = []
     for i, b in BL:
@@ -477,6 +492,7 @@ def render(x0, y0, W, H, tree_out=None, ss=1):
         if any((tx - x) ** 2 + (ty - y) ** 2 < (0.75 * (tr + rr)) ** 2 for tx, ty, tr, _ in trees): continue
         c = sm[max(0, y - 2):y + 3, max(0, x - 2):x + 3].reshape(-1, 3).mean(0)
         kind = 'g' if c[1] > c[0] + 2 else ('o' if c[0] > c[1] + 24 else 'y')
+        if kind == 'g' and c.max() < 92 and c[2] >= c[0] - 4: kind = 'c'           # темні синьо-зелені — хвойні
         trees.append((int(x), int(y), rr, kind))
 
     # ---------- тіні (на південний схід), м'які краї
@@ -492,6 +508,12 @@ def render(x0, y0, W, H, tree_out=None, ss=1):
         shf = np.maximum(shf, 0.55 * cv2.GaussianBlur(bmaskf.astype(np.float32), (0, 0), 1.5 * S))   # затінення біля стін
     shf[bmaskf] = 0
     img = (img.astype(np.float32) * (1 - (0.3 if S == 1 else 0.34) * shf[..., None])).astype(np.uint8)
+
+    if S > 1:
+        ctx.img = img
+        CDt.shore(ctx); CDt.flowerbeds(ctx)
+        CDt.plots(ctx, blds, park, bmask, solid_out)
+        CDt.playgrounds(ctx); CDt.benches(ctx); CDt.markets(ctx, bmaskf); CDt.fountains(ctx)
 
     # ---------- пляж
     sand = cls == G_SAND
@@ -517,11 +539,14 @@ def render(x0, y0, W, H, tree_out=None, ss=1):
         if drivable(w['t']): drm.line(ptf, fill=1, width=max(1, int(ROAD_W[w['t']['highway']] / MF)))      # уся ширина проїжджої частини
     rmask = (np.array(rm) > 0) & (cls == G_ROAD)
     img[rmask] = img_ground[rmask]
+    if S > 1:
+        ctx.img = img
+        CDt.awnings(ctx, blds); CDt.lamps(ctx); CDt.bus_stops(ctx); CDt.street_litter(ctx, trees)
 
     # ---------- дерева
     if tree_out is None:
         for k, (x, y, rr, kind) in enumerate(sorted(trees, key=lambda t: t[1])):
-            draw_tree(img, x * S + S // 2, y * S + S // 2, rr * S, kind, random.Random(int(x + x0) * 7919 + int(y + y0)), S)
+            (_tree_v3 if S > 1 else draw_tree)(img, x * S + S // 2, y * S + S // 2, rr * S, kind, random.Random(int(x + x0) * 7919 + int(y + y0)), S)
     if S > 1:
         img = cv2.resize(img, (W, H), interpolation=cv2.INTER_AREA)
         cls = clsb.copy()
@@ -548,6 +573,7 @@ def draw_roof(img, b, pts, rs, ss=1):
     out = np.zeros((h, w, 3), np.uint8)
     yy, xx = np.mgrid[0:h, 0:w]
     d = cv2.distanceTransform(m, cv2.DIST_L2, 3) / S_            # у пікселях гри
+    typ, gxy = 'flat', None
     if circ > 0.9 and area > 250:                       # купол / кругла будівля
         cx, cy = (P - [bx0, by0]).mean(0)
         ang = np.degrees(np.arctan2(yy - cy, xx - cx)) % 360
@@ -566,6 +592,7 @@ def draw_roof(img, b, pts, rs, ss=1):
         nrm = (np.hypot(gx, gy) + 1e-6) * S_
         lit = (-gx - gy) * S_ / nrm / 1.414
         ridge = (nrm < 0.25) & (d > 1.5)
+        typ, gxy = 'house', (gx, gy, ridge)
         if S_ == 1:
             out[:] = S[2]
             out[lit > 0.35] = S[3]; out[lit < -0.35] = S[1]
@@ -582,17 +609,24 @@ def draw_roof(img, b, pts, rs, ss=1):
         rect = cv2.minAreaRect(P); (rw, rh), a = rect[1], math.radians(rect[2])
         ux, uy = (math.cos(a), math.sin(a)) if rw < rh else (-math.sin(a), math.cos(a))
         st = ((xx * ux + yy * uy) // (2 * S_)) % 2 == 0
-        out[:] = np.where(st[..., None], S[2], S[3])
+        out[:] = np.where(st[..., None], S[2], S[3]); typ = 'metal'
+        if S_ > 1 and bt in ('garage', 'garages'):
+            import citydetail as CDt
+            CDt.garage_seams(out, F, P - [bx0, by0], b, S_)
         out[(d >= 1) & (d < 2)] = S[1]
     else:
         out[:] = S[2]
         out[(d >= 1) & (d < 2.2)] = S[3]
         out[(d >= 2.2) & (d < 3.2)] = S[1]
-        ys, xs = np.nonzero(d > 6)
-        for _ in range(min(len(xs) // (400 * S_ * S_), 5)):
-            k = rs.randrange(len(xs)); vx, vy = xs[k], ys[k]
-            out[vy:vy + 3 * S_, vx:vx + 4 * S_] = S[3]; out[vy + 3 * S_:vy + 4 * S_, vx + S_:vx + 5 * S_] = S[1]
+        if S_ == 1:
+            ys, xs = np.nonzero(d > 6)
+            for _ in range(min(len(xs) // (400 * S_ * S_), 5)):
+                k = rs.randrange(len(xs)); vx, vy = xs[k], ys[k]
+                out[vy:vy + 3 * S_, vx:vx + 4 * S_] = S[3]; out[vy + 3 * S_:vy + 4 * S_, vx + S_:vx + 5 * S_] = S[1]
     out[F & (d < 1.01)] = S[0] if circ > 0.9 else out[F & (d < 1.01)]
+    if S_ > 1 and not (circ > 0.9 and area > 250):
+        import citydetail as CDt
+        CDt.roof_details(out, F, d, P - [bx0, by0], typ, gxy, area, b, rs, S_)
     ko = 2 * S_ + 1 if S_ == 1 else S_ + 1                # обвідка: 1 пікс гри; при надвибірці ~0,5 пікс
     ol = cv2.dilate(m, np.ones((ko, ko), np.uint8)).astype(bool) & ~F
     dst = img[max(0, by0):min(H, by1), max(0, bx0):min(W, bx1)]
@@ -605,6 +639,7 @@ def draw_roof(img, b, pts, rs, ss=1):
 def _tree_v3(img, x, y, rr, kind, rs, ss):
     """Реалістичніша крона (при надвибірці): купа листяних «хмаринок» з власною світлотінню, темні просвіти між ними,
     дрібна фактура листя, м'який темний край. x, y, rr — у детальній сітці."""
+    if kind == 'c': return _conifer(img, x, y, rr, rs, ss)
     H, W = img.shape[:2]
     R = int(math.ceil(rr * 1.15)) + 2 * ss
     yy, xx = np.mgrid[-R:R + 1, -R:R + 1].astype(np.float32)
@@ -652,6 +687,37 @@ def _tree_v3(img, x, y, rr, kind, rs, ss):
     img[ay0:ay1, ax0:ax1] = np.clip(dst * (1 - a_) + colv * a_, 0, 255).astype(np.uint8)
 
 
+def _conifer(img, x, y, rr, rs, ss):
+    """Ялина/сосна згори: зірка з гілок у кілька ярусів, світло з північного заходу, темніше до центру-верхівки."""
+    H, W = img.shape[:2]
+    rr = rr * 0.85
+    R = int(math.ceil(rr)) + 2 * ss
+    yy, xx = np.mgrid[-R:R + 1, -R:R + 1].astype(np.float32)
+    rad = np.hypot(xx, yy); th = np.arctan2(yy, xx)
+    C = [np.array(c, np.float32) for c in TREE['c']]
+    m = np.zeros(xx.shape, bool); shade = np.zeros(xx.shape, np.float32)
+    n = 9 + rs.randrange(4); ph = rs.random() * 6.283
+    for tier, (sc, k) in enumerate(((1.0, 0.0), (0.72, 0.5), (0.45, 0.25))):
+        spike = np.abs(np.cos((th + ph + tier * 0.4) * n / 2))
+        edge = rr * sc * (0.62 + 0.38 * spike ** 0.6)
+        mt = rad <= edge
+        lit = np.clip(-np.cos(th - math.radians(225)) * 0.5 + 0.5, 0, 1) * (0.6 + 0.4 * (1 - spike))
+        shade[mt] = (0.25 + 0.75 * lit[mt]) * (0.75 + 0.25 * tier / 2)
+        m |= mt
+    u = np.clip(shade, 0, 1) * 3; i = np.clip(u.astype(int), 0, 2); f = (u - i)[..., None]
+    Cs = np.stack(C); col = Cs[i] * (1 - f) + Cs[np.minimum(i + 1, 3)] * f
+    col *= (0.8 + 0.2 * np.clip(rad / max(rr, 1), 0, 1))[..., None]
+    cov = cv2.GaussianBlur(m.astype(np.float32), (0, 0), 0.4 * ss)
+    x0, y0 = int(x) - R, int(y) - R
+    ax0, ay0, ax1, ay1 = max(0, x0), max(0, y0), min(W, x0 + 2 * R + 1), min(H, y0 + 2 * R + 1)
+    if ax1 <= ax0 or ay1 <= ay0: return
+    sl = (slice(ay0 - y0, ay1 - y0), slice(ax0 - x0, ax1 - x0))
+    a_ = cov[sl][..., None]
+    dst = img[ay0:ay1, ax0:ax1].astype(np.float32)
+    colv = np.where(m[sl][..., None], col[sl], C[0] * 0.8)
+    img[ay0:ay1, ax0:ax1] = np.clip(dst * (1 - a_) + colv * a_, 0, 255).astype(np.uint8)
+
+
 def draw_tree(img, x, y, rr, kind, rs, ss=1):
     """x, y, rr — у сітці img (при ss>1 img детальний, rr уже помножений на ss)."""
     H, W = img.shape[:2]
@@ -690,16 +756,18 @@ def draw_tree(img, x, y, rr, kind, rs, ss=1):
 
 
 def draw_tree_aa(img, x, y, rr, kind, rs, ss=4):
-    """Дерево зі згладженими краями прямо на карті сітки гри: малюється в ss разів детальніше й накладається з покриттям."""
-    R = int(math.ceil(rr)) + 3
+    """Дерево зі згладженими краями на карті сітки гри: малюється в ss разів детальніше (двічі — на чорному й білому,
+    щоб точно знати покриття) і накладається з цим покриттям."""
+    R = int(math.ceil(rr * 1.2)) + 3
     n = 2 * R + 1
-    KEY = np.array((255, 0, 255), np.uint8)
-    big = np.empty((n * ss, n * ss, 3), np.uint8); big[:] = KEY
     c = R * ss + ss // 2
-    draw_tree(big, c, c, rr * ss, kind, rs, ss)
-    m = np.any(big != KEY, -1).astype(np.float32)
-    a = cv2.resize(m, (n, n), interpolation=cv2.INTER_AREA)[..., None]
-    col = cv2.resize(big.astype(np.float32) * m[..., None], (n, n), interpolation=cv2.INTER_AREA) / np.maximum(a, 1e-4)
+    st = rs.getstate()
+    lw = np.zeros((n * ss, n * ss, 3), np.uint8); _tree_v3(lw, c, c, rr * ss, kind, rs, ss)
+    rs.setstate(st)
+    lb = np.full((n * ss, n * ss, 3), 255, np.uint8); _tree_v3(lb, c, c, rr * ss, kind, rs, ss)
+    a_f = 1 - (lb.astype(np.float32) - lw.astype(np.float32)).mean(-1) / 255
+    a = cv2.resize(a_f, (n, n), interpolation=cv2.INTER_AREA)[..., None]
+    col = cv2.resize(lw.astype(np.float32), (n, n), interpolation=cv2.INTER_AREA) / np.maximum(a, 1e-4)
     H, W = img.shape[:2]
     x0, y0 = x - R, y - R
     ax0, ay0, ax1, ay1 = max(0, x0), max(0, y0), min(W, x0 + n), min(H, y0 + n)
