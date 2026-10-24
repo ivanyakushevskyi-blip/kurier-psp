@@ -32,7 +32,7 @@ LINE = (236, 236, 230)
 TREE = {'g': [(30, 74, 40), (52, 104, 48), (78, 134, 58), (112, 164, 74)],
         'y': [(96, 82, 26), (156, 128, 34), (204, 166, 48), (232, 202, 96)],
         'o': [(104, 50, 24), (164, 82, 34), (210, 116, 48), (236, 156, 84)],
-        'c': [(18, 46, 40), (28, 70, 56), (44, 96, 70), (78, 130, 92)]}       # хвойні
+        'c': [(12, 34, 30), (26, 66, 52), (48, 104, 74), (104, 158, 112)]}       # хвойні
 ROOFS = {   # базовий колір; відтінки рахуються
     'red': (176, 72, 50), 'darkred': (132, 56, 44), 'orange': (204, 108, 58), 'brown': (116, 84, 64),
     'gray': (136, 140, 146), 'darkgray': (92, 96, 104), 'metal': (182, 188, 194), 'white': (214, 216, 216),
@@ -750,25 +750,42 @@ def _tree_v3(img, x, y, rr, kind, rs, ss):
 
 
 def _conifer(img, x, y, rr, rs, ss):
-    """Ялина/сосна згори: зірка з гілок у кілька ярусів, світло з північного заходу, темніше до центру-верхівки."""
+    """Ялина/сосна згори: ярусні «лапи» з хвоєю — видовжені пучки від стовбура назовні, нижні довші,
+    кожна лапа зі своєю світлотінню (світло з північного заходу) і дрібною фактурою хвої; темніше до стовбура."""
     H, W = img.shape[:2]
-    rr = rr * 0.85
+    rr = rr * 0.9
     R = int(math.ceil(rr)) + 2 * ss
     yy, xx = np.mgrid[-R:R + 1, -R:R + 1].astype(np.float32)
-    rad = np.hypot(xx, yy); th = np.arctan2(yy, xx)
     C = [np.array(c, np.float32) for c in TREE['c']]
-    m = np.zeros(xx.shape, bool); shade = np.zeros(xx.shape, np.float32)
-    n = 9 + rs.randrange(4); ph = rs.random() * 6.283
-    for tier, (sc, k) in enumerate(((1.0, 0.0), (0.72, 0.5), (0.45, 0.25))):
-        spike = np.abs(np.cos((th + ph + tier * 0.4) * n / 2))
-        edge = rr * sc * (0.62 + 0.38 * spike ** 0.6)
-        mt = rad <= edge
-        lit = np.clip(-np.cos(th - math.radians(225)) * 0.5 + 0.5, 0, 1) * (0.6 + 0.4 * (1 - spike))
-        shade[mt] = (0.25 + 0.75 * lit[mt]) * (0.75 + 0.25 * tier / 2)
-        m |= mt
-    u = np.clip(shade, 0, 1) * 3; i = np.clip(u.astype(int), 0, 2); f = (u - i)[..., None]
-    Cs = np.stack(C); col = Cs[i] * (1 - f) + Cs[np.minimum(i + 1, 3)] * f
-    col *= (0.8 + 0.2 * np.clip(rad / max(rr, 1), 0, 1))[..., None]
+    tone = 1.0 + (rs.random() - 0.5) * 0.14
+    hgt = np.full(xx.shape, -1e9, np.float32); shade = np.zeros(xx.shape, np.float32)
+    tiers = [(1.0, 0.0, 8 + rs.randrange(3)), (0.72, 0.35, 7 + rs.randrange(2)), (0.46, 0.7, 6), (0.22, 1.0, 5)]
+    ph0 = rs.random() * 6.283
+    for sc, hz, n in tiers:                                       # нижній ярус — найдовші лапи; верхні лежать «вище»
+        for k in range(n):
+            a = ph0 + k * 6.283 / n + (rs.random() - 0.5) * 0.35 + hz * 1.3
+            L = rr * sc * (0.8 + 0.25 * rs.random()); wdt = max(ss * 0.9, L * (0.44 + 0.08 * rs.random()))
+            ca, sa = math.cos(a), math.sin(a)
+            u = (xx * ca + yy * sa); v = (-xx * sa + yy * ca)            # уздовж лапи / поперек
+            t = u / max(L, 1e-3)
+            prof = np.clip(1 - np.abs(v) / (wdt * (1 - 0.72 * np.clip(t, 0, 1)) + 1e-3), 0, 1) * (t > 0.02) * (t < 1)      # гострий кінчик
+            h = hz * rr + prof * wdt * 0.6 - np.clip(t, 0, 1) * rr * 0.25
+            upd = (prof > 0) & (h > hgt)
+            hgt[upd] = h[upd]
+            # освітлення: конус (світло з північного заходу) + рельєф лапи (світлий хребет, темні краї, світліший кінчик)
+            rad = np.hypot(xx, yy) + 1e-3
+            cone = np.clip(0.5 + 0.9 * (-(xx + yy) / rad * 0.5) * np.clip(rad / max(rr * 0.3, 1), 0, 1), 0, 1)
+            ridge = np.clip(1 - np.abs(v) / max(wdt, 1e-3), 0, 1)
+            lap = 0.5 + 0.5 * (-(ca + sa) * 0.7071)                    # лапа, спрямована на північний захід, — світліша
+            sv = (0.45 * lap + 0.35 * cone + 0.3 * ridge + 0.1 * np.clip(t, 0, 1) - 0.12) * (0.5 + 0.5 * ridge ** 0.6) * (0.6 + 0.4 * hz)
+            shade[upd] = sv[upd]
+    m = hgt > -1e8
+    needles = _up(np.random.RandomState(rs.randrange(1 << 30)).rand((2 * R) // ss + 2, (2 * R) // ss + 2), ss)[:2 * R + 1, :2 * R + 1]
+    needles = cv2.GaussianBlur(needles.astype(np.float32), (0, 0), 0.3 * ss)
+    tsh = np.clip(shade + (needles - 0.5) * 0.4, 0, 1)
+    u_ = tsh * 3; i = np.clip(u_.astype(int), 0, 2); f = (u_ - i)[..., None]
+    Cs = np.stack(C) * tone; col = Cs[i] * (1 - f) + Cs[np.minimum(i + 1, 3)] * f
+    col *= (0.72 + 0.28 * np.clip(np.hypot(xx, yy) / max(rr * 0.35, 1), 0, 1))[..., None] * 0 + 1
     cov = cv2.GaussianBlur(m.astype(np.float32), (0, 0), 0.4 * ss)
     x0, y0 = int(x) - R, int(y) - R
     ax0, ay0, ax1, ay1 = max(0, x0), max(0, y0), min(W, x0 + 2 * R + 1), min(H, y0 + 2 * R + 1)
