@@ -230,11 +230,23 @@ def landmark_roofs(D, rgb, sat):
     cv = Canvas(*(P.min(0) - 3), *(P.max(0) + 3))
     hip_roof(cv, P, (196, 82, 62), pitch_m=4.0)                   # червоний дах (сирий знімок)
     cv.commit(rgb)
-    tx, ty = 6772, 7489
-    sq = [(tx - m(4), ty - m(4)), (tx + m(4), ty - m(4)), (tx + m(4), ty + m(4)), (tx - m(4), ty + m(4))]
+    # вежа — в куті будівлі (найближчому до точки OSM), сторони вздовж осей будівлі, зовнішній кут = кут будівлі
+    side = m(8.0); hs = side / 2
+    nx_, ny_ = 6772, 7489
+    _, ue, ve, _, _ = rect_frame(P)
+    cn = P[np.argmin(((P - [nx_, ny_]) ** 2).sum(1))]
+    best = None
+    for su in (-1, 1):
+        for sv in (-1, 1):
+            cc = cn + ue * su * hs + ve * sv * hs
+            d_ = cv2.pointPolygonTest(P.astype(np.float32), (float(cc[0]), float(cc[1])), True)
+            if best is None or d_ > best[0]: best = (d_, cc)
+    tx, ty = best[1]
+    ang = math.atan2(ue[1], ue[0])
+    sq = [tuple(np.array([tx, ty]) + ue * a_ * hs + ve * b_ * hs) for a_, b_ in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
     shadow(rgb, sq, 30)
-    cv = Canvas(tx - 12, ty - 12, tx + 12, ty + 12)
-    tower(cv, tx, ty, 8.0, (232, 196, 92), (120, 64, 50))
+    cv = Canvas(tx - 14, ty - 14, tx + 14, ty + 14)
+    tower(cv, tx, ty, 8.0, (232, 196, 92), (120, 64, 50), ang=ang)
     cv.commit(rgb); print('  пожежна вежа')
     # трибуни стадіону «Поділля»: ряди сидінь уздовж поля + дах-козирок
     P = find_poly(D, 8742, 8930, src=('B',))
