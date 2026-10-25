@@ -56,18 +56,18 @@ static u8 *fb = fb_[0];
 #define VH (SH / ZOOM)
 #define WW 496                           /* буфер світу: огляд + запас на субпіксельний зсув (крок кратний 16) */
 #define WH 288
-static uint16_t __attribute__((aligned(16))) wbuf_[2][WW * WH];     /* карта, 5650 */
+static uint16_t __attribute__((aligned(16))) wbuf_[2][WW * WH];     /* карта, 5551 (біт 15 — дах для паралаксу) */
 static uint16_t __attribute__((aligned(16))) warch_[2][WW * WH];    /* крони й будинки над арками, 5551 */
 static u8 __attribute__((aligned(16))) wover_[2][WW * WH];          /* бульбашки (індекси палітри, 0 — прозоро) */
-static uint16_t __attribute__((aligned(16))) wroof_[2][WW * WH];    /* дахи для паралаксу, 5551 (біт 15 — дах) */
-static uint16_t *wbuf = wbuf_[0], *warch = warch_[0], *wroof = wroof_[0]; static u8 *wover = wover_[0];
+static uint16_t *wbuf = wbuf_[0], *warch = warch_[0]; static u8 *wover = wover_[0];
 #define MAXRV 12000
-static float roofv[MAXRV * 4]; static int nroofv;               /* трикутники дахів: u, v (тексель wroof), зсув x, y */
+static float roofv[MAXRV * 4]; static int nroofv;               /* трикутники дахів: u, v (тексель шару карти), зсув x, y */
+static float darkv[MAXRV * 2]; static int ndarkv;               /* трикутники темної плями під дахами: x, y у шарі карти */
 static uint16_t PAL16[256];                                      /* палітра спрайтів -> 5650 */
 static int arch_used, arch_used_s[2], buf_cur;
 static void swap_bufs(void) {
     arch_used_s[buf_cur] = arch_used; buf_cur ^= 1; arch_used = arch_used_s[buf_cur];
-    fb = fb_[buf_cur]; wbuf = wbuf_[buf_cur]; warch = warch_[buf_cur]; wroof = wroof_[buf_cur]; wover = wover_[buf_cur];
+    fb = fb_[buf_cur]; wbuf = wbuf_[buf_cur]; warch = warch_[buf_cur]; wover = wover_[buf_cur];
 }
 static u8 *tg = fb_[0]; static int tgw = SW, tgh = SH;   /* куди малюють примітиви */
 static void target(u8 *b, int w, int h) { tg = b; tgw = w; tgh = h; }
@@ -102,7 +102,7 @@ static int map_open(void) {
     mapf = fopen(map_path, "rb"); mapf2 = fopen(map_path, "rb");
     if (!mapf) { map_err = 1; return 0; }
     char mg[4]; uint32_t h[3];
-    if (fread(mg, 1, 4, mapf) != 4 || memcmp(mg, "KHM2", 4) || fread(h, 4, 3, mapf) != 3 || h[0] != NCX || h[1] != NCY || h[2] != CS ||
+    if (fread(mg, 1, 4, mapf) != 4 || memcmp(mg, "KHM3", 4) || fread(h, 4, 3, mapf) != 3 || h[0] != NCX || h[1] != NCY || h[2] != CS ||
         fread(moff, 4, NCHUNK + 1, mapf) != NCHUNK + 1 || moff[NCHUNK] != MAPBIN_SIZE) { map_err = 2; fclose(mapf); mapf = NULL; return 0; }
     return 1;
 }
@@ -219,16 +219,20 @@ static void draw_map16(int ox, int oy) {
 #define KPAR 0.0008f
 #endif
 #define TO5551(c) ((uint16_t)(0x8000 | ((c) & 31) | ((((c) >> 6) & 31) << 5) | (((c) >> 11) << 10)))
+/* профіль кадру (мкс за ділянками; на PSP — у кутку екрана, щоб бачити, що гальмує) */
 #ifdef HOST
 #include <time.h>
-static double prof[8];
 static double now_s(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
-#define PROF0 double _pt = now_s();
-#define PROF(i) { double _n = now_s(); prof[i] += _n - _pt; _pt = _n; }
+static unsigned now_us(void) { return (unsigned)(now_s() * 1e6); }
 #else
-#define PROF0
-#define PROF(i)
+static unsigned now_us(void) { return sceKernelGetSystemTimeLow(); }
 #endif
+#define NPROF 8
+static double prof[NPROF];               /* ПК: секунди */
+static unsigned prof_us[NPROF];          /* PSP: мкс, накопичено за секунду */
+static int prof_show[NPROF];             /* PSP: середнє за кадр, 0,1 мс */
+#define PROF0 unsigned _pt = now_us();
+#define PROF(i) { unsigned _n = now_us(); prof[i] += (_n - _pt) * 1e-6; prof_us[i] += _n - _pt; _pt = _n; }
 static int roof_span(int k, int y, int *xs) {       /* перетини контуру з рядком y (світові коорд.), відсортовані */
     uint32_t p0 = BLD_PO(k), n = BLD(k)[3]; int m = 0;
     for (uint32_t a = 0, b = n - 1; a < n; b = a++) {
@@ -243,51 +247,31 @@ static int roof_span(int k, int y, int *xs) {       /* перетини конт
 #define BLD_EP(i) ((const int16_t *)(assets_bin + BLD_EP_OFF) + 2 * (i))
 #define BLD_TO(k) (((const uint32_t *)(assets_bin + BLD_TO_OFF))[k])
 #define BLD_TR(i) ((const uint8_t *)(assets_bin + BLD_TR_OFF) + 3 * (i))
-/* Плавний паралакс: процесор лише готує текстуру дахів (wroof) і затемнює місце під ними в карті;
-   зсунуті дахи малює графічний чип трикутниками з дробовим зсувом і згладжуванням — без стрибків по пікселю. */
+#define BLD_OO(k) (((const uint32_t *)(assets_bin + BLD_OO_OFF))[k])
+#define BLD_OT(i) ((const uint8_t *)(assets_bin + BLD_OT_OFF) + 3 * (i))
+/* Плавний паралакс без роботи процесора над пікселями: у карті (5551) біт 15 позначає дахи,
+   тож графічний чип бере дах прямо з шару карти — трикутники розширеного контуру з дробовим зсувом,
+   прозора земля навколо дає згладжений край. Місце під дахом — темна пляма (трикутники контуру). */
 static int roofs_parallax(int ox, int oy, float ccx, float ccy) {
-    nroofv = 0;
+    nroofv = 0; ndarkv = 0;
     if (NBLD == 0) return 0;
     static int16_t vis[600]; static float vsh[600][2]; int nv = 0;
-    int cx0 = ox / CS - 3, cx1 = (ox + WW) / CS + 3, cy0 = oy / CS - 3, cy1 = (oy + WH) / CS + 3;
+    int cx0 = ox / CS - 2, cx1 = (ox + WW) / CS + 2, cy0 = oy / CS - 2, cy1 = (oy + WH) / CS + 2;
     if (cx0 < 0) cx0 = 0; if (cy0 < 0) cy0 = 0; if (cx1 >= NCX) cx1 = NCX - 1; if (cy1 >= NCY) cy1 = NCY - 1;
     for (int gy = cy0; gy <= cy1; gy++) for (int gx = cx0; gx <= cx1; gx++) {
         uint32_t k0 = BLD_CELL(gy * NCX + gx), k1 = BLD_CELL(gy * NCX + gx + 1);
         for (uint32_t k = k0; k < k1 && nv < 600; k++) {
             const int16_t *B = BLD(k);
-            float f = B[2] * KPAR, dx = (B[0] - ccx) * f, dy = (B[1] - ccy) * f, l = sqrtf(dx * dx + dy * dy);
-            if (l < 0.12f) continue;
-            if (l > 5) { dx *= 5 / l; dy *= 5 / l; }
+            float f = B[2] * KPAR, dx = (B[0] - ccx) * f, dy = (B[1] - ccy) * f, l = dx * dx + dy * dy;
+            if (l < 0.12f * 0.12f) continue;
+            if (l > 25) { l = 5 / sqrtf(l); dx *= l; dy *= l; }
             vis[nv] = (int16_t)k; vsh[nv][0] = dx; vsh[nv][1] = dy; nv++;
         }
     }
-    int xs[16];
-    /* 1) рамка навколо кожного даху — колір карти з нульовою альфою (щоб згладжування на краю брало колір землі) */
     for (int i = 0; i < nv; i++) {
-        int k = vis[i]; uint32_t p0 = BLD_PO(k), n = BLD(k)[3];
-        int xa = 32767, xb = -32768, ya = 32767, yb = -32768;
-        for (uint32_t a = 0; a < n; a++) { const int16_t *P = BLD_PT(p0 + a); if (P[0] < xa) xa = P[0]; if (P[0] > xb) xb = P[0]; if (P[1] < ya) ya = P[1]; if (P[1] > yb) yb = P[1]; }
-        xa -= ox + 3; xb -= ox - 3; ya -= oy + 3; yb -= oy - 3;
-        if (xa < 0) xa = 0; if (ya < 0) ya = 0; if (xb > WW - 1) xb = WW - 1; if (yb > WH - 1) yb = WH - 1;
-        for (int y = ya; y <= yb; y++) { const uint16_t *s_ = wbuf + y * WW; uint16_t *d = wroof + y * WW; for (int x = xa; x <= xb; x++) d[x] = (uint16_t)(TO5551(s_[x]) & 0x7FFF); }
-    }
-    /* 2) сам дах (непрозорий) у wroof; місце під ним у карті — темніше; трикутники розширеного контуру — на графічний чип */
-    for (int i = 0; i < nv; i++) {
-        int k = vis[i]; uint32_t p0 = BLD_PO(k), n = BLD(k)[3];
-        int ya = 32767, yb = -32768;
-        for (uint32_t a = 0; a < n; a++) { int y = BLD_PT(p0 + a)[1]; if (y < ya) ya = y; if (y > yb) yb = y; }
-        if (ya < oy) ya = oy; if (yb > oy + WH - 1) yb = oy + WH - 1;
-        for (int y = ya; y <= yb; y++) {
-            int ly = y - oy, m = roof_span(k, y, xs);
-            uint16_t *src = wbuf + ly * WW, *d = wroof + ly * WW;
-            for (int j = 0; j < m; j += 2) {
-                int xa = xs[j] - ox, xb = xs[j + 1] - ox;
-                if (xa < 0) xa = 0; if (xb > WW) xb = WW;
-                for (int x = xa; x < xb; x++) { uint16_t c = src[x]; d[x] = TO5551(c); src[x] = (uint16_t)((c >> 1) & 0x7BEF); }
-            }
-        }
-        uint32_t e0 = BLD_EO(k), t0 = BLD_TO(k), t1 = BLD_TO(k + 1);
-        if (nroofv + (int)(t1 - t0) * 3 > MAXRV) break;
+        int k = vis[i];
+        uint32_t e0 = BLD_EO(k), t0 = BLD_TO(k), t1 = BLD_TO(k + 1), p0 = BLD_PO(k), o0 = BLD_OO(k), o1 = BLD_OO(k + 1);
+        if (nroofv + (int)(t1 - t0) * 3 > MAXRV || ndarkv + (int)(o1 - o0) * 3 > MAXRV) break;
         for (uint32_t t = t0; t < t1; t++) {
             const uint8_t *T = BLD_TR(t);
             for (int q = 0; q < 3; q++) {
@@ -296,12 +280,20 @@ static int roofs_parallax(int ox, int oy, float ccx, float ccy) {
                 o[0] = (float)(P[0] - ox); o[1] = (float)(P[1] - oy); o[2] = vsh[i][0]; o[3] = vsh[i][1];
             }
         }
+        for (uint32_t t = o0; t < o1; t++) {
+            const uint8_t *T = BLD_OT(t);
+            for (int q = 0; q < 3; q++) {
+                const int16_t *P = BLD_PT(p0 + T[q]);
+                float *o = darkv + 2 * ndarkv++;
+                o[0] = (float)(P[0] - ox); o[1] = (float)(P[1] - oy);
+            }
+        }
     }
     return nroofv > 0;
 }
-/* 16-бітні операції над шаром карти */
-#define DARK50(c) ((uint16_t)(((c) >> 1) & 0x7BEF))
-#define DARK75(c) ((uint16_t)((c) - (((c) >> 2) & 0x39E7)))
+/* 16-бітні операції над шаром карти (5551: біт 15 — дах, зберігається) */
+#define DARK50(c) ((uint16_t)((((c) >> 1) & 0x3DEF) | ((c) & 0x8000)))
+#define DARK75(c) ((uint16_t)((c) - (((c) >> 2) & 0x1CE7)))
 static void blit16(const u8 *src, int w, int h, int x, int y) {
     for (int j = 0; j < h; j++) {
         int yy = y + j; if ((unsigned)yy >= WH) continue;
@@ -1147,7 +1139,12 @@ static void draw_hud(void) {
     snprintf(w, sizeof w, "%d ГРН", money);
     u8 wc = money < 0 ? C_red_1 : C_green_0;
     { char f_[64]; snprintf(f_, sizeof f_, "%d FPS  CPU %d.%d  GPU %d.%d", fps_shown, cpu_ms10 / 10, cpu_ms10 % 10, gpu_ms10 / 10, gpu_ms10 % 10);
-      otext8(4, y0 - 12, 1, fps_shown >= 55 ? C_green_3 : C_red_3, C_ink_0, f_); }
+      otext8(4, y0 - 12, 1, fps_shown >= 55 ? C_green_3 : C_red_3, C_ink_0, f_);
+      /* що саме їсть процесор (0,1 мс): карта, позначки, дахи, крони/арки, частинки, решта малювання (інтерфейс), логіка */
+      int P[8]; for (int i = 0; i < 8; i++) P[i] = prof_show[i];
+      int rest = P[7] - P[0] - P[1] - P[2] - P[3] - P[4]; if (rest < 0) rest = 0;
+      snprintf(f_, sizeof f_, "M%d P%d D%d K%d C%d I%d L%d", P[0], P[1], P[2], P[3], P[4], rest, P[6]);
+      otext8(4, y0 - 24, 1, C_white_2, C_ink_0, f_); }
     snprintf(w, sizeof w, "%d ГРН", money);
     /* вгорі: таймер ліворуч, вулиця по центру, радар праворуч, відстань під ним */
     if (ostate == O_DROP) {
@@ -1305,7 +1302,7 @@ static void draw_world(void) {
 #ifndef PARALLAX
 #define PARALLAX 1                                   /* плавний (дробовий зсув на графічному чипі); цілопіксельний смикався */
 #endif
-    if (!(PARALLAX && !freecam && roofs_parallax(ox, oy, vx + VW / 2, vy + VH / 2))) nroofv = 0;
+    if (!(PARALLAX && !freecam && roofs_parallax(ox, oy, vx + VW / 2, vy + VH / 2))) { nroofv = 0; ndarkv = 0; }
     PROF(2)
     carv.on = 0;
     if (!freecam && state != S_TITLE && NTREE > 0) {
@@ -1323,8 +1320,7 @@ static void draw_world(void) {
                     if (xx * xx + yy * yy > r * r) continue;
                     int wx = T[0] + xx, wy = T[1] + yy, lx = wx - ox, ly = wy - oy;
                     if ((unsigned)lx >= WW || (unsigned)ly >= WH) continue;
-                    uint16_t c = map_px16(wx, wy);
-                    warch[ly * WW + lx] = (uint16_t)(0x8000 | (c & 31) | (((c >> 6) & 31) << 5) | ((c >> 11) << 10));
+                    warch[ly * WW + lx] = (uint16_t)(map_px16(wx, wy) | 0x8000);
                 }
                 arch_used = 1;
             }
@@ -1353,8 +1349,7 @@ static void draw_world(void) {
                 }
                 int lx = x - ox, ly = y - oy;
                 if (in && (unsigned)lx < WW && (unsigned)ly < WH) {
-                    uint16_t c = map_px16(x, y);                           /* 5650 -> 5551, непрозорий */
-                    warch[ly * WW + lx] = (uint16_t)(0x8000 | (c & 31) | (((c >> 6) & 31) << 5) | ((c >> 11) << 10));
+                    warch[ly * WW + lx] = (uint16_t)(map_px16(x, y) | 0x8000);   /* непрозорий */
                 }
             }
         }
@@ -1520,7 +1515,12 @@ static void render(void *target_buf) {
     }
     gfx_begin(target_buf);
     float sx = (wox - viewx) * ZOOM, sy = (woy - viewy) * ZOOM;
-    gfx_layer16(wbuf, WW, WW, WH, sx, sy, ZOOM, 0, 0, ZOOM != 1.0f);
+    gfx_layer16(wbuf, WW, WW, WH, sx, sy, ZOOM, 1, 0, ZOOM != 1.0f);       /* 5551 без змішування: біт даху не заважає */
+    if (ndarkv) {                                                   /* темна пляма під дахами з паралаксом */
+        static float dv[MAXRV * 2];
+        for (int i = 0; i < ndarkv; i++) { dv[2 * i] = sx + darkv[2 * i] * ZOOM; dv[2 * i + 1] = sy + darkv[2 * i + 1] * ZOOM; }
+        gfx_tris_flat(dv, ndarkv, 0x80000000);
+    }
     if (carv.on) {
         float k = 17.0f / CARTEX_LEN * ZOOM, hx = CARTEX_W / 2 * k, hy = CARTEX_H / 2 * k;     /* 8,5 м = 17 пікс карти */
         if (carv.shadow) gfx_quad((const uint32_t *)(assets_bin + CARTEX_SHD), CARTEX_W, CARTEX_H, carv.x + 0.6f * ZOOM, carv.y + 0.9f * ZOOM, carv.a, hx * 1.0f, hy * 1.06f, 0xFFFFFFFF);
@@ -1532,7 +1532,7 @@ static void render(void *target_buf) {
             const float *r = roofv + 4 * i; float *o = vv + 4 * i;
             o[0] = r[0]; o[1] = r[1]; o[2] = sx + r[0] * ZOOM + r[2]; o[3] = sy + r[1] * ZOOM + r[3];
         }
-        gfx_tris16(wroof, WW, WW, WH, 1, vv, nroofv);
+        gfx_tris16(wbuf, WW, WW, WH, 1, vv, nroofv);              /* дах — прямо з шару карти: біт 15 = непрозорість */
     }
     if (arch_used) gfx_layer16(warch, WW, WW, WH, sx, sy, ZOOM, 1, 1, ZOOM != 1.0f);
     if (over_used) gfx_layer8(wover, WW, WW, WH, sx, sy, ZOOM, 1, ZOOM != 1.0f);
@@ -1542,7 +1542,7 @@ static void render(void *target_buf) {
     gfx_end();
 }
 static void pal16_init(void) {
-    for (int i = 0; i < 256; i++) { u32 c = PALETTE[i]; PAL16[i] = (uint16_t)(((c & 255) >> 3) | (((c >> 8) & 255) >> 2) << 5 | (((c >> 16) & 255) >> 3) << 11); }
+    for (int i = 0; i < 256; i++) { u32 c = PALETTE[i]; PAL16[i] = (uint16_t)(0x8000 | ((c & 255) >> 3) | (((c >> 8) & 255) >> 3) << 5 | (((c >> 16) & 255) >> 3) << 10); }
 }
 
 #ifndef HOST
@@ -1599,8 +1599,10 @@ int main(int argc, char **argv) {
         if (steps < 1) steps = 1; if (steps > 3) steps = 3;
         unsigned c0 = sceKernelGetSystemTimeLow();
         for (int i = 0; i < steps; i++) game_update(pad.Buttons, i == 0 ? pressed : 0, pad.Lx, pad.Ly);
+        unsigned cu = sceKernelGetSystemTimeLow();
         draw_frame();
         unsigned c1 = sceKernelGetSystemTimeLow();
+        prof_us[6] += cu - c0; prof_us[7] += c1 - cu;      /* логіка; усе малювання процесором */
         /* конвеєр: дочекатися попереднього кадру чипа, показати його, віддати чипу цей кадр і одразу готувати наступний */
         gfx_sync();
         unsigned c2 = sceKernelGetSystemTimeLow();
@@ -1613,6 +1615,7 @@ int main(int argc, char **argv) {
         unsigned t = sceKernelGetSystemTimeLow();
         if (t - fps_t0 >= 1000000) {
             fps_shown = fps_n; cpu_ms10 = (int)(cpu_acc / fps_n / 100); gpu_ms10 = (int)(gpu_acc / fps_n / 100);
+            for (int i = 0; i < NPROF; i++) { prof_show[i] = (int)(prof_us[i] / fps_n / 100); prof_us[i] = 0; }
             fps_n = 0; cpu_acc = gpu_acc = 0; fps_t0 = t;
         }
     }

@@ -31,9 +31,17 @@ def put(b):
     return off
 
 
+# ---- будинки для паралаксу дахів (потрібні вже для маски дахів у карті)
+import cv2, bldpar
+_pl = np.load(os.path.join(BUILD, 'play.npy'), mmap_mode='r')
+_bl, _bc = bldpar.buildings(CD, md, W, H, NCX, CS, _pl)
+_band_bl = [[] for _ in range(NCY)]
+for t in _bl:
+    for cy_ in range(max(0, int(t[3][:, 1].min()) // CS), min(NCY, int(t[3][:, 1].max()) // CS + 1)): _band_bl[cy_].append(t)
+
 # ---- map chunks -> окремий файл MAP.BIN поруч з EBOOT (карта завелика для вбудовування)
-#      формат KHM2: "KHM2", u32 NCX, u32 NCY, u32 CS, u32 off[NCX*NCY+1] (від початку файлу), далі zlib(
-#        пікселі CS*CS u16 (PSP 5650: R біти 0-4, G 5-10, B 11-15) + біти твердості CS*CS/8 + поверхня CS*CS/2 (4 біти: 0 тверда, 1 ґрунт, 2 вода))
+#      формат KHM3: "KHM3", u32 NCX, u32 NCY, u32 CS, u32 off[NCX*NCY+1] (від початку файлу), далі zlib(
+#        пікселі CS*CS u16 (PSP 5551: R 0-4, G 5-9, B 10-14, біт 15 — дах для паралаксу) + біти твердості CS*CS/8 + поверхня CS*CS/2)
 import struct
 rgbm = np.load(os.path.join(BUILD, 'map_rgb.npy'), mmap_mode='r')
 surfm = np.load(os.path.join(BUILD, 'surf.npy'), mmap_mode='r')
@@ -49,7 +57,11 @@ for cy in range(NCY):
         band = np.clip(bf[cy * CS - y0:cy * CS - y0 + CS] + 0.5, 0, 255).astype(np.uint16)
     else:
         band = np.asarray(rgbm[cy * CS:(cy + 1) * CS]).astype(np.uint16)
-    p565 = (band[..., 0] >> 3) | ((band[..., 1] >> 2) << 5) | ((band[..., 2] >> 3) << 11)
+    # KHM3: 5551 — біт 15 = дах будинку з паралаксом (графічний чип бере дахи прямо з карти, зі згладженими краями)
+    roof = np.zeros((CS, W), np.uint8)
+    for t in _band_bl[cy]:
+        cv2.fillPoly(roof, [t[3].astype(np.int32) - [0, cy * CS]], 1)
+    p565 = (band[..., 0] >> 3) | ((band[..., 1] >> 3) << 5) | ((band[..., 2] >> 3) << 10) | (roof.astype(np.uint16) << 15)
     sb_ = np.asarray(surfm[cy * CS:(cy + 1) * CS])
     s4 = (sb_[:, 0::2] & 15) | ((sb_[:, 1::2] & 15) << 4)
     for cx in range(NCX):
@@ -61,7 +73,7 @@ hdr = 16 + 4 * (len(chunks) + 1)
 offs = [hdr]
 for c in chunks: offs.append(offs[-1] + len(c))
 with open(os.path.join(BUILD, 'MAP.BIN'), 'wb') as f:
-    f.write(b'KHM2' + struct.pack('<3I', NCX, NCY, CS) + struct.pack('<%dI' % len(offs), *offs))
+    f.write(b'KHM3' + struct.pack('<3I', NCX, NCY, CS) + struct.pack('<%dI' % len(offs), *offs))
     for c in chunks: f.write(c)
 csizes = [len(c) for c in chunks]
 MAPBIN_SIZE = offs[-1]
@@ -131,79 +143,7 @@ print('trees', len(_tr), 'trunks', int(_coll.sum()))
 TREE_OFF = put(np.array([[t[0], t[1], max(1, int(round(t[2]))) * (1 if c else -1)] for t, c in zip(_tr, _coll)] or [[0, 0, 0]], '<i2').tobytes())
 TREE_CELL_OFF = put(_cells.astype('<u4').tobytes())
 NTREE = len(_tr)
-# ---- будинки для паралаксу дахів: центр, висота (м), контур (≤32 вершини) для процесора +
-#      розширений на ~0,5 пікс контур, розбитий на трикутники, — для графічного чипа (плавний зсув зі згладженими краями)
-import cv2
-
-
-def earclip(P):
-    """трикутники простого многокутника (індекси); при збої — віяло"""
-    P = [tuple(map(float, p)) for p in P]
-    n = len(P)
-    if n < 3: return []
-    area = sum(P[i][0] * P[(i + 1) % n][1] - P[(i + 1) % n][0] * P[i][1] for i in range(n))
-    idx = list(range(n)) if area > 0 else list(range(n))[::-1]
-    def cross(a, b, c): return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-    tris, guard = [], 0
-    while len(idx) > 3 and guard < 4 * n * n:
-        guard += 1; found = False
-        for k in range(len(idx)):
-            ia, ib, ic = idx[k - 1], idx[k], idx[(k + 1) % len(idx)]
-            A, B, C = P[ia], P[ib], P[ic]
-            cr = cross(A, B, C)
-            if abs(cr) < 1e-6: idx.pop(k); found = True; break        # на одній прямій
-            if cr < 0: continue
-            if any(cross(A, B, P[j]) >= 0 and cross(B, C, P[j]) >= 0 and cross(C, A, P[j]) >= 0 for j in idx if j not in (ia, ib, ic)):
-                continue
-            tris.append((ia, ib, ic)); idx.pop(k); found = True; break
-        if not found: break
-    if len(idx) >= 3:
-        tris += [(idx[0], idx[i], idx[i + 1]) for i in range(1, len(idx) - 1)]
-    return tris
-
-
-def expand(Q):
-    x0, y0 = np.floor(Q.min(0)).astype(int) - 4
-    x1, y1 = np.ceil(Q.max(0)).astype(int) + 4
-    m = np.zeros((y1 - y0, x1 - x0), np.uint8)
-    cv2.fillPoly(m, [np.round((Q - [x0, y0]) * 16).astype(np.int32)], 1, shift=4)
-    m = cv2.dilate(m, np.ones((3, 3), np.uint8))
-    cs, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cs: return None
-    c = max(cs, key=cv2.contourArea).astype(np.float32)
-    eps = 0.6
-    while True:
-        e = cv2.approxPolyDP(c, eps, True)[:, 0, :]
-        if len(e) <= 32: break
-        eps *= 1.4
-    return (e + [x0, y0]).astype(np.int16) if len(e) >= 3 else None
-
-
-_D = CD.data()
-_arch = [np.array(q, np.float32) for q in md.get('arches', [])]
-_bl = []
-for b in _D['B'] + _D['SAT']:
-    Q = np.array(b['q'], np.float32) * CD.K
-    if len(Q) < 3: continue
-    cx, cy = Q.mean(0)
-    if not (0 <= cx < W and 0 <= cy < H) or not _pl[int(cy), int(cx)]: continue
-    if cv2.contourArea(Q) < 12: continue
-    if any(cv2.pointPolygonTest(A, (float(cx), float(cy)), False) >= 0 for A in _arch): continue     # будинки над арками — окремо
-    eps = 0.7
-    while True:
-        q = cv2.approxPolyDP(Q, eps, True)[:, 0, :]
-        if len(q) <= 32: break
-        eps *= 1.4
-    if len(q) < 3: continue
-    e = expand(Q)
-    if e is None: continue
-    tr = earclip(e)
-    if not tr: continue
-    _bl.append((int(cx), int(cy), int(round(b.get('h') or 6)), np.round(q).astype(np.int16), e, np.array(tr, np.uint8)))
-_bl.sort(key=lambda t: (t[1] // CS) * NCX + t[0] // CS)
-_bc = np.zeros(NCX * NCY + 1, np.uint32)
-for t in _bl: _bc[(t[1] // CS) * NCX + t[0] // CS + 1] += 1
-_bc = np.cumsum(_bc).astype(np.uint32)
+# ---- будинки для паралаксу дахів (обчислено на початку, tools/bldpar.py)
 def _cum(lens):
     o = np.zeros(len(lens) + 1, np.uint32); o[1:] = np.cumsum(lens); return o
 _po = _cum([len(t[3]) for t in _bl]); _eo = _cum([len(t[4]) for t in _bl]); _to = _cum([len(t[5]) for t in _bl])
@@ -214,6 +154,9 @@ BLD_EO_OFF = put(_eo.astype('<u4').tobytes())
 BLD_EP_OFF = put((np.concatenate([t[4] for t in _bl]) if _bl else np.zeros((1, 2), np.int16)).astype('<i2').tobytes())
 BLD_TO_OFF = put(_to.astype('<u4').tobytes())
 BLD_TR_OFF = put((np.concatenate([t[5] for t in _bl]) if _bl else np.zeros((1, 3), np.uint8)).astype(np.uint8).tobytes())
+_oo = _cum([len(t[6]) for t in _bl])
+BLD_OO_OFF = put(_oo.astype('<u4').tobytes())
+BLD_OT_OFF = put((np.concatenate([t[6] for t in _bl]) if _bl else np.zeros((1, 3), np.uint8)).astype(np.uint8).tobytes())
 BLD_CELL_OFF = put(_bc.astype('<u4').tobytes())
 NBLD = len(_bl)
 print('buildings for parallax', NBLD, 'points', int(_po[-1]), 'expanded', int(_eo[-1]), 'tris', int(_to[-1]))
@@ -305,7 +248,7 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('#define SPR_LIT %d\n#define ICON_STO %d\n#define ICON_FUEL %d\n' % (SPR_LIT, ICON_STO, ICON_FUEL))
     f.write('#define TREE_OFF %d\n#define TREE_CELL_OFF %d\n#define NTREE %d\n' % (TREE_OFF, TREE_CELL_OFF, NTREE))
     f.write('#define BLD_OFF %d\n#define BLD_PO_OFF %d\n#define BLD_PT_OFF %d\n#define BLD_CELL_OFF %d\n#define NBLD %d\n' % (BLD_OFF, BLD_PO_OFF, BLD_PT_OFF, BLD_CELL_OFF, NBLD))
-    f.write('#define BLD_EO_OFF %d\n#define BLD_EP_OFF %d\n#define BLD_TO_OFF %d\n#define BLD_TR_OFF %d\n' % (BLD_EO_OFF, BLD_EP_OFF, BLD_TO_OFF, BLD_TR_OFF))
+    f.write('#define BLD_EO_OFF %d\n#define BLD_EP_OFF %d\n#define BLD_TO_OFF %d\n#define BLD_TR_OFF %d\n#define BLD_OO_OFF %d\n#define BLD_OT_OFF %d\n' % (BLD_EO_OFF, BLD_EP_OFF, BLD_TO_OFF, BLD_TR_OFF, BLD_OO_OFF, BLD_OT_OFF))
     f.write('#define CARTEX_OFF %d\n#define CARTEX_LIT %d\n#define CARTEX_SHD %d\n#define CARTEX_W %d\n#define CARTEX_H %d\n#define CARTEX_LEN %d\n'
             % (CARTEX_OFF, CARTEX_LIT, CARTEX_SHD, sprites.CARTEX_W, sprites.CARTEX_H, sprites.CARTEX_LEN))
     widx = json.load(open(os.path.join(BUILD, 'water_idx.json'))) if os.path.exists(os.path.join(BUILD, 'water_idx.json')) else []

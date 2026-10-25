@@ -131,6 +131,15 @@ void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const fl
     sceGuDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, nv, 0, v);
 }
 
+void gfx_tris_flat(const float *xy, int nv, uint32_t col) {
+    if (nv < 3) return;
+    sceGuDisable(GU_TEXTURE_2D);
+    sceGuEnable(GU_BLEND);
+    VC *v = (VC *)sceGuGetMemory(nv * sizeof(VC));
+    for (int i = 0; i < nv; i++) { v[i].c = col; v[i].x = xy[2 * i]; v[i].y = xy[2 * i + 1]; v[i].z = 0; }
+    sceGuDrawArray(GU_TRIANGLES, GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, nv, 0, v);
+}
+
 void gfx_end(void) { sceGuFinish(); }
 void gfx_sync(void) { sceGuSync(0, 0); }
 
@@ -253,6 +262,24 @@ void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const fl
                 for (int j = 0; j < 4; j++) acc[j] += p[j] * wgt;
             }
             blend(dst + y * 512 + x, acc[0], acc[1], acc[2], acc[3] / 255.0f);
+        }
+    }
+}
+void gfx_tris_flat(const float *xy, int nv, uint32_t col) {
+    float c[4]; unpack(col, c);
+    for (int t = 0; t + 2 < nv; t += 3) {
+        const float *A = xy + 2 * t, *B = A + 2, *C = A + 4;
+        float area = (B[0] - A[0]) * (C[1] - A[1]) - (B[1] - A[1]) * (C[0] - A[0]);
+        if (fabsf(area) < 1e-6f) continue;
+        int x0 = (int)floorf(fminf(A[0], fminf(B[0], C[0]))), x1 = (int)ceilf(fmaxf(A[0], fmaxf(B[0], C[0])));
+        int y0 = (int)floorf(fminf(A[1], fminf(B[1], C[1]))), y1 = (int)ceilf(fmaxf(A[1], fmaxf(B[1], C[1])));
+        if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0; if (x1 > 480) x1 = 480; if (y1 > 272) y1 = 272;
+        for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
+            float px = x + 0.5f, py = y + 0.5f;
+            float w0 = ((C[0] - B[0]) * (py - B[1]) - (C[1] - B[1]) * (px - B[0])) / area;
+            float w1 = ((A[0] - C[0]) * (py - C[1]) - (A[1] - C[1]) * (px - C[0])) / area;
+            if (w0 < 0 || w1 < 0 || 1 - w0 - w1 < 0) continue;
+            blend(dst + y * 512 + x, c[0], c[1], c[2], c[3] / 255.0f);
         }
     }
 }
