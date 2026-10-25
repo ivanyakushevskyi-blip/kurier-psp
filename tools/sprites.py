@@ -189,6 +189,63 @@ def car_textures():
     return out
 
 
+TRAFFIC = [('sedan', (232, 232, 228)), ('sedan', (36, 38, 44)), ('hatch', (176, 40, 40)), ('sedan', (52, 86, 156)),
+           ('hatch', (112, 116, 124)), ('van', (238, 238, 234)), ('taxi', (240, 196, 40)), ('hatch', (60, 120, 80))]
+
+
+def draw_traffic(kind, body, lit=False):
+    """Машина трафіку згори (ніс на схід), ті самі одиниці креслення, що й draw_golf: седан, хетчбек, бус, таксі."""
+    S = CAR_SZ * SS
+    im = Image.new('RGBA', (S, S), (0, 0, 0, 0)); d = ImageDraw.Draw(im)
+    c = S / 2
+    def P(x, y): return (c + x * SS, c + y * SS)
+    def rr(x0, y0, x1, y1, col_, r=0): d.rounded_rectangle([P(x0, y0), P(x1, y1)], radius=r * SS, fill=tuple(int(v) for v in col_))
+    def poly(pts, col_): d.polygon([P(x, y) for x, y in pts], fill=tuple(int(v) for v in col_))
+    b = np.array(body, np.float32)
+    dark, lite = b * 0.62, np.minimum(255, b * 1.12 + 12)
+    glass, glass2 = (40, 52, 64), (96, 120, 140)
+    L = {'sedan': 10.4, 'hatch': 9.6, 'van': 11.0, 'taxi': 10.4}[kind]
+    Wd = {'sedan': 4.5, 'hatch': 4.4, 'van': 4.8, 'taxi': 4.5}[kind]
+    for x0 in (-L * 0.62, L * 0.38):
+        rr(x0, -Wd - 0.3, x0 + 3.4, Wd + 0.3, (24, 24, 26), 0.9)
+    rr(-L - 0.3, -Wd - 0.3, L + 0.3, Wd + 0.3, (20, 20, 24), 2.2)
+    rr(-L, -Wd, L, Wd, b, 2.0)
+    if kind == 'van':
+        rr(-L + 0.6, -Wd + 0.6, L - 3.6, Wd - 0.6, lite, 0.8)                                  # дах буса
+        poly([(L - 3.4, -Wd + 0.5), (L - 1.2, -Wd + 1.0), (L - 1.2, Wd - 1.0), (L - 3.4, Wd - 0.5)], glass)
+    else:
+        nose = L * (0.42 if kind != 'hatch' else 0.48)
+        poly([(nose - 3.0, -Wd + 0.8), (nose, -Wd + 1.1), (nose, Wd - 1.1), (nose - 3.0, Wd - 0.8)], glass)     # лобове
+        poly([(nose - 2.4, -Wd + 1.6), (nose - 1.6, -Wd + 1.7), (nose - 2.6, 0.8), (nose - 2.9, 0.4)], glass2)
+        tail = -L * (0.62 if kind == 'sedan' or kind == 'taxi' else 0.78)
+        rr(tail + 2.4, -Wd + 0.9, nose - 3.0, Wd - 0.9, lite, 0.8)                          # дах
+        poly([(tail, -Wd + 1.0), (tail + 2.4, -Wd + 0.8), (tail + 2.4, Wd - 0.8), (tail, Wd - 1.0)], glass)   # заднє скло
+        for sg in (-1, 1):
+            poly([(tail + 2.4, sg * (Wd - 0.75)), (nose - 3.0, sg * (Wd - 0.75)), (nose - 3.2, sg * (Wd - 0.2)), (tail + 2.6, sg * (Wd - 0.2))], glass)
+        rr(nose + 0.4, -Wd + 1.0, L - 0.4, Wd - 1.0, b * 1.04, 1.0)                          # капот
+    if kind == 'taxi':
+        rr(-1.6, -1.2, 0.6, 1.2, (250, 240, 200), 0.3); rr(-1.4, -0.9, 0.4, 0.9, (40, 40, 40), 0.2)
+    for sg in (-1, 1):
+        rr(L - 1.1, sg * (Wd - 1.4) - 0.6, L - 0.1, sg * (Wd - 1.4) + 0.6, (250, 240, 190), 0.3)   # фари
+        rr(-L + 0.1, sg * (Wd - 1.3) - 0.6, -L + 1.0, sg * (Wd - 1.3) + 0.6, (255, 60, 50) if lit else (150, 30, 30), 0.3)
+        rr(L * 0.18, sg * (Wd + 0.1) - 0.4, L * 0.18 + 1.0, sg * (Wd + 0.1) + 0.4, dark, 0.3)    # дзеркала
+    return im
+
+
+def traffic_textures():
+    """RGBA для кожної моделі трафіку: звичайна + зі стоп-сигналами (той самий розмір текстури, що й у Golf)."""
+    k = CARTEX_LEN / 21.3
+    S = CAR_SZ * SS
+    cw, ch = CARTEX_W / k * SS, CARTEX_H / k * SS
+    box = (S / 2 - cw / 2, S / 2 - ch / 2, S / 2 + cw / 2, S / 2 + ch / 2)
+    out = []
+    for kind, col_ in TRAFFIC:
+        for lit in (False, True):
+            im = draw_traffic(kind, col_, lit).transform((CARTEX_W * 4, CARTEX_H * 4), Image.EXTENT, box, resample=Image.BICUBIC)
+            out.append(_bleed(np.asarray(im.resize((CARTEX_W, CARTEX_H), Image.LANCZOS)).copy()).tobytes())
+    return out
+
+
 def car_frames(lit=False):
     base = draw_golf(lit)
     allowed = sum((R[k] for k in ('silver', 'glass', 'tire', 'ink', 'yellow', 'red', 'white')), [])

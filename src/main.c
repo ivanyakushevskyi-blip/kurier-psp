@@ -75,6 +75,7 @@ static int world_mode, over_used, wox, woy, ndim;
 static float viewx, viewy;                /* лівий верхній кут огляду у світі (з урахуванням струсу) */
 static struct { int on, lit, shadow; float x, y, a; uint32_t col; } carv;
 static float dimr[4][4]; static uint32_t dimc[4];
+#define CAR_LPX 14.0f                     /* довжина машини в пікселях карти (7 м; було 8,5 м) */
 static int tick;
 static int fps_shown = 60, cpu_ms10, gpu_ms10;                   /* кадри за секунду; час процесора й очікування чипа (0,1 мс) — показ у кутку, для тестів */
 
@@ -651,11 +652,160 @@ static int trunk_hit(float x, float y, float c, float s) {
             float dx = T[0] - x, dy = T[1] - y;
             if (dx * dx + dy * dy > 120) continue;
             float lx = dx * c + dy * s, ly = -dx * s + dy * c;
-            if (fabsf(lx) < 8.5f && fabsf(ly) < 4.0f) return 1;
+            if (fabsf(lx) < 7.0f && fabsf(ly) < 3.3f) return 1;
         }
     }
     return 0;
 }
+/* ================= дорожній граф і трафік (25.10.2026) =================
+   Граф з OSM (tools/roadgraph.py): ребро — ламана між перехрестями; dir 0 — від a до b, 1 — назад (лише двосторонні). */
+static float rg_len(int e) { return RG_EDGE[e].len > 0 ? RG_EDGE[e].len : 1; }
+/* точка на ребрі на відстані s від початку (у напрямку dir) + одинична дотична */
+static void rg_at(int e, int dir, float s, float *x, float *y, float *tx, float *ty) {
+    const REdge *E = &RG_EDGE[e]; int n = E->n;
+    float acc = 0;
+    for (int k = 0; k < n - 1; k++) {
+        int i0 = dir ? n - 1 - k : k, i1 = dir ? n - 2 - k : k + 1;
+        const int16_t *A = RG_PT[E->p0 + i0], *B = RG_PT[E->p0 + i1];
+        float dx = B[0] - A[0], dy = B[1] - A[1], l = sqrtf(dx * dx + dy * dy);
+        if (l < 0.01f) continue;
+        if (acc + l >= s || k == n - 2) {
+            float t = (s - acc) / l; if (t < 0) t = 0; if (t > 1) t = 1;
+            *x = A[0] + dx * t; *y = A[1] + dy * t; *tx = dx / l; *ty = dy / l; return;
+        }
+        acc += l;
+    }
+    *x = RG_PT[E->p0][0]; *y = RG_PT[E->p0][1]; *tx = 1; *ty = 0;
+}
+/* проекція точки на ребро: відстань уздовж (у напрямку dir), поперечне відхилення, дотична */
+static float rg_proj(int e, int dir, float px, float py, float *dist2, float *tx, float *ty) {
+    const REdge *E = &RG_EDGE[e]; int n = E->n;
+    float acc = 0, best = 1e9f, bs = 0;
+    for (int k = 0; k < n - 1; k++) {
+        int i0 = dir ? n - 1 - k : k, i1 = dir ? n - 2 - k : k + 1;
+        const int16_t *A = RG_PT[E->p0 + i0], *B = RG_PT[E->p0 + i1];
+        float dx = B[0] - A[0], dy = B[1] - A[1], l2 = dx * dx + dy * dy, l = sqrtf(l2);
+        if (l < 0.01f) continue;
+        float t = ((px - A[0]) * dx + (py - A[1]) * dy) / l2; if (t < 0) t = 0; if (t > 1) t = 1;
+        float cx = A[0] + dx * t - px, cy = A[1] + dy * t - py, d2 = cx * cx + cy * cy;
+        if (d2 < best) { best = d2; bs = acc + l * t; *tx = dx / l; *ty = dy / l; }
+        acc += l;
+    }
+    *dist2 = best; return bs;
+}
+static int rg_end_node(int e, int dir) { return dir ? RG_EDGE[e].a : RG_EDGE[e].b; }
+/* наступне ребро на вузлі: найпрямійше (straight=1) або випадкове з основних (для трафіку); -1 якщо нема */
+static int rg_next(int e, int dir, int straight, int main_only, float tx, float ty) {
+    int nd = rg_end_node(e, dir), best = -1; float bd = -2; int cand[12], nc = 0;
+    for (uint32_t k = RG_ADJ0[nd]; k < RG_ADJ0[nd + 1]; k++) {
+        int code = RG_ADJ[k], e2 = code >> 1, d2 = code & 1;
+        if (e2 == e) continue;
+        if (main_only && RG_EDGE[e2].cls > RG_MAIN) continue;
+        float x, y, ux, uy; rg_at(e2, d2, 1.0f, &x, &y, &ux, &uy);
+        float dot = ux * tx + uy * ty;
+        if (dot < -0.5f) continue;                                  /* не розвертатися */
+        if (dot > bd) { bd = dot; best = code; }
+        if (nc < 12) cand[nc++] = code;
+    }
+    if (straight || nc == 0) return best;
+    if (rand() % 100 < 55 && best >= 0) return best;               /* частіше прямо */
+    return cand[rand() % nc];
+}
+static float rg_lane_off(int e, int lane) {                         /* зміщення праворуч від осі до центру смуги */
+    const REdge *E = &RG_EDGE[e]; float w = E->w2, nl = E->lanes ? E->lanes : 2, lw = w / nl;
+    if (!E->one) { int per = (int)nl / 2; if (per < 1) per = 1; if (w < 14) return 0; return lw * (lane % per + 0.5f); }
+    return -w / 2 + lw * (lane % (int)nl + 0.5f);
+}
+static int rg_light_green(int e, int dir) {                         /* світлофор на кінці ребра: зелений для цього підходу? */
+    int nd = rg_end_node(e, dir);
+    float x, y, tx, ty; rg_at(e, dir, rg_len(e) - 1, &x, &y, &tx, &ty);
+    int axis = fabsf(tx) > fabsf(ty) ? 0 : 1;
+    int ph = ((tick / 60 + nd * 7) % 36) < 18 ? 0 : 1;              /* цикл 36 с: по 18 с кожна вісь */
+    return axis == ph;
+}
+
+#define NTRAF 14
+static struct { int on, e, dir, lane, model, stop_t, brake; float s, spd, vmax, x, y, a; } traf[NTRAF];
+static int traf_hit(float x, float y) {                             /* точка в кузові машини трафіку? */
+    for (int i = 0; i < NTRAF; i++) {
+        if (!traf[i].on) continue;
+        float dx = x - traf[i].x, dy = y - traf[i].y;
+        if (dx * dx + dy * dy > 64) continue;
+        float c = cosf(traf[i].a), s = sinf(traf[i].a), lx = dx * c + dy * s, ly = -dx * s + dy * c;
+        if (fabsf(lx) < 6.3f && fabsf(ly) < 2.9f) return i + 1;
+    }
+    return 0;
+}
+static void traf_place(int i) {
+    float x, y, tx, ty; rg_at(traf[i].e, traf[i].dir, traf[i].s, &x, &y, &tx, &ty);
+    float off = rg_lane_off(traf[i].e, traf[i].lane);
+    traf[i].x = x - ty * off; traf[i].y = y + tx * off;
+    float a = atan2f(ty, tx), d = a - traf[i].a;
+    while (d > PI_F) d -= 2 * PI_F; while (d < -PI_F) d += 2 * PI_F;
+    traf[i].a += d * 0.25f;
+}
+static void traf_spawn(int i, float vx, float vy, float vw, float vh) {
+    for (int tries = 0; tries < 12; tries++) {
+        float ang_ = (rand() % 628) / 100.0f, r = 260 + rand() % 180;
+        float x = px_ + cosf(ang_) * r, y = py_ + sinf(ang_) * r;
+        int gx = (int)x / RG_G, gy = (int)y / RG_G;
+        if (gx < 0 || gy < 0 || gx >= RG_GW || gy >= RG_GH) continue;
+        int c = gy * RG_GW + gx, n = RG_CELL0[c + 1] - RG_CELL0[c];
+        if (n == 0) continue;
+        int e = RG_CELL[RG_CELL0[c] + rand() % n];
+        if (RG_EDGE[e].cls > RG_MAIN || RG_EDGE[e].len < 30) continue;
+        int dir = RG_EDGE[e].one ? 0 : rand() % 2;
+        float s = 5 + rand() % (RG_EDGE[e].len - 10), xx, yy, tx, ty;
+        rg_at(e, dir, s, &xx, &yy, &tx, &ty);
+        if (xx > vx - 30 && xx < vx + vw + 30 && yy > vy - 30 && yy < vy + vh + 30) continue;   /* не на очах */
+        int clash = 0;
+        for (int j = 0; j < NTRAF; j++) if (traf[j].on && dist(traf[j].x, traf[j].y, xx, yy) < 40) clash = 1;
+        if (clash) continue;
+        traf[i].on = 1; traf[i].e = e; traf[i].dir = dir; traf[i].s = s; traf[i].lane = rand() % 2;
+        traf[i].model = rand() % NTRAFMODEL; traf[i].vmax = 0.40f + (rand() % 16) * 0.01f; traf[i].spd = traf[i].vmax * 0.8f;
+        traf[i].stop_t = 0; traf[i].a = atan2f(ty, tx); traf_place(i);
+        return;
+    }
+}
+static void traffic_update(void) {
+    float vx = camx, vy = camy;
+    static int sp_t;
+    for (int i = 0; i < NTRAF; i++) {
+        if (!traf[i].on) { if (++sp_t % 7 == 0) traf_spawn(i, vx, vy, VW, VH); continue; }
+        if (dist(traf[i].x, traf[i].y, px_, py_) > 640) { traf[i].on = 0; continue; }
+        float c = cosf(traf[i].a), s = sinf(traf[i].a);
+        /* хто попереду в моїй смузі (інші машини й гравець) */
+        float gap = 999;
+        for (int j = -1; j < NTRAF; j++) {
+            float ox, oy;
+            if (j < 0) { ox = px_; oy = py_; } else { if (j == i || !traf[j].on) continue; ox = traf[j].x; oy = traf[j].y; }
+            float dx = ox - traf[i].x, dy = oy - traf[i].y, lf = dx * c + dy * s, ll = -dx * s + dy * c;
+            if (lf > 0 && lf < 60 && fabsf(ll) < 5.5f && lf < gap) gap = lf;
+        }
+        float target = traf[i].vmax;
+        if (RG_EDGE[traf[i].e].sig & (traf[i].dir ? 1 : 2)) {        /* світлофор попереду */
+            float left = rg_len(traf[i].e) - traf[i].s;
+            if (left < 40 && left > 6 && !rg_light_green(traf[i].e, traf[i].dir)) {
+                float stop = left - 8; if (stop < gap) gap = stop;
+            }
+        }
+        float safe = gap - 16;
+        if (safe < 0) target = 0; else if (safe < 30) target = fminf(target, safe * 0.02f);
+        if (traf[i].stop_t > 0) { traf[i].stop_t--; target = 0; }
+        traf[i].brake = target < traf[i].spd - 0.01f;
+        traf[i].spd += (target > traf[i].spd) ? 0.006f : -fminf(0.03f, traf[i].spd - target);
+        if (traf[i].spd < 0) traf[i].spd = 0;
+        traf[i].s += traf[i].spd;
+        if (traf[i].s >= rg_len(traf[i].e)) {
+            float x, y, tx, ty; rg_at(traf[i].e, traf[i].dir, rg_len(traf[i].e), &x, &y, &tx, &ty);
+            int nx = rg_next(traf[i].e, traf[i].dir, 0, 1, tx, ty);
+            if (nx < 0) { traf[i].on = 0; continue; }
+            traf[i].s -= rg_len(traf[i].e); traf[i].e = nx >> 1; traf[i].dir = nx & 1;
+        }
+        traf_place(i);
+    }
+}
+
 /* ---- мости з двома рівнями (розв'язка): верх — їдеш мостом між огорожами; низ — проїжджаєш під ним.
    Рівень вирішується при в'їзді в зону мосту: з торця — верх, збоку — низ. */
 static int br_on = -1, br_up;                 /* номер мосту, на/під яким машина; верх? */
@@ -682,14 +832,15 @@ static int hit(float x, float y, float a) {
     float c = cosf(a), s = sinf(a);
     if (NTREE > 0 && trunk_hit(x, y, c, s)) return 1;
     if (br_on >= 0) {
-        static const float Q[][2] = { { 7.5f, 0 }, { -7.5f, 0 }, { 6.5f, 3 }, { 6.5f, -3 }, { -6.5f, 3 }, { -6.5f, -3 }, { 0, 3 }, { 0, -3 } };
+        static const float Q[][2] = { { 6.2f, 0 }, { -6.2f, 0 }, { 5.3f, 2.5f }, { 5.3f, -2.5f }, { -5.3f, 2.5f }, { -5.3f, -2.5f }, { 0, 2.5f }, { 0, -2.5f } };
         for (int i = 0; i < 8; i++) if (br_wall(x + Q[i][0] * c - Q[i][1] * s, y + Q[i][0] * s + Q[i][1] * c)) return 1;
     }
-    static const float P[][2] = { { 0, 0 }, { 7.5f, 0 }, { -7.5f, 0 }, { 6.5f, 3 }, { 6.5f, -3 }, { -6.5f, 3 }, { -6.5f, -3 }, { 0, 3 }, { 0, -3 } };   /* Golf 8,5 x ~3,9 м (17 x 8 пікс), колізія трохи вужча */
+    static const float P[][2] = { { 0, 0 }, { 6.2f, 0 }, { -6.2f, 0 }, { 5.3f, 2.5f }, { 5.3f, -2.5f }, { -5.3f, 2.5f }, { -5.3f, -2.5f }, { 0, 2.5f }, { 0, -2.5f } };   /* Golf 7 x ~3,2 м (14 x 6,5 пікс; з 25.10.2026), колізія трохи вужча */
     for (int i = 0; i < 9; i++) {
         float lx = P[i][0], ly = P[i][1];
         if (is_solid((int)(x + lx * c - ly * s), (int)(y + lx * s + ly * c))) return 1;
     }
+    for (int i = 1; i < 9; i++) if (traf_hit(x + P[i][0] * c - P[i][1] * s, y + P[i][0] * s + P[i][1] * c)) return 1;
     return 0;
 }
 
@@ -803,6 +954,63 @@ static float lane_steer(void) {
     return out;
 }
 
+/* ---- помічник смуги v2 (25.10.2026): за дорожнім графом — тримає ребро, на яке ти виїхав, дивиться вперед
+   (на перехресті — найпрямійше продовження), веде в праву смугу (на вузьких — по центру);
+   якщо на шляху до точки огляду перешкода — відпускає кермо */
+static int la_e = -1, la_dir, la_off_t;
+static float lane_steer2(void) {
+    float fx = cosf(ang), fy = sinf(ang);
+    /* поточне ребро: лишаємо, поки машина на ньому; інакше шукаємо найближче за напрямком */
+    if (la_e >= 0) {
+        float d2, tx, ty; rg_proj(la_e, la_dir, px_, py_, &d2, &tx, &ty);
+        float hw = RG_EDGE[la_e].w2 * 0.5f + 6;
+        if (d2 > hw * hw || tx * fx + ty * fy < 0.3f) la_e = -1;
+    }
+    if (la_e < 0) {
+        int gx = (int)px_ / RG_G, gy = (int)py_ / RG_G; float best = 1e9f;
+        if (gx < 0 || gy < 0 || gx >= RG_GW || gy >= RG_GH) return 0;
+        int c = gy * RG_GW + gx;
+        for (uint32_t k = RG_CELL0[c]; k < RG_CELL0[c + 1]; k++) {
+            int e = RG_CELL[k];
+            for (int dir = 0; dir < (RG_EDGE[e].one ? 1 : 2); dir++) {
+                float d2, tx, ty; rg_proj(e, dir, px_, py_, &d2, &tx, &ty);
+                float dot = tx * fx + ty * fy, hw = RG_EDGE[e].w2 * 0.5f + 4;
+                if (dot < 0.6f || d2 > hw * hw) continue;
+                float sc = sqrtf(d2) + 20 * (1 - dot);
+                if (sc < best) { best = sc; la_e = e; la_dir = dir; }
+            }
+        }
+        if (la_e < 0) return 0;
+    }
+    /* точка огляду: 10 + швидкість*28 пікс уперед уздовж дороги */
+    float d2, tx, ty, s0 = rg_proj(la_e, la_dir, px_, py_, &d2, &tx, &ty);
+    float look = 10 + fabsf(vel) * 28, s1 = s0 + look;
+    int e = la_e, dir = la_dir;
+    for (int hop = 0; hop < 3 && s1 > rg_len(e); hop++) {
+        float x, y, ex, ey; rg_at(e, dir, rg_len(e), &x, &y, &ex, &ey);
+        int nx = rg_next(e, dir, 1, 0, ex, ey);
+        if (nx < 0) { s1 = rg_len(e); break; }
+        s1 -= rg_len(e); e = nx >> 1; dir = nx & 1;
+    }
+    float x, y, ux, uy; rg_at(e, dir, s1, &x, &y, &ux, &uy);
+    float off = rg_lane_off(e, 0);
+    x += -uy * off; y += ux * off;
+    /* перешкода на шляху до точки огляду — відпустити кермо на пів секунди */
+    float dx = x - px_, dy = y - py_, dl = sqrtf(dx * dx + dy * dy);
+    if (dl > 1) {
+        for (int k = 1; k <= 3; k++) {
+            float t = fminf(1.0f, k * 7.0f / dl);
+            if (hit(px_ + dx * t, py_ + dy * t, atan2f(dy, dx))) { la_off_t = 30; break; }
+        }
+    }
+    if (la_off_t > 0) { la_off_t--; return 0; }
+    float err = atan2f(dy, dx) - ang;
+    while (err > PI_F) err -= 2 * PI_F; while (err < -PI_F) err += 2 * PI_F;
+    float out = err * 2.4f;
+    if (out > 1) out = 1; if (out < -1) out = -1;
+    return out;
+}
+
 static int on_water(float x, float y) { return surf((int)x, (int)y) == 2; }
 
 static void update_player(unsigned btn, int lx) {
@@ -816,7 +1024,7 @@ static void update_player(unsigned btn, int lx) {
     int hand = (btn & PSP_CTRL_RTRIGGER) != 0;
     static int free_t;
     if (fabsf(steer) > 0.08f) free_t = 0; else free_t++;
-    if (lane_assist && free_t > 8 && !hand && vel > 0.12f) steer = lane_steer();
+    if (lane_assist && free_t > 8 && !hand && vel > 0.12f) steer = lane_steer2(); else la_e = -1;
 
     float fx = cosf(ang), fy = sinf(ang), rx = -fy, ry = fx;
     float vf = vx_ * fx + vy_ * fy, vr = vx_ * rx + vy_ * ry;
@@ -831,7 +1039,7 @@ static void update_player(unsigned btn, int lx) {
         float k = fabsf(vf);
         vf *= k > 0.6f ? 0.95f : 0.97f;
         bump = 5; shake = k > 0.6f ? 2 : 1;
-        puff(px_ + fx * 7, py_ + fy * 7, (rand() % 5 - 2) * 0.06f, (rand() % 5 - 2) * 0.06f, 14, 0);
+        puff(px_ + fx * 5.5f, py_ + fy * 5.5f, (rand() % 5 - 2) * 0.06f, (rand() % 5 - 2) * 0.06f, 14, 0);
     } else if (!walk && (prev_sfc == 3 || prev_sfc == 4) && fabsf(vf) > 0.3f) { vf *= 0.98f; bump = 3; shake = 1; }   /* з бордюра вниз */
     prev_sfc = sfc;
     int heavy = ostate == O_DROP && otype == T_HEAVY;
@@ -857,13 +1065,13 @@ static void update_player(unsigned btn, int lx) {
     wheel += (steer - wheel) * 0.22f;
     float sp = fabsf(vf);
     float lock = 1.0f - 0.55f * (sp / VMAX);
-    float yaw = vf * wheel * lock / 13.0f;
+    float yaw = vf * wheel * lock / 11.0f;
     if (hand) yaw *= 1.45f;
     if (yaw > 0.07f) yaw = 0.07f; if (yaw < -0.07f) yaw = -0.07f;
     float na = ang + yaw;
     if (na > PI_F) na -= 2 * PI_F; if (na < -PI_F) na += 2 * PI_F;
     {
-        const float RA = 5.0f;                                /* центр кузова — на 5 пікс попереду задньої осі */
+        const float RA = 4.1f;                                /* центр кузова — на 5 пікс попереду задньої осі */
         float nfx = cosf(na), nfy = sinf(na);
         float qx = px_ + RA * (nfx - fx), qy = py_ + RA * (nfy - fy);
         if (hand && sp > 0.35f) { qx = px_; qy = py_; }        /* у заносі — обертання навколо центру */
@@ -887,8 +1095,9 @@ static void update_player(unsigned btn, int lx) {
             float dmg = (spd - 0.28f) * 42.0f;
             health -= dmg; bump = 10; shake = (int)(2 + spd * 6);
             cargo_hit(spd);
-            for (int k = 0; k < 4; k++) puff(px_ + fx * 9, py_ + fy * 9, (rand() % 7 - 3) * 0.08f, (rand() % 7 - 3) * 0.08f, 22, 1);
+            for (int k = 0; k < 4; k++) puff(px_ + fx * 7.5f, py_ + fy * 7.5f, (rand() % 7 - 3) * 0.08f, (rand() % 7 - 3) * 0.08f, 22, 1);
         }
+        for (int t = 0; t < NTRAF; t++) if (traf[t].on && dist(traf[t].x, traf[t].y, px_, py_) < 16) { traf[t].stop_t = 120; traf[t].spd = 0; }
         vx_ *= -0.22f; vy_ *= -0.22f;
         break;
     }
@@ -897,12 +1106,12 @@ static void update_player(unsigned btn, int lx) {
     int burn = gas && sp < 0.35f && vf > 0.02f && !off && (tick & 1);
     if ((drifting || (hand && sp > 0.35f) || burn) && !off) {
         for (int sgn = -1; sgn <= 1; sgn += 2) {
-            float wx = px_ - fx * 7 + rx * 4 * sgn, wy = py_ - fy * 7 + ry * 4 * sgn;
+            float wx = px_ - fx * 5.5f + rx * 3 * sgn, wy = py_ - fy * 5.5f + ry * 3 * sgn;
             add_skid(wx, wy);
             if ((tick + sgn) % 3 == 0) puff(wx, wy, -vx_ * 0.2f + (rand() % 5 - 2) * 0.05f, -vy_ * 0.2f - 0.05f, 34, 0);
         }
     }
-    if (health < 35 && tick % 9 == 0) puff(px_ + fx * 8, py_ + fy * 8, 0.02f, -0.18f, 40, 2);   /* пара з-під капота */
+    if (health < 35 && tick % 9 == 0) puff(px_ + fx * 6.5f, py_ + fy * 6.5f, 0.02f, -0.18f, 40, 2);   /* пара з-під капота */
     float moved = fabsf(px_ - ox_) + fabsf(py_ - oy_);
     fuel -= moved * 0.00156f * (heavy ? 1.4f : 1.0f) + (gas ? 0.0002f : 0);     /* повний бак ≈ 32 км */
     if (fuel < 0) fuel = 0;
@@ -1530,7 +1739,7 @@ static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
     else {
         int was_open = note_open;
         notebook_input(pressed);
-        update_player(btn, lx); update_camera(0);
+        update_player(btn, lx); update_camera(0); traffic_update();
         update_orders(was_open ? pressed : (pressed & ~PSP_CTRL_TRIANGLE)); update_repair();
         update_fuel(note_open ? 0 : pressed);
     }
@@ -1573,8 +1782,24 @@ static void render(void *target_buf) {
         int i = lmv[j].i;
         gfx_layer8(lm_frame(i), LMS[i].w, LMS[i].w, LMS[i].h, sx + lmv[j].x * ZOOM, sy + lmv[j].y * ZOOM, ZOOM, 1, 0);
     }
+    if (world_mode && !freecam) {                                       /* трафік */
+        float k = CAR_LPX / CARTEX_LEN * ZOOM, hx = CARTEX_W / 2 * k, hy = CARTEX_H / 2 * k;
+        for (int i = 0; i < NTRAF; i++) {
+            if (!traf[i].on) continue;
+            float x = (traf[i].x - viewx) * ZOOM, y = (traf[i].y - viewy) * ZOOM;
+            if (x < -20 || x > SW + 20 || y < -20 || y > SH + 20) continue;
+            int under = 0;                                              /* під мостом розв'язки — не видно */
+            for (int b = 0; b < NBRIDGE; b++) {
+                float al, ac; br_local(b, traf[i].x, traf[i].y, &al, &ac);
+                if (fabsf(al) < BRIDGES[b].hl && fabsf(ac) < BRIDGES[b].hw && fabsf(cosf(traf[i].a) * BRIDGES[b].ux + sinf(traf[i].a) * BRIDGES[b].uy) < 0.5f) under = 1;
+            }
+            if (under) continue;
+            gfx_quad((const uint32_t *)(assets_bin + CARTEX_SHD), CARTEX_W, CARTEX_H, x + 0.6f * ZOOM, y + 0.9f * ZOOM, traf[i].a, hx, hy * 1.06f, 0xFFFFFFFF);
+            gfx_quad((const uint32_t *)(assets_bin + TRAFTEX_OFF + (traf[i].model * 2 + (traf[i].brake ? 1 : 0)) * CARTEX_W * CARTEX_H * 4), CARTEX_W, CARTEX_H, x, y, traf[i].a, hx, hy, 0xFFFFFFFF);
+        }
+    }
     if (carv.on) {
-        float k = 17.0f / CARTEX_LEN * ZOOM, hx = CARTEX_W / 2 * k, hy = CARTEX_H / 2 * k;     /* 8,5 м = 17 пікс карти */
+        float k = CAR_LPX / CARTEX_LEN * ZOOM, hx = CARTEX_W / 2 * k, hy = CARTEX_H / 2 * k;     /* 7 м = 14 пікс карти */
         if (carv.shadow) gfx_quad((const uint32_t *)(assets_bin + CARTEX_SHD), CARTEX_W, CARTEX_H, carv.x + 0.6f * ZOOM, carv.y + 0.9f * ZOOM, carv.a, hx * 1.0f, hy * 1.06f, 0xFFFFFFFF);
         gfx_quad((const uint32_t *)(assets_bin + (carv.lit ? CARTEX_LIT : CARTEX_OFF)), CARTEX_W, CARTEX_H, carv.x, carv.y, carv.a, hx, hy, carv.col);
     }
@@ -1787,6 +2012,51 @@ int main(int argc, char **argv) {
         evac = 0; health = 100; px_ = 8234; py_ = 7762; stop_car(); update_camera(1); state = S_PLAY;
         for (int f = 0; f < 3; f++) game_update(0, 0, 128, 128);
         px_ = 8234; py_ = 7762; draw_frame(); snprintf(nm, sizeof nm, "%s/f_arch.ppm", dir); dump(nm);
+    }
+    /* трафік: стоїмо біля головної вулиці 40 с; рахуємо машини, накладання, рух */
+    {
+        evac = 0; health = 100; fuel = 100; ostate = O_NONE; owait = 100000; state = S_PLAY;
+        int e0 = -1; for (int e = 0; e < RG_NE; e++) if (RG_EDGE[e].cls == 0 && RG_EDGE[e].len > 200) { e0 = e; break; }
+        float x, y, tx, ty; rg_at(e0, 0, RG_EDGE[e0].len / 2, &x, &y, &tx, &ty);
+        px_ = x - ty * 30; py_ = y + tx * 30; stop_car(); unstick(); update_camera(1);
+        int maxon = 0, overl = 0, moving = 0, samples = 0, shot = 0;
+        for (int f = 0; f < 2400; f++) {
+            game_update(0, 0, 128, 128);
+            int on = 0;
+            for (int i = 0; i < NTRAF; i++) if (traf[i].on) {
+                on++; samples++; if (traf[i].spd > 0.2f) moving++;
+                for (int j = i + 1; j < NTRAF; j++) if (traf[j].on && dist(traf[i].x, traf[i].y, traf[j].x, traf[j].y) < 7) overl++;
+            }
+            if (on > maxon) maxon = on;
+            int vis = 0; for (int i = 0; i < NTRAF; i++) if (traf[i].on && fabsf(traf[i].x - px_) < 200 && fabsf(traf[i].y - py_) < 110) vis++;
+            if (!shot && vis >= 3 && f > 600) { draw_frame(); snprintf(nm, sizeof nm, "%s/f_traffic.ppm", dir); dump(nm); shot = 1; }
+        }
+        printf("traffic: max on %d, overlaps (frames*pairs) %d, moving %.0f%%, frame shot %d\n", maxon, overl, 100.0f * moving / (samples ? samples : 1), shot);
+        /* помічник смуги на маршруті: 30 с без керма, лише газ */
+        lane_assist = 1;
+        int ok_runs = 0, crashes = 0;
+        for (int run = 0; run < 6; run++) {
+            int e = -1; for (int t = 0; t < 2000; t++) { int c = rand() % RG_NE; if (RG_EDGE[c].cls <= 3 && RG_EDGE[c].len > 80) { e = c; break; } }
+            rg_at(e, 0, 20, &x, &y, &tx, &ty); float off = rg_lane_off(e, 0);
+            px_ = x - ty * off; py_ = y + tx * off; ang = atan2f(ty, tx); stop_car(); unstick(); health = 100; la_e = -1; update_camera(1);
+            float travelled = 0, lx0 = px_, ly0 = py_;
+            for (int f = 0; f < 1800; f++) {
+                float h0 = health;
+                game_update(vel < 0.5f ? PSP_CTRL_CROSS : 0, 0, 128, 128);          /* як водій: ~55 км/год */
+                if (health < h0) { int nt = 0; for (int t = 0; t < NTRAF; t++) if (traf[t].on && dist(traf[t].x, traf[t].y, px_, py_) < 16) nt = 1;
+                    printf("    hit at %d %d (%s), edge cls %d\n", (int)px_, (int)py_, nt ? "traffic" : "wall/tree", la_e >= 0 ? RG_EDGE[la_e].cls : -1); }
+                travelled += dist(px_, py_, lx0, ly0); lx0 = px_; ly0 = py_;
+                if (evac) break;
+            }
+            if (health < 100) crashes++;
+            if (travelled > 400) ok_runs++;
+            printf("  assist run %d: cls %d, travelled %.0f m, health %.0f\n", run, RG_EDGE[e].cls, travelled * MPP, health);
+            if (travelled * MPP < 300) { printf("    end at %d %d ang %.2f la_e %d off_t %d vel %.2f\n", (int)px_, (int)py_, ang, la_e, la_off_t, vel); draw_frame(); snprintf(nm, sizeof nm, "%s/f_assist_short%d.ppm", dir, run); dump(nm); }
+            if (run == 0) { draw_frame(); snprintf(nm, sizeof nm, "%s/f_assist.ppm", dir); dump(nm); }
+            evac = 0;
+        }
+        lane_assist = 0;
+        printf("lane assist v2: runs ok %d/6, with damage %d/6\n", ok_runs, crashes);
     }
     /* міст на розв'язці: проїхати верхом уздовж осі та низом поперек */
     if (NBRIDGE > 0) {

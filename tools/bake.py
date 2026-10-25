@@ -123,6 +123,7 @@ fr = sprites.car_frames()
 SPR_OFF = put(b''.join(f.tobytes() for f in fr))
 SPR_LIT = put(b''.join(f.tobytes() for f in sprites.car_frames(lit=True)))
 CARTEX_OFF, CARTEX_LIT, CARTEX_SHD = (put(t) for t in sprites.car_textures())
+_tt = sprites.traffic_textures(); TRAFTEX_OFF = put(b''.join(_tt)); NTRAFMODEL = len(_tt) // 2
 # ---- дерева: стовбури (колізія) і крони (поверх машини), відсортовані за блоком карти 64x64
 _tr = json.load(open(os.path.join(BUILD, 'trees.json'))) if os.path.exists(os.path.join(BUILD, 'trees.json')) else []
 _pl = np.load(os.path.join(BUILD, 'play.npy'), mmap_mode='r')
@@ -249,6 +250,7 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('#define SPR_OFF %d\n#define SPR_SZ %d\n#define SPR_N %d\n#define ICON_SHOP %d\n#define ICON_HOME %d\n#define ICON_SZ 16\n' % (SPR_OFF, sprites.CAR_SZ, sprites.NROT, ICON_SHOP, ICON_HOME))
     f.write('#define SPAWN_X %d\n#define SPAWN_Y %d\n' % tuple(md['spawn']))
     f.write('#define SPR_LIT %d\n#define ICON_STO %d\n#define ICON_FUEL %d\n' % (SPR_LIT, ICON_STO, ICON_FUEL))
+    f.write('#define TRAFTEX_OFF %d\n#define NTRAFMODEL %d\n' % (TRAFTEX_OFF, NTRAFMODEL))
     f.write('#define TREE_OFF %d\n#define TREE_CELL_OFF %d\n#define NTREE %d\n' % (TREE_OFF, TREE_CELL_OFF, NTREE))
     f.write('#define BLD_OFF %d\n#define BLD_PO_OFF %d\n#define BLD_PT_OFF %d\n#define BLD_CELL_OFF %d\n#define NBLD %d\n' % (BLD_OFF, BLD_PO_OFF, BLD_PT_OFF, BLD_CELL_OFF, NBLD))
     f.write('#define BLD_EO_OFF %d\n#define BLD_EP_OFF %d\n#define BLD_TO_OFF %d\n#define BLD_TR_OFF %d\n#define BLD_OO_OFF %d\n#define BLD_OT_OFF %d\n' % (BLD_EO_OFF, BLD_EP_OFF, BLD_TO_OFF, BLD_TR_OFF, BLD_OO_OFF, BLD_OT_OFF))
@@ -269,6 +271,8 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('typedef struct { int16_t n, x0, y0, x1, y1; int16_t p[64][2]; } Arch;\n')
     f.write('static const Arch ARCHES[] = {%s};\n#define NARCH %d\n' % (','.join('{%d,%d,%d,%d,%d,{%s}}' % (len(q), min(a for a, b in q), min(b for a, b in q), max(a for a, b in q), max(b for a, b in q), ','.join('{%d,%d}' % (a, b) for a, b in q)) for q in ar) or '{0}', len(ar)))
     # смуги для помічника: відрізки осі дороги + сітка 128 пікс
+    import roadgraph
+    roadgraph.write_c(f, roadgraph.build(CD.data(), _pl, W, H))
     lanes = md.get('lanes', [])
     LG = 128; gw, gh = (W + LG - 1) // LG, (H + LG - 1) // LG
     cells = [[] for _ in range(gw * gh)]
