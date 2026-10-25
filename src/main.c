@@ -37,7 +37,7 @@ PSP_HEAP_SIZE_KB(-1024);
 #define STRIDE 512
 #define BUFSZ (STRIDE * SH * 4)
 #define PI_F 3.14159265f
-#define VMAX 1.31f                   /* макс. швидкість, пікс/кадр (≈141 км/год) */
+#define VMAX 1.70f                   /* макс. швидкість, пікс/кадр (≈184 км/год — Golf V 1.6 MPI) */
 
 typedef uint32_t u32;
 typedef uint8_t u8;
@@ -1047,7 +1047,7 @@ static void update_player(unsigned btn, int lx) {
     int sfc = (br_on >= 0 && br_up) ? 0 : surf((int)px_, (int)py_);      /* на мосту — асфальт, а не тротуари внизу */
     int off = sfc == 1;
     int walk = sfc == 3 || sfc == 4;                          /* тротуар / бордюр */
-    float vmax = off ? 0.50f : VMAX;                         /* 1,31 пікс/кадр ≈ 141 км/год; на спідометрі — 140 */
+    float vmax = off ? 0.50f : VMAX;                         /* по траві ~54 км/год */
     if (walk) vmax = VMAX * 0.9f;                             /* тротуаром можна їхати майже як дорогою (як у GTA) */
     /* бордюр: як у GTA — легкий підскок і ледь відчутна втрата швидкості, без ушкоджень */
     static int prev_sfc;
@@ -1062,13 +1062,26 @@ static void update_player(unsigned btn, int lx) {
     if (heavy) vmax *= 0.7f;
     if (fuel <= 0) gas = 0;                                   /* пальне скінчилося */
     /* двигун / гальмо / задній хід */
-    /* розгін: 0-100 ≈ 3 с, далі все важче, 140 ≈ 10 с — межа можливостей авто */
-    if (gas && vf >= -0.02f) { float k = vf / vmax; if (k > 1) k = 1; vf += ((off ? 0.008f : 0.011f) * powf(1.0f - k, 1.6f) + 0.0004f) * (heavy ? 0.6f : 1.0f); }
-    else if (gas) vf += 0.045f;
+    /* двигун як у Golf V 1.6 MPI (102 к.с., 148 Н·м, 5 передач, 1208 кг + водій): потужність на колесах ~65 кВт,
+       тяга обмежена зчепленням передніх коліс, опір повітря й кочення, пауза на перемиканні.
+       Виходить як у паспорті: 0–100 ≈ 11,4 с, 140 ≈ 23 с, максимум ≈ 184 км/год. 1 пікс/кадр = 30 м/с. */
+    static int gear, shift_t;
+    float v_ms = vf * 30.0f, mass = heavy ? 1580.0f : 1283.0f, a_ms = 0;
+    { static const float SHIFT[4] = { 13.0f, 22.5f, 31.5f, 40.5f };     /* 47, 81, 113, 146 км/год */
+      int g = 0; while (g < 4 && v_ms > SHIFT[g]) g++;
+      if (g > gear) shift_t = 21; gear = g; }
+    float resist = 0.42f * v_ms * fabsf(v_ms) + (off ? 0.05f : 0.013f) * mass * 9.81f * (v_ms > 0.05f ? 1 : (v_ms < -0.05f ? -1 : 0));
+    if (gas && vf >= -0.02f) {
+        float F = fminf(off ? 3200.0f : 4500.0f, 65000.0f / fmaxf(v_ms, 3.0f));
+        if (shift_t > 0) { F *= 0.15f; shift_t--; }
+        a_ms = (F - resist) / mass;
+    } else if (gas) a_ms = 12.0f;                                   /* газ на задньому ходу — гальмує до зупинки */
+    else a_ms = -resist / mass - (v_ms > 0.3f ? 0.35f : 0);         /* накат: опір + гальмування двигуном */
     braking = 0;
-    /* гальма: ~1 g, 140→0 приблизно за 2,5 с; накатом машина котиться довго */
-    if (brake) { if (vf > 0.03f) { vf -= 0.0085f + 0.004f * (vf / VMAX); braking = 1; } else if (vf > -0.34f) vf -= 0.011f; }
-    if (!gas && !brake) { vf -= vf * 0.0025f + (vf > 0 ? 0.0009f : -0.0009f); if (fabsf(vf) < 0.004f) vf = 0; }
+    /* гальма: ~0,95 g (100→0 ≈ 3 с, як у справжнього авто), по траві слабше */
+    if (brake) { if (vf > 0.03f) { a_ms = -(off ? 6.0f : 9.3f) - resist / mass; braking = 1; } else if (vf > -0.34f) a_ms = -3.0f; }
+    vf += a_ms / 1800.0f;
+    if (!gas && !brake && fabsf(vf) < 0.004f) vf = 0;
     if (vf > vmax) vf -= (vf - vmax) * 0.12f;
     if (vf < -0.34f) vf = -0.34f;
     /* зчеплення: гасить боковий рух; ручник — занос */
@@ -1084,6 +1097,11 @@ static void update_player(unsigned btn, int lx) {
     float yaw = vf * wheel * lock / 12.0f;
     if (hand) yaw *= 1.45f;
     if (yaw > 0.07f) yaw = 0.07f; if (yaw < -0.07f) yaw = -0.07f;
+    if (!hand) {                                                    /* зчеплення шин: бічне прискорення не більше ~0,85 g (на траві 0,5 g) —
+                                                                       на швидкості крутий поворот неможливий, треба гальмувати перед ним */
+        float ym = (off ? 5.0f : 8.5f) / fmaxf(fabsf(vf) * 30.0f, 1.0f) / 60.0f;
+        if (yaw > ym) yaw = ym; if (yaw < -ym) yaw = -ym;
+    }
     float na = ang + yaw;
     if (na > PI_F) na -= 2 * PI_F; if (na < -PI_F) na += 2 * PI_F;
     {
@@ -1469,7 +1487,7 @@ static void draw_hud(void) {
     }
     /* прилади */
     float kmh = fabsf(vel) * MPP * 60 * 3.6f;
-    int ik = (int)(kmh + 0.5f); if (ik > 140) ik = 140;               /* фізичний максимум ~141: показуємо рівно 140 */
+    int ik = (int)(kmh + 0.5f);
     snprintf(b, sizeof b, "%d", ik);
     text8(NW + 66 - tw8(b, 2), y0 + 11, 2, ik >= 130 ? C_box_3 : C_white_2, b);
     text8(NW + 70, y0 + 19, 1, C_white_0, "КМ/Г");
@@ -1991,10 +2009,10 @@ int main(int argc, char **argv) {
         evac = 0; health = 100; fuel = 100; ostate = O_NONE; n_offers = 0; owait = 100000;
         px_ = L[0] + ux * 10 - uy * L[4]; py_ = L[1] + uy * 10 + ux * L[4]; ang = atan2f(uy, ux); stop_car(); unstick(); update_camera(1);
         int kmin = 999, kmax = 0, t100 = -1, t140 = -1, sl0 = sync_loads;
-        for (int f = 0; f < 900 && dist(px_, py_, L[0], L[1]) < bl - 60; f++) {
+        for (int f = 0; f < 2400 && dist(px_, py_, L[0], L[1]) < bl - 60; f++) {
             game_update(PSP_CTRL_CROSS, 0, 128, 128);
             if (getenv("ANIM2") && f >= 120 && f < 300 && f % 2 == 0) { draw_frame(); snprintf(nm, sizeof nm, "%s/anim2_%03d.ppm", dir, (f - 120) / 2); dump(nm); }
-            int k = (int)(fabsf(vel) * MPP * 60 * 3.6f + 0.5f); if (k > 140) k = 140;
+            int k = (int)(fabsf(vel) * MPP * 60 * 3.6f + 0.5f);
             if (k >= 100 && t100 < 0) t100 = f;
             if (k >= 140 && t140 < 0) t140 = f;
             if (t140 >= 0) { if (k < kmin) kmin = k; if (k > kmax) kmax = k;}
@@ -2083,7 +2101,7 @@ int main(int argc, char **argv) {
             px_ = B->cx - ax * d0 + (pass ? 0 : -B->uy * 3); py_ = B->cy - ay * d0 + (pass ? 0 : B->ux * 3);
             ang = atan2f(ay, ax); stop_car(); br_on = -1; update_camera(1);
             int seen_on = -1, seen_up = -1, fr = 0; float h0 = health;
-            for (fr = 0; fr < 400; fr++) {
+            for (fr = 0; fr < 900; fr++) {
                 game_update(PSP_CTRL_CROSS, 0, 128, 128);
                 if (br_on >= 0 && seen_on < 0) { seen_on = br_on; seen_up = br_up; }
                 if (br_on >= 0 && fr % 6 == 0 && pass == 1) { draw_frame(); snprintf(nm, sizeof nm, "%s/f_bridge_under.ppm", dir); dump(nm); }

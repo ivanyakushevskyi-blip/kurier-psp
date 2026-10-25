@@ -570,6 +570,25 @@ def interchange(D, rgb):
     return dict(c=[float(c[0]), float(c[1])], u=[float(u[0]), float(u[1])], hl=float(hl), hw=float(hw), rail=float(m(0.7)))
 
 
+# ---------------------------------------------------------------- дороги вільні: паркани/лінії-бар'єри з деталей не перетинають проїжджу частину
+def carve_roads(D, solid):
+    n = 0
+    for w in D['w']:
+        t = w['t']
+        if not CD.drivable(t) or t.get('access') in ('private', 'no') or t.get('layer', '0') != '0': continue
+        P = np.round(np.array(w['pts']) * K).astype(np.int32)
+        x0, y0 = P.min(0) - 20; x1, y1 = P.max(0) + 20
+        x0, y0 = max(0, x0), max(0, y0); x1, y1 = min(solid.shape[1], x1), min(solid.shape[0], y1)
+        if x1 <= x0 or y1 <= y0: continue
+        sub = np.asarray(solid[y0:y1, x0:x1]).copy()
+        mk = np.zeros(sub.shape, np.uint8)
+        cv2.polylines(mk, [P - [x0, y0]], False, 1, max(3, int(CD.ROAD_W[t['highway']] / MPP * 0.7)))
+        hit = sub & mk.astype(bool)
+        if hit.any():
+            n += int(hit.sum()); sub[mk.astype(bool)] = False; solid[y0:y1, x0:x1] = sub
+    print('  дороги очищено від перешкод: %d пікс' % n)
+
+
 # ---------------------------------------------------------------- речовий ринок: кіоски — тверді
 def market_solid(D, rgb, solid):
     for w in D['w']:
@@ -620,6 +639,7 @@ def main():
     chekman(D, rgb)
     mz = None                                                     # скульптури Мазура прибрано (25.10.2026: не схоже)
     br = interchange(D, rgb)
+    carve_roads(D, solid)
     market_solid(D, rgb, solid)
     rgb.flush(); solid.flush()
     json.dump(dict(mazur=mz, bridges=[br]), open('build/mappatch.json', 'w'))
