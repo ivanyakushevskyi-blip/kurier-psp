@@ -194,7 +194,7 @@ CHURCHES = {
     'triitska': ((9205, 6362), (206, 104, 48), (224, 178, 58), [(0.05, 0, 2.2)]),
 }
 PLAIN = {      # будівлі без бань: колір зі знімка, скати за контуром
-    'arkhiv': ((6349, 8535), 3.5), 'vokzal': ((10955, 9805), 5.0), 'oazis': ((7134, 6174), 2.0), 'monblan': ((6885, 5875), 2.0),
+    'arkhiv': ((6349, 8535), 3.5), 'vokzal': ((10955, 9805), 5.0),
 }
 
 
@@ -254,6 +254,42 @@ def landmark_roofs(D, rgb, sat):
     cv.commit(rgb); print('  трибуни')
 
 
+# ---------------------------------------------------------------- дахи з фото (Apple Карти від Івана)
+def photo_roofs(D, rgb):
+    """Фото згори прив'язується до контуру будинку двома точками (подібність: масштаб + поворот + зсув);
+    написи й значки карти з фото прибираються (заповнення з сусідніх пікселів), фото висвітлюється під палітру гри."""
+    cfg = json.load(open('data/photo_roofs.json'))
+    for k, e in cfg.items():
+        if k.startswith('_') or not os.path.exists(e['img']): continue
+        img = cv2.imread(e['img'])
+        F = img.shape[1] / e['scr_w']
+        # написи: жовтий/рожевий текст і круглі значки + темна обвідка навколо
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        yel = (hsv[..., 1] > 90) & (hsv[..., 2] > 150) & (hsv[..., 0] > 12) & (hsv[..., 0] < 40)
+        pink = (hsv[..., 1] > 35) & (hsv[..., 2] > 140) & (hsv[..., 0] > 135)
+        lab = (yel | pink).astype(np.uint8)
+        near = cv2.dilate(lab, np.ones((41, 41), np.uint8)).astype(bool)
+        lab |= (near & (img.min(-1) > 200)).astype(np.uint8)                           # білі/світлі літери поруч
+        lab = cv2.dilate(lab, np.ones((15, 15), np.uint8))                              # разом із темною обвідкою
+        img = cv2.inpaint(img, lab, 9, cv2.INPAINT_TELEA)
+        img = cv2.bilateralFilter(img, 7, 30, 5)[..., ::-1].astype(np.float32)
+        a, b_ = complex(*e['scr'][0]) * F, complex(*e['scr'][1]) * F
+        A, B = complex(*e['map'][0]), complex(*e['map'][1])
+        kk = (B - A) / (b_ - a); tt = A - kk * a
+        P = find_poly(D, *e['at'], src=('B',))
+        cv = Canvas(*(P.min(0) - 2), *(P.max(0) + 2))
+        X, Y = cv.grid()
+        z = (X + 1j * Y - tt) / kk
+        tex = cv2.remap(img, z.real.astype(np.float32), z.imag.astype(np.float32), cv2.INTER_LINEAR)
+        sel = cv.mask(P).astype(bool)
+        mu = np.median(tex[sel], 0)                                    # баланс білого й яскравість — під сірі дахи гри
+        tex = np.clip((tex - mu) * 1.45 + np.array((146, 148, 154)), 0, 255)
+        rim = sel & ~cv2.erode(sel.astype(np.uint8), np.ones((SS * 2,) * 2, np.uint8)).astype(bool)
+        tex[rim] = tex[rim] * 0.75
+        cv.put(sel, tex[sel])
+        cv.commit(rgb); print('  дах з фото', k)
+
+
 # ---------------------------------------------------------------- парк Чекмана: білий міст, колесо огляду
 def chekman(D, rgb):
     for w in D['w']:
@@ -264,19 +300,19 @@ def chekman(D, rgb):
     else:
         print('  !! білий міст не знайдено'); return
     c, u, v, L, W = rect_frame(P)
-    W2 = max(W, m(4.0)) / 2 + m(0.4); L2 = L / 2 + m(1.0)
+    W2 = m(1.3); L2 = L / 2                                            # пішохідний місток ≈3 м завширшки
     deck = [c - u * L2 - v * W2, c + u * L2 - v * W2, c + u * L2 + v * W2, c - u * L2 + v * W2]
-    shadow(rgb, deck, 3, 0.45)
+    shadow(rgb, deck, 2, 0.3)
     cv = Canvas(*(np.min(deck, 0) - 3), *(np.max(deck, 0) + 3))
     sel = cv.mask(deck).astype(bool)
     X, Y = cv.grid()
     al = ((X - c[0]) * u[0] + (Y - c[1]) * u[1]) / L2                 # -1..1 уздовж
     ac = ((X - c[0]) * v[0] + (Y - c[1]) * v[1]) / W2                 # -1..1 поперек
     hump = 1 - al ** 2                                                  # горб: середина світліша
-    col = np.array((236, 236, 232), np.float32)[None, None, :] * (0.88 + 0.12 * hump)[..., None]
+    col = np.array((222, 220, 214), np.float32)[None, None, :] * (0.9 + 0.1 * hump)[..., None]
     cv.put(sel, col[sel])
     rail = sel & (np.abs(ac) > 0.78)
-    cv.put(rail, (250, 250, 248))
+    cv.put(rail, (240, 240, 236))
     rail_sh = sel & (np.abs(ac) > 0.7) & (np.abs(ac) <= 0.78)
     cv.put(rail_sh, (186, 188, 190))
     posts = rail & (np.mod((al + 1) * L2 / m(1.6), 1) < 0.22)
@@ -364,31 +400,40 @@ def interchange(D, rgb):
     hl = L / 2 + m(1.0)
     hw = CD.ROAD_W[t['highway']] / MPP / 2 + m(0.8)
     deck = [c - u * hl - v * hw, c + u * hl - v * hw, c + u * hl + v * hw, c - u * hl + v * hw]
-    shadow(rgb, deck, 6, 0.5)
-    cv = Canvas(*(np.min(deck, 0) - 3), *(np.max(deck, 0) + 3))
+    # проліт = продовження самої Кам'янецької: беремо чистий відрізок дороги перед мостом (той самий асфальт, бордюри,
+    # розмітка) і повторюємо його вздовж прольоту з кроком, кратним кроку переривчастої лінії, — без швів і чужих кольорів
+    x0, y0 = np.floor(np.min(deck, 0) - 80).astype(int); x1, y1 = np.ceil(np.max(deck, 0) + 80).astype(int)
+    sub = np.asarray(rgb[y0:y1, x0:x1]).astype(np.float32)
+    def sample(al, ac):
+        X = c[0] + al * u[0] + ac * v[0] - x0; Y = c[1] + al * u[1] + ac * v[1] - y0
+        return cv2.remap(sub, X.astype(np.float32), Y.astype(np.float32), cv2.INTER_LINEAR)
+    acs = np.arange(-hw, hw, 0.5, dtype=np.float32)
+    best = (None, 0)
+    for side in (-1, 1):                                               # з якого боку чистіша дорога (менше розмітки переходів)
+        al_ = side * (hl + np.arange(0, 30, dtype=np.float32))
+        st = sample(al_[None, :].repeat(len(acs), 0), acs[:, None].repeat(len(al_), 1))
+        var = st.std(1).mean()
+        if best[0] is None or var < best[1]: best = (side, var, st)
+    side = best[0]
+    cen = best[2].mean(-1)
+    row = cen[np.argmax(cen.std(1))]                                   # рядок із переривчастою лінією
+    r = row - row.mean()
+    per = max(range(6, 16), key=lambda q: np.corrcoef(r[:-q], r[q:])[0, 1])
+    Pk = per * (30 // per)
+    sh = max(0.0, 0.0)
+    shadow(rgb, deck, 5, 0.22)
+    cv = Canvas(*(np.min(deck, 0) - 2), *(np.max(deck, 0) + 2))
     sel = cv.mask(deck).astype(bool)
     X, Y = cv.grid()
     al = (X - c[0]) * u[0] + (Y - c[1]) * u[1]
     ac = (X - c[0]) * v[0] + (Y - c[1]) * v[1]
-    noise = (np.sin(X * 1.7) * np.cos(Y * 2.3) * 3).astype(np.float32)
-    asph = np.dstack([88 + noise, 90 + noise, 96 + noise])
-    cv.put(sel, asph[sel])
-    lanes = int(t.get('lanes', 4))
-    lw = (hw - m(0.8)) * 2 / lanes
-    for k in range(1, lanes):
-        off = -hw + m(0.8) + k * lw
-        if k == lanes // 2:                                            # подвійна суцільна по осі
-            ln = sel & ((np.abs(ac - off - m(0.15)) < m(0.08)) | (np.abs(ac - off + m(0.15)) < m(0.08)))
-        else:                                                         # переривчасті між смугами
-            ln = sel & (np.abs(ac - off) < m(0.08)) & (np.mod(al, m(9)) < m(3))
-        cv.put(ln, (226, 226, 220))
-    edge_line = sel & (np.abs(np.abs(ac) - (hw - m(1.1))) < m(0.08))
-    cv.put(edge_line, (226, 226, 220))
-    rail = sel & (np.abs(ac) > hw - m(0.7))
-    lit = ac * (v[0] + v[1]) < 0
-    cv.put(rail & lit, (214, 214, 208)); cv.put(rail & ~lit, (176, 176, 172))
-    posts = rail & (np.mod(al, m(2.5)) < m(0.35))
-    cv.put(posts, (140, 140, 138))
+    start = side * hl                                                  # відрізок-джерело: [hl, hl+Pk) з боку side
+    d = (al - start) * side                                            # <0 — усередині прольоту
+    al_src = start + side * np.mod(d, Pk)
+    tex = sample(al_src, ac)
+    cv.put(sel, tex[sel])
+    par = sel & (np.abs(ac) > hw - m(0.45))                            # тонка бетонна огорожа в кольорі бордюру
+    cv.put(par, np.clip(tex[par] * 1.12 + 10, 0, 255))
     cv.commit(rgb)
     print('  міст на розв\'язці: %.0f x %.0f м' % (hl * 2 * MPP, hw * 2 * MPP))
     return dict(c=[float(c[0]), float(c[1])], u=[float(u[0]), float(u[1])], hl=float(hl), hw=float(hw), rail=float(m(0.7)))
@@ -439,8 +484,9 @@ def main():
     solid = np.load('build/solid.npy', mmap_mode='r+')
     sat = np.load('build/sat_map.npy', mmap_mode='r') if os.path.exists('build/sat_map.npy') else None
     landmark_roofs(D, rgb, sat)
+    photo_roofs(D, rgb)
     chekman(D, rgb)
-    mz = mazur(D, rgb)
+    mz = None                                                     # скульптури Мазура прибрано (25.10.2026: не схоже)
     br = interchange(D, rgb)
     market_solid(D, rgb, solid)
     rgb.flush(); solid.flush()
