@@ -336,6 +336,78 @@ def photo_roofs(D, rgb):
         cv.commit(rgb); print('  дах з фото', k)
 
 
+# ---------------------------------------------------------------- ТРЦ «Монблан»: вручну за знімком згори (ref/photos/monblan_top.jpg)
+def monblan(D, rgb):
+    """Подіум ТРЦ — плаский сірий дах із білими парапетами, відкритий паркінг на даху, скляний ліхтар-«стадіон»,
+    надбудови; висотна вежа з білим дахом, скляною ротондою на захід і довгою тінню на дах подіуму."""
+    e = json.load(open('data/photo_roofs.json'))['_monblan']
+    a, b_ = complex(*e['scr'][0]), complex(*e['scr'][1]); A, B = complex(*e['map'][0]), complex(*e['map'][1])
+    kk = (B - A) / (b_ - a); tt = A - kk * a
+    def G(pts): return [((kk * complex(x, y) + tt).real, (kk * complex(x, y) + tt).imag) for x, y in pts]
+    P = find_poly(D, 6885, 5875, src=('B',))
+    cv = Canvas(*(P.min(0) - 3), *(P.max(0) + 3))
+    sel = cv.mask(P).astype(bool)
+    X, Y = cv.grid()
+    ROOF, CONC, WHITE, GLASS = (150, 152, 158), (176, 176, 174), (232, 234, 236), (176, 204, 220)
+    cv.put(sel, ROOF)
+    def poly(pts, col, outline=None, w=0.5):
+        mk = cv.mask(G(pts)).astype(bool) & sel
+        cv.put(mk, col)
+        if outline is not None:
+            ed = mk & ~cv2.erode(mk.astype(np.uint8), np.ones((max(2, int(SS * w * 2)),) * 2, np.uint8)).astype(bool)
+            cv.put(ed, outline)
+        return mk
+    def line(pts, col, w=0.5):
+        mk = np.zeros(cv.A.shape, np.uint8)
+        cv2.polylines(mk, [cv.P(G(pts))], False, 1, max(1, int(SS * w * 2)), cv2.LINE_8, 4)
+        cv.put(mk.astype(bool) & sel, col)
+    # відкритий паркінг на даху (світлий бетон, розмітка місць)
+    park = [(535, 450), (755, 555), (790, 820), (700, 990), (640, 1060), (655, 860), (640, 760), (600, 700), (545, 690)]
+    pk = poly(park, CONC, WHITE)
+    stripes = pk & (np.mod((X - Y * 0.3), m(2.6)) < m(0.25))
+    cv.put(stripes, (214, 214, 210))
+    # прибудова на північному сході (окремий рівень даху)
+    poly([(900, 790), (1100, 790), (1140, 840), (1050, 1060), (900, 990)], (162, 164, 170), WHITE)
+    poly([(905, 935), (1010, 990), (975, 1060), (900, 1030)], (142, 144, 150), WHITE)
+    # надбудови на даху (вентиляційні будки)
+    for bx in ([(712, 342), (800, 342), (800, 435), (712, 435)], [(668, 320), (712, 320), (712, 410), (668, 410)], [(790, 405), (835, 405), (835, 445), (790, 445)]):
+        poly(bx, (188, 190, 194), WHITE)
+    # скляний ліхтар-«стадіон»
+    Lc = G([(930, 708)])[0]; Lr = G([(930 + 45, 708)])[0]; La = G([(930, 708 - 100)])[0]
+    rr = math.hypot(Lr[0] - Lc[0], Lr[1] - Lc[1]); hl_ = math.hypot(La[0] - Lc[0], La[1] - Lc[1]) - rr
+    ux, uy = (La[0] - Lc[0]), (La[1] - Lc[1]); n_ = math.hypot(ux, uy); ux, uy = ux / n_, uy / n_
+    al = (X - Lc[0]) * ux + (Y - Lc[1]) * uy; ac = -(X - Lc[0]) * uy + (Y - Lc[1]) * ux
+    d = np.sqrt(np.maximum(np.abs(al) - hl_, 0) ** 2 + ac ** 2)
+    sk = d < rr
+    shade = np.clip(1.0 - 0.35 * (ac / rr) - 0.15 * np.sign(al) * np.maximum(np.abs(al) - hl_, 0) / rr, 0.6, 1.25)
+    cv.put(sk, (np.array(GLASS, np.float32)[None, None, :] * shade[..., None])[sk])
+    cv.put(sk & (np.abs(ac) < m(0.25)), (240, 244, 246))
+    cv.put(sk & (d > rr - m(0.4)), WHITE)
+    # парапети між секціями
+    line([(870, 440), (760, 555)], WHITE); line([(790, 820), (900, 930)], WHITE); line([(640, 1060), (630, 1160), (880, 1250)], WHITE)
+    # вежа: тінь на подіум (на південний схід, як у всьому місті), білий дах, скляна ротонда на захід, надбудови
+    tower = [(470, 740), (520, 702), (600, 700), (640, 760), (655, 850), (650, 980), (625, 1060), (560, 1100), (500, 1088), (455, 1010), (440, 900), (450, 800)]
+    tq = G(tower)
+    cv.commit(rgb)
+    shadow(rgb, tq, 60, 0.45)
+    cv = Canvas(*(np.min(tq, 0) - 4), *(np.max(tq, 0) + 4))
+    hip_roof(cv, tq, (206, 208, 210), pitch_m=1.5, steep=0.6, edge=1.0)
+    X, Y = cv.grid()
+    mk = cv.mask(tq).astype(bool)
+    ring = mk & ~cv2.erode(mk.astype(np.uint8), np.ones((int(SS * 1.6),) * 2, np.uint8)).astype(bool)
+    cv.put(ring, (246, 246, 244))
+    rot_c = G([(470, 900)])[0]; rot_r = abs(kk) * 120
+    rot = mk & ((X - rot_c[0]) ** 2 + (Y - rot_c[1]) ** 2 < rot_r ** 2) & (X < rot_c[0] + abs(kk) * 30)
+    cv.put(rot, (120, 156, 186))
+    cv.put(rot & (((X - rot_c[0]) ** 2 + (Y - rot_c[1]) ** 2) > (rot_r - m(0.5)) ** 2), (200, 220, 236))
+    for bx in ([(482, 800), (540, 800), (540, 950), (482, 950)], [(548, 830), (632, 830), (632, 950), (548, 950)]):
+        b_m = cv.mask(G(bx)).astype(bool) & mk
+        cv.put(b_m, (226, 226, 222))
+        cv.put(b_m & ~cv2.erode(b_m.astype(np.uint8), np.ones((SS + 1,) * 2, np.uint8)).astype(bool), (170, 172, 176))
+    cv.commit(rgb)
+    print('  Монблан (вручну)')
+
+
 # ---------------------------------------------------------------- парк Чекмана: білий міст, колесо огляду
 def chekman(D, rgb):
     for w in D['w']:
@@ -531,6 +603,7 @@ def main():
     sat = np.load('build/sat_map.npy', mmap_mode='r') if os.path.exists('build/sat_map.npy') else None
     landmark_roofs(D, rgb, sat)
     photo_roofs(D, rgb)
+    monblan(D, rgb)
     chekman(D, rgb)
     mz = None                                                     # скульптури Мазура прибрано (25.10.2026: не схоже)
     br = interchange(D, rgb)

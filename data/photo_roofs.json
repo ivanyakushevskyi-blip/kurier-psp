@@ -49,20 +49,16 @@
    ]
   ]
  },
- "monblan": {
-  "img": "ref/apple/monblan.png",
-  "at": [
-   6885,
-   5875
-  ],
+ "_monblan": {
+  "img": "ref/photos/monblan_top.jpg",
   "scr": [
    [
-    195,
-    715
+    520,
+    172
    ],
    [
-    775,
-    1025
+    1140,
+    835
    ]
   ],
   "map": [
@@ -75,6 +71,6 @@
     5940
    ]
   ],
-  "scr_w": 923
+  "note": "Монблан намальовано вручну за цим знімком (mappatch.monblan)"
  }
 }
