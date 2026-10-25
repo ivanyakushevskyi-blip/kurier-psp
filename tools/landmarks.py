@@ -338,15 +338,34 @@ def tpl_flame():
 
 
 def tpl_fountain():
+    """Фонтан барона Мюнхгаузена: чаша з водою, колона, ядро, барон верхи на ядрі з капелюхом у руці; струмені анімовані."""
     frames = []
+    br = METAL['bronze']
     for f in range(2):
-        s = Spr(30, 30); cx, base = 14, 28
-        s.rect(cx - 13, base - 5, cx + 14, base, GRAN[2]); s.rect(cx - 12, base - 5, cx + 13, base - 3, (70, 120, 180))
-        s.rect(cx - 2, base - 12, cx + 3, base - 5, GRAN[1])
-        _figure(s, cx, base - 12, METAL['bronze'], 'arm')
-        for k, (dx, dy) in enumerate(((-5, 18), (6, 17), (-8, 12), (9, 11), (-10, 7), (11, 6))):
-            if (k + f) % 2 == 0: s.px(cx + dx, base - dy + 10, (150, 200, 240))
-        for dx in range(-11, 12, 3): s.px(cx + dx + f, base - 5, (200, 230, 250))
+        s = Spr(32, 36); cx, base = 15, 34
+        # чаша
+        s.rect(cx - 14, base - 6, cx + 16, base + 1, GRAN[2]); s.rect(cx + 12, base - 6, cx + 16, base + 1, GRAN[1])
+        s.rect(cx - 13, base - 7, cx + 15, base - 5, (80, 140, 200)); s.rect(cx - 13, base - 7, cx + 15, base - 6, (130, 186, 232))
+        # колона
+        s.rect(cx - 2, base - 16, cx + 3, base - 6, GRAN[2]); s.rect(cx + 1, base - 16, cx + 3, base - 6, GRAN[1])
+        s.rect(cx - 3, base - 17, cx + 4, base - 15, GRAN[3])
+        # ядро
+        s.disc(cx + 0.5, base - 21, 4, (52, 54, 60)); s.disc(cx - 0.8, base - 22.5, 1.3, (110, 112, 120))
+        # барон верхи: ноги по боках ядра, тулуб, голова, капелюх у піднятій руці
+        s.rect(cx - 5, base - 23, cx - 3, base - 17, br[1]); s.rect(cx + 4, base - 23, cx + 6, base - 17, br[2])
+        s.rect(cx - 2, base - 32, cx + 3, base - 24, br[2]); s.rect(cx + 1, base - 32, cx + 3, base - 24, br[1])
+        s.rect(cx - 1, base - 35, cx + 2, base - 32, br[3])
+        s.rect(cx + 3, base - 33, cx + 5, base - 28, br[2])                                   # рука вгору
+        s.poly([(cx + 3, base - 36), (cx + 8, base - 36), (cx + 7, base - 34), (cx + 4, base - 34)], br[0])   # капелюх
+        s.rect(cx - 4, base - 30, cx - 2, base - 26, br[1])                                   # друга рука
+        # струмені води: дуги з колони в чашу
+        jet = (170, 214, 246)
+        for side in (-1, 1):
+            for k in range(7):
+                t = (k + f * 0.5) / 7.0
+                x = cx + 0.5 + side * (3 + t * 10); y = base - 14 - 6 * (1 - (2 * t - 0.6) ** 2)
+                if (k + f) % 2 == 0: s.px(x, y, jet)
+        for dx in range(-12, 15, 3): s.px(cx + dx + f, base - 7, (220, 240, 252))
         frames.append(s.done())
     return frames
 
@@ -363,21 +382,42 @@ def tpl_heli():
 
 
 def tpl_church(domes=3, dome='gold'):
+    """Православний храм (вигляд спереду): біле тіло з дахом, барабани стоять на даху, бані — на барабанах, без зазорів."""
     D = DOMES[dome]
-    W, H = 30, 44
-    s = Spr(W, H); cx, base = 14, H - 2
+    W, H = 34, 54
+    s = Spr(W, H); cx, base = 16, H - 2
     wl = WALL['white']
-    s.rect(cx - 10, base - 16, cx + 11, base + 1, wl[1]); s.rect(cx + 8, base - 16, cx + 11, base + 1, wl[0])
-    s.rect(cx - 2, base - 7, cx + 3, base + 1, (70, 52, 40)); s.px(cx - 1, base - 8, (70, 52, 40)); s.px(cx, base - 8, (70, 52, 40)); s.px(cx + 1, base - 8, (70, 52, 40))
-    for x in (cx - 7, cx + 5): s.rect(x, base - 12, x + 2, base - 8, WIN)
-    def onion(x, ytop, r):
-        s.rect(x - r + 1, ytop + r * 2 - 1, x + r, ytop + r * 2 + 4, wl[2])                       # барабан
-        s.disc(x + 0.5, ytop + r, r, D[1]); s.disc(x - 0.5, ytop + r - 1, r * 0.45, D[2])
-        s.poly([(x - 1, ytop + 1), (x + 2, ytop + 1), (x + 0.5, ytop - 2)], D[1])
-        s.rect(x, ytop - 7, x + 1, ytop - 1, GOLD[2]); s.rect(x - 1, ytop - 5, x + 2, ytop - 4, GOLD[2])
-    onion(cx, base - 34, 4)
-    if domes >= 3: onion(cx - 7, base - 26, 2.6); onion(cx + 8, base - 26, 2.6)
-    if domes >= 5: onion(cx - 10, base - 21, 1.8); onion(cx + 11, base - 21, 1.8)
+    roofc = D[0]
+    # тіло
+    s.rect(cx - 12, base - 17, cx + 13, base + 1, wl[1]); s.rect(cx + 10, base - 17, cx + 13, base + 1, wl[0])
+    s.rect(cx - 12, base - 1, cx + 13, base + 1, GRAN[1])                                   # цоколь
+    for x in (cx - 9, cx - 5, cx + 6, cx + 10):                                          # вікна з півколом
+        s.rect(x, base - 12, x + 2, base - 6, WIN); s.px(x, base - 13, WIN) if x % 2 else None
+    s.rect(cx - 2, base - 9, cx + 3, base + 1, (70, 52, 40)); s.rect(cx - 1, base - 10, cx + 2, base - 9, (70, 52, 40))
+    s.rect(cx - 3, base - 12, cx + 4, base - 11, wl[2])                                      # карниз над дверима
+    # дах тіла
+    s.poly([(cx - 13, base - 17), (cx + 14, base - 17), (cx + 10, base - 22), (cx - 9, base - 22)], roofc)
+    s.poly([(cx + 4, base - 17), (cx + 14, base - 17), (cx + 10, base - 22), (cx + 4, base - 22)], tuple(int(c * 0.8) for c in roofc))
+
+    def drum_dome(x, top, dw, r):
+        """барабан шириною dw від даху (base-21) до top, на ньому цибулина радіуса r"""
+        s.rect(x - dw // 2, top, x + dw - dw // 2, base - 21, wl[1])
+        s.rect(x + dw - dw // 2 - 1, top, x + dw - dw // 2, base - 21, wl[0])
+        if dw >= 6: s.rect(x - 1, top + 2, x + 1, top + 5, WIN)
+        s.rect(x - dw // 2 - 1, top - 1, x + dw - dw // 2 + 1, top + 1, wl[2])               # карниз барабана
+        y0 = top - 1                                                                     # низ бані
+        pts = [(x - r * 0.75, y0), (x - r * 1.0, y0 - r * 0.8), (x - r * 0.85, y0 - r * 1.4), (x - r * 0.35, y0 - r * 2.0),
+               (x + 0.5, y0 - r * 2.5), (x + 1 + r * 0.35, y0 - r * 2.0), (x + 1 + r * 0.85, y0 - r * 1.4), (x + 1 + r * 1.0, y0 - r * 0.8), (x + 1 + r * 0.75, y0)]
+        s.poly(pts, D[1])
+        s.poly([(x - r * 0.55, y0 - r * 0.4), (x - r * 0.75, y0 - r * 0.9), (x - r * 0.5, y0 - r * 1.5), (x - r * 0.1, y0 - r * 1.2)], D[2])   # блиск
+        s.poly([(x + 1 + r * 0.3, y0), (x + 1 + r * 0.75, y0), (x + 1 + r * 1.0, y0 - r * 0.8), (x + 1 + r * 0.5, y0 - r * 1.6)], D[0])     # тінь
+        ty = int(y0 - r * 2.5)
+        s.rect(x, ty - 6, x + 1, ty + 1, GOLD[2]); s.rect(x - 2, ty - 4, x + 3, ty - 3, GOLD[2]); s.px(x - 1, ty - 1, GOLD[1]); s.px(x + 1, ty - 2, GOLD[1])
+    if domes >= 3:
+        drum_dome(cx - 8, base - 26, 4, 2.6); drum_dome(cx + 9, base - 26, 4, 2.6)
+    if domes >= 5:
+        drum_dome(cx - 4, base - 29, 4, 2.2); drum_dome(cx + 5, base - 29, 4, 2.2)
+    drum_dome(cx, base - 32, 8, 4.6)
     return [s.done()]
 
 
@@ -539,7 +579,65 @@ def tpl_market():
     return [s.done()]
 
 
-TPL = dict(watertower=tpl_watertower, market=tpl_market, tower=lambda **k: [tower_facade()], statue=tpl_statue, stele=tpl_stele, flame=tpl_flame, fountain=tpl_fountain,
+def tpl_wheel():
+    """Колесо огляду: білий обід зі спицями на А-подібних опорах, сині кабінки обертаються (3 кадри)."""
+    frames = []
+    for f in range(3):
+        s = Spr(44, 50); cx, cy, base, R = 21.5, 20, 48, 17
+        for sx in (-1, 1):                                                        # опори
+            s.poly([(cx + sx * 9, base), (cx + sx * 9 + 2 * sx, base), (cx + 0.5 * sx, cy), (cx - 0.5 * sx, cy)], (210, 212, 216))
+        s.rect(cx - 12, base - 2, cx + 13, base + 1, GRAN[2])
+        for k in range(12):                                                       # спиці
+            a = k * math.pi / 6 + f * math.pi / 18
+            for t in np.linspace(0, 1, 18):
+                s.px(cx + math.cos(a) * R * t, cy + math.sin(a) * R * t, (186, 190, 198))
+        for k in range(160):                                                      # обід
+            a = k * 2 * math.pi / 160
+            s.px(cx + math.cos(a) * R, cy + math.sin(a) * R, (246, 246, 250))
+        s.disc(cx, cy, 2, (120, 124, 132))
+        for k in range(8):                                                        # кабінки висять униз
+            a = k * math.pi / 4 + f * math.pi / 18
+            x, y = cx + math.cos(a) * R, cy + math.sin(a) * R
+            s.rect(x - 2, y, x + 2, y + 4, (52, 104, 196)); s.rect(x - 2, y, x + 2, y + 1, (150, 190, 236))
+        frames.append(s.done())
+    return frames
+
+
+def tpl_dragon():
+    """Скульптура Миколи Мазура «Дракон»: яскраве зелене тіло дугами, червоний гребінь, жовта голова."""
+    s = Spr(42, 26); base = 24
+    s.rect(1, base - 1, 41, base + 1, (190, 150, 90))
+    for k, x0 in enumerate((4, 13, 22)):                                          # дуги тіла
+        for t in np.linspace(0, math.pi, 30):
+            x = x0 + 4 + math.cos(t) * -4.5; y = base - 1 - math.sin(t) * 9
+            s.disc(x, y, 1.8, (64, 168, 74) if k % 2 else (88, 196, 84))
+        for t in (0.6, 1.2, 1.9, 2.5):
+            x = x0 + 4 - math.cos(t) * 4.5; y = base - 1 - math.sin(t) * 9
+            s.poly([(x - 1, y - 1.5), (x + 1, y - 1.5), (x, y - 4.5)], (226, 60, 50))
+    s.poly([(30, base - 1), (33, base - 12), (36, base - 12), (34, base - 1)], (88, 196, 84))       # шия
+    s.disc(37, base - 15, 4, (246, 196, 40)); s.rect(39, base - 15, 42, base - 13, (246, 196, 40))   # голова
+    s.px(37, base - 17, (30, 30, 30)); s.poly([(35, base - 19), (36, base - 23), (38, base - 19)], (226, 60, 50))
+    s.poly([(2, base - 2), (0, base - 8), (5, base - 3)], (226, 60, 50))                              # хвіст
+    return [s.done()]
+
+
+def tpl_footbridge():
+    """Білий горбатий міст у парку Чекмана: арка, перила, вода під ним."""
+    s = Spr(46, 22); base = 20
+    s.rect(0, base - 3, 46, base + 1, (70, 120, 180)); s.rect(0, base - 3, 46, base - 2, (130, 180, 226))
+    for x in range(46):
+        t = (x - 22.5) / 22.5
+        top = base - 6 - 7 * (1 - t * t)
+        s.rect(x, top, x + 1, top + 3, (244, 244, 240))
+        s.px(x, top + 3, (196, 198, 200))
+        if x % 4 == 0: s.rect(x, top - 4, x + 1, top, (250, 250, 248))
+        s.px(x, top - 4, (250, 250, 248))
+        under = top + 4
+        if abs(t) < 0.85: s.px(x, under, (214, 214, 210))
+    return [s.done()]
+
+
+TPL = dict(wheel=tpl_wheel, dragon=tpl_dragon, footbridge=tpl_footbridge, watertower=tpl_watertower, market=tpl_market, tower=lambda **k: [tower_facade()], statue=tpl_statue, stele=tpl_stele, flame=tpl_flame, fountain=tpl_fountain,
            heli=tpl_heli, church=tpl_church, gothic=tpl_gothic, classic=tpl_classic, mansion=tpl_mansion, hotel=tpl_hotel,
            cinema=tpl_cinema, bus=tpl_bus, love=tpl_love, eiffel=tpl_eiffel, parksign=tpl_parksign, stadium=tpl_stadium)
 
@@ -558,11 +656,11 @@ def sheet(out):
     tiles = []
     for e in L:
         fr = sprite(e)[0]
-        t = np.full((72, 44, 3), 70, np.uint8)
-        h, w = fr.shape[:2]; y0 = 70 - h; x0 = (44 - w) // 2
+        t = np.full((72, 50, 3), 70, np.uint8)
+        h, w = fr.shape[:2]; y0 = 70 - h; x0 = (50 - w) // 2
         m = fr[..., 3] > 0; t[y0:y0 + h, x0:x0 + w][m] = fr[..., :3][m]
         tiles.append(t)
-    while len(tiles) % 12: tiles.append(np.full((72, 44, 3), 70, np.uint8))
+    while len(tiles) % 12: tiles.append(np.full((72, 50, 3), 70, np.uint8))
     rows = [np.hstack(tiles[i:i + 12]) for i in range(0, len(tiles), 12)]
     img = np.vstack(rows)
     cv2.imwrite(out, cv2.resize(img[..., ::-1], None, fx=3, fy=3, interpolation=cv2.INTER_NEAREST))

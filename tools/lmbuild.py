@@ -41,6 +41,8 @@ def main():
         cands = []
         if e.get('pos'):                                       # точка без назви в OSM (водонапірна вежа)
             cands.append(({}, CG.px(*e['pos'])))
+        if e.get('xy'):                                        # точка прямо в пікселях карти
+            cands.append(({}, (e['xy'][0] / K, e['xy'][1] / K)))
         for nid, t in D['n'].items() if e['osm'] else ():
             if t.get('name') == e['osm'] and nid in D['nodes']:
                 cands.append((t, CG.px(*D['nodes'][nid])))

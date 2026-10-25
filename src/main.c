@@ -656,9 +656,35 @@ static int trunk_hit(float x, float y, float c, float s) {
     }
     return 0;
 }
+/* ---- мости з двома рівнями (розв'язка): верх — їдеш мостом між огорожами; низ — проїжджаєш під ним.
+   Рівень вирішується при в'їзді в зону мосту: з торця — верх, збоку — низ. */
+static int br_on = -1, br_up;                 /* номер мосту, на/під яким машина; верх? */
+static void br_local(int i, float x, float y, float *al, float *ac) {
+    const Bridge *B = &BRIDGES[i]; float dx = x - B->cx, dy = y - B->cy;
+    *al = dx * B->ux + dy * B->uy; *ac = -dx * B->uy + dy * B->ux;
+}
+static int br_wall(float x, float y) {        /* стіни мосту для поточного рівня */
+    if (br_on < 0) return 0;
+    const Bridge *B = &BRIDGES[br_on]; float al, ac; br_local(br_on, x, y, &al, &ac);
+    if (br_up) return fabsf(al) < B->hl && fabsf(ac) > B->hw - B->rail && fabsf(ac) < B->hw + 3;       /* огорожі */
+    return fabsf(ac) < B->hw && fabsf(al) > B->hl - 3 && fabsf(al) < B->hl + 2;                          /* опори-торці */
+}
+static void br_update(float px0, float py0) {
+    for (int i = 0; i < NBRIDGE; i++) {
+        const Bridge *B = &BRIDGES[i]; float al, ac, al0, ac0;
+        br_local(i, px_, py_, &al, &ac); br_local(i, px0, py0, &al0, &ac0);
+        int in = fabsf(al) < B->hl && fabsf(ac) < B->hw + 12;
+        if (in && br_on != i) { br_on = i; br_up = fabsf(al0) >= B->hl - 1.5f && fabsf(ac0) < B->hw; }
+        else if (!in && br_on == i) br_on = -1;
+    }
+}
 static int hit(float x, float y, float a) {
     float c = cosf(a), s = sinf(a);
     if (NTREE > 0 && trunk_hit(x, y, c, s)) return 1;
+    if (br_on >= 0) {
+        static const float Q[][2] = { { 7.5f, 0 }, { -7.5f, 0 }, { 6.5f, 3 }, { 6.5f, -3 }, { -6.5f, 3 }, { -6.5f, -3 }, { 0, 3 }, { 0, -3 } };
+        for (int i = 0; i < 8; i++) if (br_wall(x + Q[i][0] * c - Q[i][1] * s, y + Q[i][0] * s + Q[i][1] * c)) return 1;
+    }
     static const float P[][2] = { { 0, 0 }, { 7.5f, 0 }, { -7.5f, 0 }, { 6.5f, 3 }, { 6.5f, -3 }, { -6.5f, 3 }, { -6.5f, -3 }, { 0, 3 }, { 0, -3 } };   /* Golf 8,5 x ~3,9 м (17 x 8 пікс), колізія трохи вужча */
     for (int i = 0; i < 9; i++) {
         float lx = P[i][0], ly = P[i][1];
@@ -794,7 +820,7 @@ static void update_player(unsigned btn, int lx) {
 
     float fx = cosf(ang), fy = sinf(ang), rx = -fy, ry = fx;
     float vf = vx_ * fx + vy_ * fy, vr = vx_ * rx + vy_ * ry;
-    int sfc = surf((int)px_, (int)py_);
+    int sfc = (br_on >= 0 && br_up) ? 0 : surf((int)px_, (int)py_);      /* на мосту — асфальт, а не тротуари внизу */
     int off = sfc == 1;
     int walk = sfc == 3 || sfc == 4;                          /* тротуар / бордюр */
     float vmax = off ? 0.50f : VMAX;                         /* 1,31 пікс/кадр ≈ 141 км/год; на спідометрі — 140 */
@@ -886,6 +912,7 @@ static void update_player(unsigned btn, int lx) {
     if (gas || brake) {
         if (++win_t >= 240) { if (fabsf(px_ - wx) + fabsf(py_ - wy) < 6) unwedge(); win_t = 0; wx = px_; wy = py_; }
     } else { win_t = 0; wx = px_; wy = py_; }
+    br_update(ox_, oy_);
     unstick();
     /* вода: машина тоне; розбита: евакуація */
     if (on_water(px_, py_) && on_water(px_ + fx * 6, py_ + fy * 6)) { evac = EV_DROWN; evac_t = 0; say("МАШИНА ТОНЕ!", C_red_3, 120); }
@@ -1000,17 +1027,20 @@ static void update_landmarks(void) {
     }
 }
 static const u8 *lm_frame(int i) {
-    int st = (LMS[i].w * LMS[i].h + 3) & ~3;
+    int st = LMS[i].w * LMS[i].h;                  /* ширина кратна 16 — кадри підряд без зазорів */
     int f = LMS[i].nfr > 1 ? (tick / 7 + i) % LMS[i].nfr : 0;
     return assets_bin + LMS[i].off + f * st;
 }
+static struct { int i, x, y; } lmv[24]; static int nlmv;      /* видимі позначки (коорд. у шарі карти) */
 static void draw_landmarks(int ox, int oy) {
+    nlmv = 0;
     for (int i = 0; i < NLM; i++) {
         int sx = LMS[i].x - ox, sy = LMS[i].y - oy, w = LMS[i].w, h = LMS[i].h;
         if (sx < -w || sx > WW + w || sy < -4 || sy > WH + h) continue;
         int bob = (int)floorf(sinf(tick * 0.07f + i * 1.7f) * 1.5f + 0.5f);
-        shadow_ell16(sx + 1.5f, sy + 0.5f, w * 0.45f, 3);
-        blit16(lm_frame(i), w, h, sx - w / 2, sy - h + 1 + bob);
+        shadow_ell16(sx + 1.5f, sy + 0.5f, w * 0.3f, 3);
+        /* сама позначка — окремим шаром графічного чипа над дахами (не в карті: інакше паралакс розрізав би її) */
+        if (nlmv < 24) { lmv[nlmv].i = i; lmv[nlmv].x = sx - w / 2; lmv[nlmv].y = sy - h + 1 + bob; nlmv++; }
     }
 }
 /* табличка з назвою: виїжджає збоку від позначки, назва друкується по літерах */
@@ -1336,6 +1366,16 @@ static void draw_world(void) {
             carv.col = (al << 24) | (l << 16) | (l << 8) | l; carv.shadow = 0;
             ring(px_ - ox, py_ - oy, 8 + (evac_t % 30) / 3.0f, C_white_1, 1); over_used = 1;
         }
+        if (br_on >= 0 && !br_up) {                               /* під мостом: проліт — поверх машини */
+            const Bridge *B = &BRIDGES[br_on];
+            for (int y = (int)py_ - 18; y <= (int)py_ + 18; y++) for (int x = (int)px_ - 18; x <= (int)px_ + 18; x++) {
+                float al, ac; br_local(br_on, x + 0.5f, y + 0.5f, &al, &ac);
+                int lx = x - ox, ly = y - oy;
+                if (fabsf(al) < B->hl && fabsf(ac) < B->hw && (unsigned)lx < WW && (unsigned)ly < WH)
+                    warch[ly * WW + lx] = (uint16_t)(map_px16(x, y) | 0x8000);
+            }
+            arch_used = 1;
+        }
         for (int i = 0; i < NARCH; i++) {                         /* арки: будинок над проїздом — поверх машини */
             const Arch *A = &ARCHES[i];
             int x0 = (int)px_ - 16, x1 = (int)px_ + 16, y0 = (int)py_ - 16, y1 = (int)py_ + 16;
@@ -1521,11 +1561,6 @@ static void render(void *target_buf) {
         for (int i = 0; i < ndarkv; i++) { dv[2 * i] = sx + darkv[2 * i] * ZOOM; dv[2 * i + 1] = sy + darkv[2 * i + 1] * ZOOM; }
         gfx_tris_flat(dv, ndarkv, 0x80000000);
     }
-    if (carv.on) {
-        float k = 17.0f / CARTEX_LEN * ZOOM, hx = CARTEX_W / 2 * k, hy = CARTEX_H / 2 * k;     /* 8,5 м = 17 пікс карти */
-        if (carv.shadow) gfx_quad((const uint32_t *)(assets_bin + CARTEX_SHD), CARTEX_W, CARTEX_H, carv.x + 0.6f * ZOOM, carv.y + 0.9f * ZOOM, carv.a, hx * 1.0f, hy * 1.06f, 0xFFFFFFFF);
-        gfx_quad((const uint32_t *)(assets_bin + (carv.lit ? CARTEX_LIT : CARTEX_OFF)), CARTEX_W, CARTEX_H, carv.x, carv.y, carv.a, hx, hy, carv.col);
-    }
     if (nroofv) {                                                   /* дахи з паралаксом — над машиною */
         static float vv[MAXRV * 4];
         for (int i = 0; i < nroofv; i++) {
@@ -1533,6 +1568,15 @@ static void render(void *target_buf) {
             o[0] = r[0]; o[1] = r[1]; o[2] = sx + r[0] * ZOOM + r[2]; o[3] = sy + r[1] * ZOOM + r[3];
         }
         gfx_tris16(wbuf, WW, WW, WH, 1, vv, nroofv);              /* дах — прямо з шару карти: біт 15 = непрозорість */
+    }
+    for (int j = 0; j < nlmv; j++) {                                /* позначки пам'яток — над дахами, під машиною */
+        int i = lmv[j].i;
+        gfx_layer8(lm_frame(i), LMS[i].w, LMS[i].w, LMS[i].h, sx + lmv[j].x * ZOOM, sy + lmv[j].y * ZOOM, ZOOM, 1, 0);
+    }
+    if (carv.on) {
+        float k = 17.0f / CARTEX_LEN * ZOOM, hx = CARTEX_W / 2 * k, hy = CARTEX_H / 2 * k;     /* 8,5 м = 17 пікс карти */
+        if (carv.shadow) gfx_quad((const uint32_t *)(assets_bin + CARTEX_SHD), CARTEX_W, CARTEX_H, carv.x + 0.6f * ZOOM, carv.y + 0.9f * ZOOM, carv.a, hx * 1.0f, hy * 1.06f, 0xFFFFFFFF);
+        gfx_quad((const uint32_t *)(assets_bin + (carv.lit ? CARTEX_LIT : CARTEX_OFF)), CARTEX_W, CARTEX_H, carv.x, carv.y, carv.a, hx, hy, carv.col);
     }
     if (arch_used) gfx_layer16(warch, WW, WW, WH, sx, sy, ZOOM, 1, 1, ZOOM != 1.0f);
     if (over_used) gfx_layer8(wover, WW, WW, WH, sx, sy, ZOOM, 1, ZOOM != 1.0f);
@@ -1743,6 +1787,27 @@ int main(int argc, char **argv) {
         evac = 0; health = 100; px_ = 8234; py_ = 7762; stop_car(); update_camera(1); state = S_PLAY;
         for (int f = 0; f < 3; f++) game_update(0, 0, 128, 128);
         px_ = 8234; py_ = 7762; draw_frame(); snprintf(nm, sizeof nm, "%s/f_arch.ppm", dir); dump(nm);
+    }
+    /* міст на розв'язці: проїхати верхом уздовж осі та низом поперек */
+    if (NBRIDGE > 0) {
+        const Bridge *B = &BRIDGES[0];
+        evac = 0; health = 100; fuel = 100; ostate = O_NONE; state = S_PLAY;
+        for (int pass = 0; pass < 2; pass++) {
+            float ax = pass ? -B->uy : B->ux, ay = pass ? B->ux : B->uy, d0 = pass ? B->hw + 60 : B->hl + 50;
+            px_ = B->cx - ax * d0 + (pass ? 0 : -B->uy * 3); py_ = B->cy - ay * d0 + (pass ? 0 : B->ux * 3);
+            ang = atan2f(ay, ax); stop_car(); br_on = -1; update_camera(1);
+            int seen_on = -1, seen_up = -1, fr = 0; float h0 = health;
+            for (fr = 0; fr < 400; fr++) {
+                game_update(PSP_CTRL_CROSS, 0, 128, 128);
+                if (br_on >= 0 && seen_on < 0) { seen_on = br_on; seen_up = br_up; }
+                if (br_on >= 0 && fr % 6 == 0 && pass == 1) { draw_frame(); snprintf(nm, sizeof nm, "%s/f_bridge_under.ppm", dir); dump(nm); }
+                if (br_on >= 0 && fr % 6 == 0 && pass == 0) { draw_frame(); snprintf(nm, sizeof nm, "%s/f_bridge_over.ppm", dir); dump(nm); }
+                float al, ac; br_local(0, px_, py_, &al, &ac);
+                if ((pass ? ac : al) > (pass ? B->hw : B->hl) + 40) break;
+            }
+            float al, ac; br_local(0, px_, py_, &al, &ac);
+            printf("bridge %s: on=%d up=%d, frames %d, end al %.0f ac %.0f, damage %.0f\n", pass ? "under" : "over", seen_on, seen_up, fr, al, ac, h0 - health);
+        }
     }
     /* пам'ятка: підвезти до першої (каланча), дочекатися таблички */
     if (NLM > 0) {

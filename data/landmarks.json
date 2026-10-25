@@ -1,54 +1,518 @@
 [
- {"id": "kalancha", "name": "Стара пожежна вежа", "osm": "Стара пожежна вежа", "tpl": "tower"},
- {"id": "vohon", "name": "Вічний вогонь", "osm": "Вічний вогонь", "tpl": "flame"},
- {"id": "slava", "name": "Меморіал Слави", "osm": "Меморіал Слави", "tpl": "stele", "p": {"h": 48, "col": "gray", "top": "star"}},
- {"id": "bohdan", "name": "Пам'ятник Богдану Хмельницькому", "osm": "Пам'ятник Богданові Хмельницькому", "tpl": "statue", "p": {"pose": "arm", "metal": "bronze", "ped": 14}},
- {"id": "shevchenko", "name": "Пам'ятник Шевченку", "osm": "Тарас Шевченко", "tpl": "statue", "p": {"pose": "stand", "metal": "bronze", "ped": 12}},
- {"id": "franko", "name": "Пам'ятник Франку", "osm": "Іван Якович Франко", "tpl": "statue", "p": {"pose": "stand", "metal": "dark", "ped": 10}},
- {"id": "angel", "name": "Ангел Скорботи", "osm": "Ангел Скорботи", "tpl": "statue", "p": {"pose": "angel", "metal": "bronze", "ped": 10}},
- {"id": "sotnia", "name": "Героям Небесної Сотні", "osm": "Героям Небесної Сотні", "tpl": "stele", "p": {"h": 26, "col": "dark", "top": "cross"}},
- {"id": "munchhausen", "name": "Фонтан барона Мюнхгаузена", "osm": "Пам'ятник-фонтан барону Мюнхгаузену", "tpl": "fountain"},
- {"id": "mi8", "name": "Вертоліт Мі-8", "osm": "Mi-8", "tpl": "heli"},
- {"id": "podolianka", "name": "Подолянка", "osm": "Подолянка", "tpl": "statue", "p": {"pose": "woman", "metal": "white", "ped": 10}},
- {"id": "vira", "name": "Віра, Надія, Любов", "osm": "Віра Надія Любов", "tpl": "statue", "p": {"pose": "group3", "metal": "bronze", "ped": 8}},
- {"id": "afgan", "name": "Воїнам-інтернаціоналістам", "osm": "Воїнам-інтернаціоналістам", "tpl": "stele", "p": {"h": 30, "col": "gray", "top": "flat"}},
- {"id": "chornobyl", "name": "Жертвам Чорнобиля", "osm": "Жертвам Чорнобиля", "tpl": "stele", "p": {"h": 22, "col": "dark", "top": "bell"}},
- {"id": "armenia", "name": "Жертвам геноциду вірмен", "osm": "Монумент жертвам геноциду вірмен", "tpl": "stele", "p": {"h": 20, "col": "tuff", "top": "khachkar"}},
- {"id": "holocaust", "name": "Меморіал жертвам Голокосту", "osm": "Меморіал жертвам Голокосту", "tpl": "stele", "p": {"h": 20, "col": "dark", "top": "flat"}},
- {"id": "narodzhennia", "name": "Народження України", "osm": "Народження України", "tpl": "statue", "p": {"pose": "woman", "metal": "bronze", "ped": 12}},
- {"id": "papa", "name": "Пам'ятник Іоанну Павлу II", "osm": "Іоану Павлу ІІ", "tpl": "statue", "p": {"pose": "stand", "metal": "white", "ped": 10}},
- {"id": "prykordonnyky", "name": "Прикордонникам", "osm": "Прикордоникам", "tpl": "stele", "p": {"h": 24, "col": "gray", "top": "star"}},
- {"id": "znak", "name": "Пам'ятний знак міста", "osm": "Пам'ятний знак міста Хмельницький", "tpl": "stele", "p": {"h": 28, "col": "white", "top": "flat"}},
- {"id": "love", "name": "Я люблю Хмельницький", "osm": "Я люблю Хмельницький", "tpl": "love"},
- {"id": "eiffel", "name": "Ейфелева вежа", "osm": "Ейфелева вежа", "tpl": "eiffel"},
- {"id": "chornovil", "name": "Пам'ятник Чорноволу", "osm": "В'ячеслав Чорновол", "tpl": "statue", "p": {"pose": "stand", "metal": "bronze", "ped": 8}},
- {"id": "kosmonavt", "name": "Космонавт", "osm": "Космонавт", "tpl": "statue", "p": {"pose": "cosmo", "metal": "white", "ped": 4}},
- {"id": "oda", "name": "Обласна адміністрація", "osm": "Хмельницька обласна державна адміністрація", "tpl": "classic", "p": {"wall": "gray", "cols": 6, "flag": true, "wide": true}},
- {"id": "miskrada", "name": "Міська рада", "osm": "Хмельницька міська рада", "tpl": "classic", "p": {"wall": "beige", "cols": 4, "flag": true}},
- {"id": "podillia", "name": "Готель \"Поділля\"", "osm": "Поділля", "osm_tag": "tourism=hotel", "tpl": "hotel"},
- {"id": "palats", "name": "Палац творчості", "osm": "Палац творчості дітей та юнацтва", "tpl": "classic", "p": {"wall": "yellow", "cols": 6, "wide": true}},
- {"id": "arkhiv", "name": "Державний архів області", "osm": "Державний архів Хмельницької області", "tpl": "classic", "p": {"wall": "pink", "cols": 2}},
- {"id": "teatr", "name": "Театр ім. Старицького", "osm": "Хмельницький обласний театр ім. Старицького", "tpl": "classic", "p": {"wall": "white", "cols": 6, "masks": true}},
- {"id": "filarmonia", "name": "Обласна філармонія", "osm": "Хмельницька обласна філармонія", "tpl": "classic", "p": {"wall": "yellow", "cols": 4, "lyre": true}},
- {"id": "kino_shevchenko", "name": "Кінотеатр ім. Шевченка", "osm": "Кінотеатр ім. Т.Г. Шевченка", "tpl": "cinema"},
- {"id": "lialky", "name": "Театр ляльок \"Дивень\"", "osm": "Хмельницький театр ляльок Дивень", "tpl": "classic", "p": {"wall": "blue", "cols": 2, "masks": true}},
- {"id": "avtovokzal", "name": "Автовокзал №1", "osm": "Автовокзал №1", "tpl": "bus"},
- {"id": "kraieznavchyi", "name": "Краєзнавчий музей", "osm": "Хмельницький обласний краєзнавчий музей", "tpl": "classic", "p": {"wall": "beige", "cols": 4}},
- {"id": "khudozhnii", "name": "Художній музей", "osm": "Хмельницький обласний художній музей", "tpl": "classic", "p": {"wall": "pink", "cols": 4, "frame": true}},
- {"id": "sud", "name": "Старий міський суд", "osm": "Судовий архів (Старий міський суд)", "tpl": "mansion", "p": {"wall": "red"}},
- {"id": "osobniak", "name": "Старий особняк", "osm": "Старий особняк", "tpl": "mansion", "p": {"wall": "yellow"}},
- {"id": "pokrovskyi", "name": "Свято-Покровський собор", "osm": "Свято-Покровський кафедральний собор ПЦУ", "tpl": "church", "p": {"domes": 5}},
- {"id": "rizdva", "name": "Собор Різдва Богородиці", "osm": "Собор Різдва Пресвятої Богородиці ПЦУ", "tpl": "church", "p": {"domes": 3}},
- {"id": "rizdva_ugcc", "name": "Катедральний собор Різдва", "osm": "Катедральний собор Різдва Пресвятої Богородиці", "tpl": "church", "p": {"domes": 1}},
- {"id": "mykolaivskyi", "name": "Свято-Миколаївський собор", "osm": "Свято-Миколаївський собор", "tpl": "church", "p": {"domes": 5}},
- {"id": "kostel", "name": "Костел Христа Царя", "osm": "Католицький храм Христа Царя Всесвіту", "tpl": "gothic"},
- {"id": "triitska", "name": "Троїцька церква", "osm": "Троїцька церква", "tpl": "church", "p": {"domes": 1}},
- {"id": "dendropark", "name": "Дендропарк", "osm": "Дендропарк", "osm_tag": "leisure=park", "tpl": "parksign"},
- {"id": "park_franka", "name": "Парк ім. Франка", "osm": "Парк імені Івана Франка", "tpl": "parksign"},
- {"id": "park_chekmana", "name": "Парк ім. Чекмана", "osm": "Парк імені Михайла Чекмана", "tpl": "parksign"},
- {"id": "stadion", "name": "Стадіон \"Поділля\"", "osm": "Поділля", "osm_tag": "leisure=stadium", "tpl": "stadium"},
- {"id": "khnu", "name": "Хмельницький національний університет", "osm": "ХНУ корпус 1", "tpl": "classic", "p": {"wall": "white", "cols": 6, "flag": true, "wide": true}},
- {"id": "stare_kladovyshche", "name": "Старе кладовище", "osm": "Старе кладовище", "tpl": "stele", "p": {"h": 26, "col": "gray", "top": "cross"}},
- {"id": "rechovyi_rynok", "name": "Речовий ринок", "osm": "Речовий ринок", "osm_tag": "amenity=marketplace", "tpl": "market"},
- {"id": "dubivska_vezha", "name": "Дубівська вежа", "osm": "", "pos": [49.4068, 26.9876], "tpl": "watertower"}
+ {
+  "id": "kalancha",
+  "name": "Стара пожежна вежа",
+  "osm": "Стара пожежна вежа",
+  "tpl": "tower"
+ },
+ {
+  "id": "vohon",
+  "name": "Вічний вогонь",
+  "osm": "Вічний вогонь",
+  "tpl": "flame"
+ },
+ {
+  "id": "slava",
+  "name": "Меморіал Слави",
+  "osm": "Меморіал Слави",
+  "tpl": "stele",
+  "p": {
+   "h": 48,
+   "col": "gray",
+   "top": "star"
+  }
+ },
+ {
+  "id": "bohdan",
+  "name": "Пам'ятник Богдану Хмельницькому",
+  "osm": "Пам'ятник Богданові Хмельницькому",
+  "tpl": "statue",
+  "p": {
+   "pose": "arm",
+   "metal": "bronze",
+   "ped": 14
+  }
+ },
+ {
+  "id": "shevchenko",
+  "name": "Пам'ятник Шевченку",
+  "osm": "Тарас Шевченко",
+  "tpl": "statue",
+  "p": {
+   "pose": "stand",
+   "metal": "bronze",
+   "ped": 12
+  }
+ },
+ {
+  "id": "franko",
+  "name": "Пам'ятник Франку",
+  "osm": "Іван Якович Франко",
+  "tpl": "statue",
+  "p": {
+   "pose": "stand",
+   "metal": "dark",
+   "ped": 10
+  }
+ },
+ {
+  "id": "angel",
+  "name": "Ангел Скорботи",
+  "osm": "Ангел Скорботи",
+  "tpl": "statue",
+  "p": {
+   "pose": "angel",
+   "metal": "bronze",
+   "ped": 10
+  }
+ },
+ {
+  "id": "sotnia",
+  "name": "Героям Небесної Сотні",
+  "osm": "Героям Небесної Сотні",
+  "tpl": "stele",
+  "p": {
+   "h": 26,
+   "col": "dark",
+   "top": "cross"
+  }
+ },
+ {
+  "id": "munchhausen",
+  "name": "Фонтан барона Мюнхгаузена",
+  "osm": "Пам'ятник-фонтан барону Мюнхгаузену",
+  "tpl": "fountain"
+ },
+ {
+  "id": "mi8",
+  "name": "Вертоліт Мі-8",
+  "osm": "Mi-8",
+  "tpl": "heli"
+ },
+ {
+  "id": "podolianka",
+  "name": "Подолянка",
+  "osm": "Подолянка",
+  "tpl": "statue",
+  "p": {
+   "pose": "woman",
+   "metal": "white",
+   "ped": 10
+  }
+ },
+ {
+  "id": "vira",
+  "name": "Віра, Надія, Любов",
+  "osm": "Віра Надія Любов",
+  "tpl": "statue",
+  "p": {
+   "pose": "group3",
+   "metal": "bronze",
+   "ped": 8
+  }
+ },
+ {
+  "id": "afgan",
+  "name": "Воїнам-інтернаціоналістам",
+  "osm": "Воїнам-інтернаціоналістам",
+  "tpl": "stele",
+  "p": {
+   "h": 30,
+   "col": "gray",
+   "top": "flat"
+  }
+ },
+ {
+  "id": "chornobyl",
+  "name": "Жертвам Чорнобиля",
+  "osm": "Жертвам Чорнобиля",
+  "tpl": "stele",
+  "p": {
+   "h": 22,
+   "col": "dark",
+   "top": "bell"
+  }
+ },
+ {
+  "id": "armenia",
+  "name": "Жертвам геноциду вірмен",
+  "osm": "Монумент жертвам геноциду вірмен",
+  "tpl": "stele",
+  "p": {
+   "h": 20,
+   "col": "tuff",
+   "top": "khachkar"
+  }
+ },
+ {
+  "id": "holocaust",
+  "name": "Меморіал жертвам Голокосту",
+  "osm": "Меморіал жертвам Голокосту",
+  "tpl": "stele",
+  "p": {
+   "h": 20,
+   "col": "dark",
+   "top": "flat"
+  }
+ },
+ {
+  "id": "narodzhennia",
+  "name": "Народження України",
+  "osm": "Народження України",
+  "tpl": "statue",
+  "p": {
+   "pose": "woman",
+   "metal": "bronze",
+   "ped": 12
+  }
+ },
+ {
+  "id": "papa",
+  "name": "Пам'ятник Іоанну Павлу II",
+  "osm": "Іоану Павлу ІІ",
+  "tpl": "statue",
+  "p": {
+   "pose": "stand",
+   "metal": "white",
+   "ped": 10
+  }
+ },
+ {
+  "id": "prykordonnyky",
+  "name": "Прикордонникам",
+  "osm": "Прикордоникам",
+  "tpl": "stele",
+  "p": {
+   "h": 24,
+   "col": "gray",
+   "top": "star"
+  }
+ },
+ {
+  "id": "znak",
+  "name": "Пам'ятний знак міста",
+  "osm": "Пам'ятний знак міста Хмельницький",
+  "tpl": "stele",
+  "p": {
+   "h": 28,
+   "col": "white",
+   "top": "flat"
+  }
+ },
+ {
+  "id": "love",
+  "name": "Я люблю Хмельницький",
+  "osm": "Я люблю Хмельницький",
+  "tpl": "love"
+ },
+ {
+  "id": "eiffel",
+  "name": "Ейфелева вежа",
+  "osm": "Ейфелева вежа",
+  "tpl": "eiffel"
+ },
+ {
+  "id": "chornovil",
+  "name": "Пам'ятник Чорноволу",
+  "osm": "В'ячеслав Чорновол",
+  "tpl": "statue",
+  "p": {
+   "pose": "stand",
+   "metal": "bronze",
+   "ped": 8
+  }
+ },
+ {
+  "id": "kosmonavt",
+  "name": "Космонавт",
+  "osm": "Космонавт",
+  "tpl": "statue",
+  "p": {
+   "pose": "cosmo",
+   "metal": "white",
+   "ped": 4
+  }
+ },
+ {
+  "id": "oda",
+  "name": "Обласна адміністрація",
+  "osm": "Хмельницька обласна державна адміністрація",
+  "tpl": "classic",
+  "p": {
+   "wall": "gray",
+   "cols": 6,
+   "flag": true,
+   "wide": true
+  }
+ },
+ {
+  "id": "miskrada",
+  "name": "Міська рада",
+  "osm": "Хмельницька міська рада",
+  "tpl": "classic",
+  "p": {
+   "wall": "beige",
+   "cols": 4,
+   "flag": true
+  }
+ },
+ {
+  "id": "podillia",
+  "name": "Готель \"Поділля\"",
+  "osm": "Поділля",
+  "osm_tag": "tourism=hotel",
+  "tpl": "hotel"
+ },
+ {
+  "id": "palats",
+  "name": "Палац творчості",
+  "osm": "Палац творчості дітей та юнацтва",
+  "tpl": "classic",
+  "p": {
+   "wall": "yellow",
+   "cols": 6,
+   "wide": true
+  }
+ },
+ {
+  "id": "arkhiv",
+  "name": "Державний архів області",
+  "osm": "Державний архів Хмельницької області",
+  "tpl": "classic",
+  "p": {
+   "wall": "pink",
+   "cols": 2
+  }
+ },
+ {
+  "id": "teatr",
+  "name": "Театр ім. Старицького",
+  "osm": "Хмельницький обласний театр ім. Старицького",
+  "tpl": "classic",
+  "p": {
+   "wall": "white",
+   "cols": 6,
+   "masks": true
+  }
+ },
+ {
+  "id": "filarmonia",
+  "name": "Обласна філармонія",
+  "osm": "Хмельницька обласна філармонія",
+  "tpl": "classic",
+  "p": {
+   "wall": "yellow",
+   "cols": 4,
+   "lyre": true
+  }
+ },
+ {
+  "id": "kino_shevchenko",
+  "name": "Кінотеатр ім. Шевченка",
+  "osm": "Кінотеатр ім. Т.Г. Шевченка",
+  "tpl": "cinema"
+ },
+ {
+  "id": "lialky",
+  "name": "Театр ляльок \"Дивень\"",
+  "osm": "Хмельницький театр ляльок Дивень",
+  "tpl": "classic",
+  "p": {
+   "wall": "blue",
+   "cols": 2,
+   "masks": true
+  }
+ },
+ {
+  "id": "avtovokzal",
+  "name": "Автовокзал №1",
+  "osm": "Автовокзал №1",
+  "tpl": "bus"
+ },
+ {
+  "id": "kraieznavchyi",
+  "name": "Краєзнавчий музей",
+  "osm": "Хмельницький обласний краєзнавчий музей",
+  "tpl": "classic",
+  "p": {
+   "wall": "beige",
+   "cols": 4
+  }
+ },
+ {
+  "id": "khudozhnii",
+  "name": "Художній музей",
+  "osm": "Хмельницький обласний художній музей",
+  "tpl": "classic",
+  "p": {
+   "wall": "pink",
+   "cols": 4,
+   "frame": true
+  }
+ },
+ {
+  "id": "sud",
+  "name": "Старий міський суд",
+  "osm": "Судовий архів (Старий міський суд)",
+  "tpl": "mansion",
+  "p": {
+   "wall": "red"
+  }
+ },
+ {
+  "id": "osobniak",
+  "name": "Старий особняк",
+  "osm": "Старий особняк",
+  "tpl": "mansion",
+  "p": {
+   "wall": "yellow"
+  }
+ },
+ {
+  "id": "pokrovskyi",
+  "name": "Свято-Покровський собор",
+  "osm": "Свято-Покровський кафедральний собор ПЦУ",
+  "tpl": "church",
+  "p": {
+   "domes": 5
+  }
+ },
+ {
+  "id": "rizdva",
+  "name": "Собор Різдва Богородиці",
+  "osm": "Собор Різдва Пресвятої Богородиці ПЦУ",
+  "tpl": "church",
+  "p": {
+   "domes": 3
+  }
+ },
+ {
+  "id": "rizdva_ugcc",
+  "name": "Катедральний собор Різдва",
+  "osm": "Катедральний собор Різдва Пресвятої Богородиці",
+  "tpl": "church",
+  "p": {
+   "domes": 1
+  }
+ },
+ {
+  "id": "mykolaivskyi",
+  "name": "Свято-Миколаївський собор",
+  "osm": "Свято-Миколаївський собор",
+  "tpl": "church",
+  "p": {
+   "domes": 5
+  }
+ },
+ {
+  "id": "kostel",
+  "name": "Костел Христа Царя",
+  "osm": "Католицький храм Христа Царя Всесвіту",
+  "tpl": "gothic"
+ },
+ {
+  "id": "triitska",
+  "name": "Троїцька церква",
+  "osm": "Троїцька церква",
+  "tpl": "church",
+  "p": {
+   "domes": 1
+  }
+ },
+ {
+  "id": "dendropark",
+  "name": "Дендропарк",
+  "osm": "Дендропарк",
+  "osm_tag": "leisure=park",
+  "tpl": "parksign"
+ },
+ {
+  "id": "park_franka",
+  "name": "Парк ім. Франка",
+  "osm": "Парк імені Івана Франка",
+  "tpl": "parksign"
+ },
+ {
+  "id": "park_chekmana",
+  "name": "Парк ім. Чекмана",
+  "osm": "Парк імені Михайла Чекмана",
+  "tpl": "parksign"
+ },
+ {
+  "id": "stadion",
+  "name": "Стадіон \"Поділля\"",
+  "osm": "Поділля",
+  "osm_tag": "leisure=stadium",
+  "tpl": "stadium"
+ },
+ {
+  "id": "khnu",
+  "name": "Хмельницький національний університет",
+  "osm": "ХНУ корпус 1",
+  "tpl": "classic",
+  "p": {
+   "wall": "white",
+   "cols": 6,
+   "flag": true,
+   "wide": true
+  }
+ },
+ {
+  "id": "stare_kladovyshche",
+  "name": "Старе кладовище",
+  "osm": "Старе кладовище",
+  "tpl": "stele",
+  "p": {
+   "h": 26,
+   "col": "gray",
+   "top": "cross"
+  }
+ },
+ {
+  "id": "rechovyi_rynok",
+  "name": "Речовий ринок",
+  "osm": "Речовий ринок",
+  "osm_tag": "amenity=marketplace",
+  "tpl": "market"
+ },
+ {
+  "id": "dubivska_vezha",
+  "name": "Дубівська вежа",
+  "osm": "",
+  "pos": [
+   49.4068,
+   26.9876
+  ],
+  "tpl": "watertower"
+ },
+ {
+  "id": "koleso",
+  "name": "Колесо огляду",
+  "osm": "",
+  "xy": [
+   4278,
+   6643
+  ],
+  "tpl": "wheel"
+ },
+ {
+  "id": "mazur",
+  "name": "Скульптури Миколи Мазура",
+  "osm": "",
+  "xy": [
+   7140,
+   8613
+  ],
+  "tpl": "dragon"
+ },
+ {
+  "id": "bilyi_mist",
+  "name": "Білий міст",
+  "osm": "",
+  "xy": [
+   5468,
+   6447
+  ],
+  "tpl": "footbridge"
+ }
 ]

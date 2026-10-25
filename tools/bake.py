@@ -172,7 +172,10 @@ palf = np.array(PAL, np.float32)
 lm_rows = []
 for e in LM:
     frs = LMK.sprite(e)
-    h, w = frs[0].shape[:2]
+    h, w0 = frs[0].shape[:2]
+    w = (w0 + 15) // 16 * 16                    # ширина кратна 16: кадри йдуть підряд без зазорів, графічний чип бере їх як текстуру
+    pl = (w - w0) // 2
+    frs = [np.pad(fr, ((0, 0), (pl, w - w0 - pl), (0, 0))) for fr in frs]
     offs = []
     for fr in frs:
         rgb_ = fr[..., :3].reshape(-1, 3).astype(np.float32)
@@ -258,6 +261,10 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('static const Sto STOS[] = {%s};\n#define NSTO %d\n' % (','.join('{%d,%d,%s}' % (a['x'], a['y'], cstr(a['name'])) for a in sto), len(sto)))
     fuel = md.get('fuel') or [dict(x=md['spawn'][0], y=md['spawn'][1], name='АЗС')]
     f.write('static const Sto FUELS[] = {%s};\n#define NFUEL %d\n' % (','.join('{%d,%d,%s}' % (a['x'], a['y'], cstr(a['name'])) for a in fuel), len(fuel)))
+    _mp = json.load(open(os.path.join(BUILD, 'mappatch.json'))) if os.path.exists(os.path.join(BUILD, 'mappatch.json')) else {}
+    brs = _mp.get('bridges', [])
+    f.write('typedef struct { float cx, cy, ux, uy, hl, hw, rail; } Bridge;   /* міст: центр, вісь, піввдовжина, півширина (пікс), огорожа */\n')
+    f.write('static const Bridge BRIDGES[] = {%s};\n#define NBRIDGE %d\n' % (','.join('{%.2ff,%.2ff,%.5ff,%.5ff,%.2ff,%.2ff,%.2ff}' % (b['c'][0], b['c'][1], b['u'][0], b['u'][1], b['hl'], b['hw'], b['rail']) for b in brs) or '{0}', len(brs)))
     ar = md.get('arches', [])
     f.write('typedef struct { int16_t n, x0, y0, x1, y1; int16_t p[64][2]; } Arch;\n')
     f.write('static const Arch ARCHES[] = {%s};\n#define NARCH %d\n' % (','.join('{%d,%d,%d,%d,%d,{%s}}' % (len(q), min(a for a, b in q), min(b for a, b in q), max(a for a, b in q), max(b for a, b in q), ','.join('{%d,%d}' % (a, b) for a, b in q)) for q in ar) or '{0}', len(ar)))

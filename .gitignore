@@ -11,3 +11,4 @@ src/EBOOT.PBP
 __pycache__/
 build_v1/
 build_v2/
+build/*_base.npy
