@@ -957,7 +957,7 @@ static float lane_steer(void) {
 /* ---- помічник смуги v2 (25.10.2026): за дорожнім графом — тримає ребро, на яке ти виїхав, дивиться вперед
    (на перехресті — найпрямійше продовження), веде в праву смугу (на вузьких — по центру);
    якщо на шляху до точки огляду перешкода — відпускає кермо */
-static int la_e = -1, la_dir, la_off_t;
+static int la_e = -1, la_dir, la_off_t; static float la_lat;      /* ціль — центр тієї смуги, де ти зараз (зсув від осі, праворуч +) */
 static float lane_steer2(void) {
     float fx = cosf(ang), fy = sinf(ang);
     /* поточне ребро: лишаємо, поки машина на ньому; інакше шукаємо найближче за напрямком */
@@ -981,6 +981,15 @@ static float lane_steer2(void) {
             }
         }
         if (la_e < 0) return 0;
+        /* смуга — найближча до того місця, де машина зараз: після обгону помічник не тягне назад, вертаєшся сам */
+        float d2, tx, ty; rg_proj(la_e, la_dir, px_, py_, &d2, &tx, &ty);
+        float s_ = rg_proj(la_e, la_dir, px_, py_, &d2, &tx, &ty), cx, cy, ux, uy;
+        rg_at(la_e, la_dir, s_, &cx, &cy, &ux, &uy);
+        float lat = (px_ - cx) * (-uy) + (py_ - cy) * ux;
+        const REdge *E = &RG_EDGE[la_e]; int nl = E->lanes ? E->lanes : 2; float w = E->w2, lw = w / nl, best_l = 0, bd = 1e9f;
+        if (w < 14 && !E->one) { best_l = 0; }
+        else for (int i = 0; i < nl; i++) { float c_ = -w / 2 + lw * (i + 0.5f); if (fabsf(c_ - lat) < bd) { bd = fabsf(c_ - lat); best_l = c_; } }
+        la_lat = best_l;
     }
     /* точка огляду: 10 + швидкість*28 пікс уперед уздовж дороги */
     float d2, tx, ty, s0 = rg_proj(la_e, la_dir, px_, py_, &d2, &tx, &ty);
@@ -993,7 +1002,8 @@ static float lane_steer2(void) {
         s1 -= rg_len(e); e = nx >> 1; dir = nx & 1;
     }
     float x, y, ux, uy; rg_at(e, dir, s1, &x, &y, &ux, &uy);
-    float off = rg_lane_off(e, 0);
+    float off = la_lat;
+    if (e != la_e && fabsf(off) > RG_EDGE[e].w2 / 2) off = rg_lane_off(e, 0);   /* за перехрестям смуга може не існувати */
     x += -uy * off; y += ux * off;
     /* перешкода на шляху до точки огляду — відпустити кермо на пів секунди */
     float dx = x - px_, dy = y - py_, dl = sqrtf(dx * dx + dy * dy);
@@ -1017,14 +1027,20 @@ static void update_player(unsigned btn, int lx) {
     float steer = 0;
     if (btn & PSP_CTRL_LEFT) steer = -1;
     if (btn & PSP_CTRL_RIGHT) steer = 1;
-    if (abs(lx - 128) > 32) steer = (lx - 128) / 96.0f;
+    if (abs(lx - 128) > 24) {                                   /* стік: м'яка крива — малі відхилення дають тонке підрулювання */
+        float a = (abs(lx - 128) - 24) / 100.0f; if (a > 1) a = 1;
+        steer = (lx > 128 ? 1 : -1) * powf(a, 1.7f);
+    }
     if (steer > 1) steer = 1; if (steer < -1) steer = -1;
     int gas = (btn & PSP_CTRL_CROSS) != 0;
     int brake = (btn & PSP_CTRL_SQUARE) != 0;
     int hand = (btn & PSP_CTRL_RTRIGGER) != 0;
     static int free_t;
     if (fabsf(steer) > 0.08f) free_t = 0; else free_t++;
-    if (lane_assist && free_t > 8 && !hand && vel > 0.12f) steer = lane_steer2(); else la_e = -1;
+    if (lane_assist && free_t > 24 && !hand && vel > 0.12f) {   /* помічник — через 0,4 с після керма, плавно наростає */
+        float k = (free_t - 24) / 30.0f; if (k > 1) k = 1;
+        steer = lane_steer2() * k;
+    } else la_e = -1;
 
     float fx = cosf(ang), fy = sinf(ang), rx = -fy, ry = fx;
     float vf = vx_ * fx + vy_ * fy, vr = vx_ * rx + vy_ * ry;
@@ -1062,10 +1078,10 @@ static void update_player(unsigned btn, int lx) {
     /* кермо як у справжньої машини: повертають передні колеса, кузов обертається навколо задньої осі.
        Кут коліс доходить до цілі плавно; швидкість повороту пропорційна швидкості (на місці не крутиться);
        на великій швидкості кут коліс менший. Мінімальний радіус ~13 пікс (≈0,75 довжини авто — аркадно тісніше за реальне). */
-    wheel += (steer - wheel) * 0.22f;
+    wheel += (steer - wheel) * (fabsf(steer) > fabsf(wheel) ? 0.10f : 0.2f);   /* колеса вивертаються плавно, вертаються швидше */
     float sp = fabsf(vf);
-    float lock = 1.0f - 0.55f * (sp / VMAX);
-    float yaw = vf * wheel * lock / 11.0f;
+    float lock = 1.0f - 0.72f * (sp / VMAX);                 /* на швидкості кермо м'якше: обгін без ривків */
+    float yaw = vf * wheel * lock / 12.0f;
     if (hand) yaw *= 1.45f;
     if (yaw > 0.07f) yaw = 0.07f; if (yaw < -0.07f) yaw = -0.07f;
     float na = ang + yaw;
