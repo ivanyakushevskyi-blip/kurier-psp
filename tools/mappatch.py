@@ -256,8 +256,9 @@ def landmark_roofs(D, rgb, sat):
 
 # ---------------------------------------------------------------- дахи з фото (Apple Карти від Івана)
 def photo_roofs(D, rgb):
-    """Фото згори прив'язується до контуру будинку двома точками (подібність: масштаб + поворот + зсув);
-    написи й значки карти з фото прибираються (заповнення з сусідніх пікселів), фото висвітлюється під палітру гри."""
+    """Фото згори (Apple Карти) — лише зразок: прив'язується до контуру двома точками (масштаб + поворот + зсув),
+    написи прибираються, далі дах розкладається на області (плоскі рівні, світлі парапети/ліхтарі, синій дах)
+    і малюється кольорами й світлом гри — без фотофактури."""
     cfg = json.load(open('data/photo_roofs.json'))
     for k, e in cfg.items():
         if k.startswith('_') or not os.path.exists(e['img']): continue
@@ -282,11 +283,56 @@ def photo_roofs(D, rgb):
         z = (X + 1j * Y - tt) / kk
         tex = cv2.remap(img, z.real.astype(np.float32), z.imag.astype(np.float32), cv2.INTER_LINEAR)
         sel = cv.mask(P).astype(bool)
-        mu = np.median(tex[sel], 0)                                    # баланс білого й яскравість — під сірі дахи гри
-        tex = np.clip((tex - mu) * 1.45 + np.array((146, 148, 154)), 0, 255)
-        rim = sel & ~cv2.erode(sel.astype(np.uint8), np.ones((SS * 2,) * 2, np.uint8)).astype(bool)
-        tex[rim] = tex[rim] * 0.75
+        # фото — лише зразок: розкласти дах на області й намалювати їх кольорами гри (плоскі дахи, світлі парапети/ліхтарі, синій дах)
+        tex8 = np.clip(tex, 0, 255).astype(np.uint8)
+        sm = cv2.medianBlur(tex8, 2 * (SS // 2) + 3)
+        hsv = cv2.cvtColor(sm, cv2.COLOR_RGB2HSV)
+        lum = sm.astype(np.float32).mean(-1)
+        med = np.median(lum[sel])
+        blue = sel & (hsv[..., 0] > 95) & (hsv[..., 0] < 130) & (hsv[..., 1] > 70) & (hsv[..., 2] > 70)
+        light = sel & ~blue & (lum > med + 40)
+        dark = sel & ~blue & ~light & (cv2.GaussianBlur(lum, (0, 0), SS * 1.5) < med - 10)
+        def clean(mk, amin_m2, eps_px=1.0, close=3):
+            """області -> рівні багатокутники (архітектурні прямі краї), без дрібних плям"""
+            mk = cv2.morphologyEx(mk.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((close * SS // 2 + 1,) * 2, np.uint8))
+            mk = cv2.morphologyEx(mk, cv2.MORPH_OPEN, np.ones((SS + 1,) * 2, np.uint8))
+            cs, _ = cv2.findContours(mk, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            out_ = np.zeros_like(mk)
+            for c_ in cs:
+                if cv2.contourArea(c_) < amin_m2 / (MPP * MPP) * SS * SS: continue
+                cv2.fillPoly(out_, [cv2.approxPolyDP(c_, eps_px * SS, True)], 1)
+            return out_.astype(bool) & sel
+        blue = clean(blue, 300, 1.5, 5)                              # лише великий синій дах (Multiplex), не скло вежі
+        light = clean(light, 3, 0.8, 2) & ~blue
+        dark = np.zeros_like(sel)                                    # темні плями на фото — тіні, а не рівні даху: не беремо
+        X_, Y_ = X, Y
+        out = np.zeros(tex.shape, np.float32); out[:] = (156, 158, 164)
+        out[dark] = (134, 136, 142)
+        grad = (0.97 + 0.06 * np.sin((X_ * 0.9 + Y_ * 0.4)))[..., None]            # ледь помітні листи покрівлі синього даху
+        out[blue] = (np.array((66, 100, 186), np.float32) * grad)[blue]
+        out[light] = (230, 232, 234)
+        # тінь від світлих виступів і синього даху на південний схід + світла кромка з північного заходу
+        raised = (light | blue).astype(np.uint8)
+        d = int(SS * 0.9)
+        sh = np.zeros_like(raised); sh[d:, d:] = raised[:-d, :-d]
+        shm = sel & (sh > 0) & ~raised.astype(bool)
+        out[shm] *= 0.78
+        # парапет по контуру будинку: світла лінія всередині, тонка темна зовні — як у решти дахів гри
+        er = cv2.erode(sel.astype(np.uint8), np.ones((int(SS * 1.6),) * 2, np.uint8)).astype(bool)
+        rim = sel & ~er
+        out[rim] = (214, 216, 218)
+        rim2 = er & ~cv2.erode(er.astype(np.uint8), np.ones((SS,) * 2, np.uint8)).astype(bool)
+        out[rim2] *= 0.85
+        tex = out
         cv.put(sel, tex[sel])
+        # скляні ліхтарі-піраміди (з фото: прямокутники в пікселях знімка) — шатрові дахи зі скла
+        def to_map(x, y): z = kk * complex(x * F, y * F) + tt; return (z.real, z.imag)
+        for x0_, y0_, x1_, y1_ in e.get('glass', []):
+            q = [to_map(x0_, y0_), to_map(x1_, y0_), to_map(x1_, y1_), to_map(x0_, y1_)]
+            hip_roof(cv, q, (196, 220, 232), pitch_m=6, steep=0.9, edge=0.7)
+        for cx_, cy_, r_ in e.get('glass_diamond', []):
+            q = [to_map(cx_, cy_ - r_), to_map(cx_ + r_, cy_), to_map(cx_, cy_ + r_), to_map(cx_ - r_, cy_)]
+            hip_roof(cv, q, (196, 220, 232), pitch_m=6, steep=0.9, edge=0.7)
         cv.commit(rgb); print('  дах з фото', k)
 
 
