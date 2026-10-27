@@ -9,7 +9,7 @@ import numpy as np, cv2
 from PIL import Image, ImageDraw
 from scipy import ndimage as ndi
 
-MPP = 0.5
+MPP = float(os.environ.get("CITY_MPP", "0.5"))           # м на піксель карти (0,5; для зразків інших масштабів — змінна середовища)
 SRC = 0.32
 K = SRC / MPP
 
@@ -508,14 +508,16 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
         for w, pts, ptf in ways:
             if w['closed'] and w['t'].get('amenity') == 'marketplace': cv2.fillPoly(mk_, [np.round(np.array(pts)).astype(np.int32)], 1)
         canopy &= ~mk_.astype(bool)
-    canopy = cv2.morphologyEx(canopy.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-    canopy = cv2.morphologyEx(canopy, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)).astype(bool)
+    FS = 0.5 / MPP                                                # масштаб відносно 0,5 м/пікс (розміри дерев — у метрах)
+    _k = lambda n: max(1, int(round(n * FS)) | 1)
+    canopy = cv2.morphologyEx(canopy.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((_k(5), _k(5)), np.uint8))
+    canopy = cv2.morphologyEx(canopy, cv2.MORPH_OPEN, np.ones((_k(3), _k(3)), np.uint8)).astype(bool)
     dist = cv2.distanceTransform(canopy.astype(np.uint8), cv2.DIST_L2, 5)
-    pk = (dist == ndi.maximum_filter(dist, size=9 if S == 1 else 7)) & (dist >= 3.0)
+    pk = (dist == ndi.maximum_filter(dist, size=_k(9 if S == 1 else 7))) & (dist >= 3.0 * FS)
     ys, xs = np.nonzero(pk); order = np.argsort(-dist[ys, xs])
     trees = []
     for y, x in zip(ys[order], xs[order]):
-        rr = float(min(dist[y, x] * 1.25 + 2, 13))
+        rr = float(min(dist[y, x] * 1.25 + 2 * FS, 13 * FS))
         if S > 1 and clsb[y, x] in (G_PATH, G_PED, G_SIDE): continue      # стежки лишаються видимими
         ov_ = 0.75 if S == 1 else 0.58                            # густіша посадка: крони перекриваються, як у справжньому парку
         if any((tx - x) ** 2 + (ty - y) ** 2 < (ov_ * (tr + rr)) ** 2 for tx, ty, tr, _ in trees): continue
@@ -529,11 +531,11 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
         for tx, ty, tr, _ in trees: cv2.circle(cov_, (tx, ty), int(tr * 0.85), 1, -1)
         gap = canopy & (cov_ == 0)
         dg = cv2.distanceTransform(gap.astype(np.uint8), cv2.DIST_L2, 5)
-        pk2 = (dg == ndi.maximum_filter(dg, size=5)) & (dg >= 2.0)
+        pk2 = (dg == ndi.maximum_filter(dg, size=_k(5))) & (dg >= 2.0 * FS)
         ys2, xs2 = np.nonzero(pk2)
         for y, x in zip(ys2[np.argsort(-dg[ys2, xs2])], xs2[np.argsort(-dg[ys2, xs2])]):
             if clsb[y, x] in (G_PATH, G_PED, G_SIDE): continue
-            rr = float(min(dg[y, x] * 1.3 + 1.5, 7))
+            rr = float(min(dg[y, x] * 1.3 + 1.5 * FS, 7 * FS))
             if any((tx - x) ** 2 + (ty - y) ** 2 < (0.5 * (tr + rr)) ** 2 for tx, ty, tr, _ in trees): continue
             c = sm[max(0, y - 2):y + 3, max(0, x - 2):x + 3].reshape(-1, 3).mean(0)
             kind = 'g' if (c[1] > c[0] + 2 or c.max() < 95) else ('o' if c[0] > c[1] + 24 else 'y')
