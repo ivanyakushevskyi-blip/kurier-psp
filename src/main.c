@@ -997,6 +997,7 @@ static float tr_leader(int i, int lv, float *lv_ms) {                /* шлях
         float lf = dx * ca + dy * sa, ll = -dx * sa + dy * ca;
         if (lf < TM(1.0f)) continue;                                    /* позаду або поруч */
         if (j >= 0 && traf[i].wait > 90 && traf[j].wait > 90 && dx * dx + dy * dy < TM(6) * TM(6)) continue;   /* взаємне клинчення — роз'їхатися */
+        if (j >= 0 && traf[i].wait > 60 && traf[j].wait > 60 && cosf(traf[j].a - traf[i].a) < -0.5f && dx * dx + dy * dy < TM(12) * TM(12)) continue;   /* лоб у лоб — розминутися */
         if (lf < TM(9) && fabsf(ll) < TM(1.9f)) {                       /* просто перед капотом (хоч і не на моїй смузі) */
             float d = lf - TM(5.0f);
             if (d < best) { best = d; *lv_ms = tv_ms(ov) * cosf(ova - traf[i].a); tr_lead_j = j; }
@@ -1069,7 +1070,7 @@ static void traffic_update(void) {
                 int fr = 1; float ca = cosf(traf[i].a), sa = sinf(traf[i].a);
                 for (int j = 0; j < NTRAF; j++) if (j != i && traf[j].on) {
                     float dx = traf[j].x - traf[i].x, dy = traf[j].y - traf[i].y, lf = dx * ca + dy * sa, ll = -dx * sa + dy * ca;
-                    if (lf > -TM(6) && lf < TM(40) && ll < 0 && ll > -TM(6)) fr = 0;
+                    if (lf > TM(1) && lf < TM(40) && ll < -TM(1) && ll > -TM(6) && cosf(traf[j].a - traf[i].a) < 0) fr = 0;   /* зустрічні попереду */
                 }
                 if (fr) { traf[i].dg = -2 * tr_off(e, 0) - TM(0.4f); traf[i].blk_t = 0; }
             }
@@ -1356,9 +1357,9 @@ static void update_player(unsigned btn, int lx) {
     float steer = 0;
     if (btn & PSP_CTRL_LEFT) steer = -1;
     if (btn & PSP_CTRL_RIGHT) steer = 1;
-    if (abs(lx - 128) > 24) {                                   /* стік: м'яка крива — малі відхилення дають тонке підрулювання */
-        float a = (abs(lx - 128) - 24) / 100.0f; if (a > 1) a = 1;
-        steer = (lx > 128 ? 1 : -1) * powf(a, 1.7f);
+    if (abs(lx - 128) > 20) {                                   /* стік: м'яка крива — малі відхилення дають тонке підрулювання */
+        float a = (abs(lx - 128) - 20) / 96.0f; if (a > 1) a = 1;
+        steer = (lx > 128 ? 1 : -1) * powf(a, 1.35f);
     }
     if (steer > 1) steer = 1; if (steer < -1) steer = -1;
     int gas = (btn & PSP_CTRL_CROSS) != 0;
@@ -1420,15 +1421,15 @@ static void update_player(unsigned btn, int lx) {
     /* кермо як у справжньої машини: повертають передні колеса, кузов обертається навколо задньої осі.
        Кут коліс доходить до цілі плавно; швидкість повороту пропорційна швидкості (на місці не крутиться);
        на великій швидкості кут коліс менший. Мінімальний радіус ~13 пікс (≈0,75 довжини авто — аркадно тісніше за реальне). */
-    wheel += (steer - wheel) * (fabsf(steer) > fabsf(wheel) ? 0.10f : 0.2f);   /* колеса вивертаються плавно, вертаються швидше */
+    wheel += (steer - wheel) * (fabsf(steer) > fabsf(wheel) ? 0.16f : 0.22f);   /* колеса вивертаються плавно, вертаються швидше */
     float sp = fabsf(vf);
-    float lock = 1.0f - 0.72f * fminf(1.0f, sp / VREF);       /* на швидкості кермо м'якше: обгін без ривків */
+    float lock = 1.0f - 0.5f * fminf(1.0f, sp / VREF);       /* на швидкості кермо м'якше: обгін без ривків */
     float yaw = vf * wheel * lock / CP(12.0f);
     if (hand) yaw *= 1.45f;
     if (yaw > 0.07f) yaw = 0.07f; if (yaw < -0.07f) yaw = -0.07f;
     if (!hand) {                                                    /* зчеплення шин: бічне прискорення не більше ~0,85 g (на траві 0,5 g) —
                                                                        на швидкості крутий поворот неможливий, треба гальмувати перед ним */
-        float ym = (off ? 5.0f : 8.5f) / fmaxf(fabsf(vf) * MPP * 60.0f, 1.0f) / 60.0f;
+        float ym = (off ? 9.0f : 16.0f) / fmaxf(fabsf(vf) * MPP * 60.0f, 1.0f) / 60.0f;      /* аркадне зчеплення ~1,6 g (31.10.2026: 0,85 g не вписувалось у міські повороти) */
         if (yaw > ym) yaw = ym; if (yaw < -ym) yaw = -ym;
     }
     float na = ang + yaw;
@@ -2457,7 +2458,9 @@ int main(int argc, char **argv) {
                     fabsf(((traf[j].x - traf[i].x) * cosf(traf[i].a) + (traf[j].y - traf[i].y) * sinf(traf[i].a))) < TM(4.2f) &&
                     fabsf((-(traf[j].x - traf[i].x) * sinf(traf[i].a) + (traf[j].y - traf[i].y) * cosf(traf[i].a))) < TM(1.7f)) {
                     overl++;
-                    if (printed < 8 && f % 30 == 0) { printed++; { float lv1, lv2; tr_samples(i); float g1 = tr_leader(i, -1, &lv1); tr_samples(j); float g2 = tr_leader(j, -1, &lv2); float q1x, q1y, q2x, q2y, tt1, tt2; tr_path(i, 0, &q1x, &q1y, &tt1, &tt2); tr_path(j, 0, &q2x, &q2y, &tt1, &tt2); printf("      path pts %.0f,%.0f / %.0f,%.0f  pos %.0f,%.0f / %.0f,%.0f\n", q1x, q1y, q2x, q2y, traf[i].x, traf[i].y, traf[j].x, traf[j].y);
+                    if (printed < 8 && f % 30 == 0) { printed++; { float lv1, lv2; tr_samples(i); float g1 = tr_leader(i, -1, &lv1); { int c_ = i; for (int st_ = 0; st_ < 6 && c_ >= 0; st_++) { float lq_; tr_samples(c_); tr_leader(c_, -1, &lq_); int nj_ = tr_lead_j;
+  printf("      chain %d: pos %.0f,%.0f a %.2f e %d s %.0f/%d spd %.2f wait %d held %d lead %d\n", c_, traf[c_].x, traf[c_].y, traf[c_].a, traf[c_].e, traf[c_].s, RG_EDGE[traf[c_].e].len, traf[c_].spd, traf[c_].wait, traf[c_].held, nj_);
+  if (nj_ == c_) break; c_ = nj_; } printf("      player %.0f,%.0f\n", px_, py_); } tr_samples(j); float g2 = tr_leader(j, -1, &lv2); float q1x, q1y, q2x, q2y, tt1, tt2; tr_path(i, 0, &q1x, &q1y, &tt1, &tt2); tr_path(j, 0, &q2x, &q2y, &tt1, &tt2); printf("      path pts %.0f,%.0f / %.0f,%.0f  pos %.0f,%.0f / %.0f,%.0f\n", q1x, q1y, q2x, q2y, traf[i].x, traf[i].y, traf[j].x, traf[j].y);
                       printf("    overlap %d/%d at %d %d: e %d/%d dir %d/%d len %d/%d s %.0f/%.0f nx %d/%d held %d/%d end %d/%d a %.2f/%.2f spd %.2f/%.2f wait %d/%d gap %.0f/%.0f\n", i, j, (int)traf[i].x, (int)traf[i].y, traf[i].e, traf[j].e, traf[i].dir, traf[j].dir, RG_EDGE[traf[i].e].len, RG_EDGE[traf[j].e].len, traf[i].s, traf[j].s, traf[i].nx, traf[j].nx, traf[i].held, traf[j].held, rg_end_node(traf[i].e, traf[i].dir), rg_end_node(traf[j].e, traf[j].dir), traf[i].a, traf[j].a, traf[i].spd, traf[j].spd, traf[i].wait, traf[j].wait, g1, g2); } }
                 }
             }
