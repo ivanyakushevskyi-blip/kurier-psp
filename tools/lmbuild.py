@@ -27,8 +27,8 @@ def main():
     B = max(4, int(round(2.0 / CD.MPP)))
     hb, wb = H // B, W // B
     free = np.zeros((hb, wb), bool)
-    for y0 in range(0, hb * B, 1024):
-        y1 = min(hb * B, y0 + 1024)
+    for y0 in range(0, hb * B, 147 * B):
+        y1 = min(hb * B, y0 + 147 * B)
         f = ~np.asarray(solid[y0:y1, :wb * B]) & np.asarray(play[y0:y1, :wb * B]) & ~np.isin(np.asarray(mp[y0:y1, :wb * B]), WATER)
         free[y0 // B:y1 // B] = f.reshape((y1 - y0) // B, B, wb, B).all((1, 3))
     n, lab, st, _ = cv2.connectedComponentsWithStats(free.astype(np.uint8), connectivity=4)
