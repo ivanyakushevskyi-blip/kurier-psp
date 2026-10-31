@@ -124,30 +124,59 @@ void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const fl
     sceGuTexMode(fmt ? GU_PSM_5551 : GU_PSM_5650, 0, 0, 0);
     sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
     sceGuTexFilter(GU_LINEAR, GU_LINEAR);
-    /* текстура на PSP — не ширша за 512: ширший буфер (віддалена камера) — два вікна, [0, 512) і [w-512, w);
-       кожен трикутник — у те вікно, куди він вліз (дахи малі, стику не видно) */
+    /* текстура на PSP — не ширша за 512: ширший буфер (віддалена камера) — два вікна, [0, 512) і [base1, base1 + 512);
+       трикутник — у те вікно, куди він вліз повністю; довгий дах, що не влазить у жодне, ділиться навпіл (по найдовшому
+       ребру в u) — інакше u виходили за вікно, і на PSP довгі дахи малювалися криво (31.10.2026) */
     int nwin = w > 512 ? 2 : 1, tw = w > 512 ? 512 : pow2(w), base1 = w > 512 ? ((w - 512) & ~15) : 0;
+    enum { MAXT = 6144 };
+    static float tri[MAXT][12]; static unsigned char twin[MAXT];
+    static float stk[64][12];
+    int nt = 0;
+    for (int t = 0; t + 2 < nv; t += 3) {
+        int sp = 0;
+        memcpy(stk[sp++], uvxy + 4 * t, 12 * sizeof(float));
+        while (sp > 0) {
+            float *T = stk[--sp];
+            float mn = T[0], mx = T[0], vn = T[1], vx = T[1];
+            for (int i = 1; i < 3; i++) {
+                if (T[4 * i] < mn) mn = T[4 * i]; if (T[4 * i] > mx) mx = T[4 * i];
+                if (T[4 * i + 1] < vn) vn = T[4 * i + 1]; if (T[4 * i + 1] > vx) vx = T[4 * i + 1];
+            }
+            int big = mx - mn > 128.0f || vx - vn > 128.0f;            /* великі трикутники — дрібніше (точність і кеш текстур GE) */
+            int win = -1;
+            if (nwin == 1 || mx <= 510.0f) win = 0;
+            else if (mn >= base1 + 1.0f) win = 1;
+            if ((win >= 0 && !big) || sp + 2 > 64 || (mx - mn < 4.0f && vx - vn < 4.0f)) {
+                if (nt < MAXT) { memcpy(tri[nt], T, 12 * sizeof(float)); twin[nt++] = win < 0 ? (mx > 511.0f) : win; }
+                continue;
+            }
+            int e = 0; float best = -1;                                 /* найдовше ребро (у текстурі) */
+            for (int i = 0; i < 3; i++) {
+                int j = (i + 1) % 3; float du = T[4 * i] - T[4 * j], dv = T[4 * i + 1] - T[4 * j + 1];
+                float d = big ? du * du + dv * dv : fabsf(du);
+                if (d > best) { best = d; e = i; }
+            }
+            int i0 = e, i1 = (e + 1) % 3, i2 = (e + 2) % 3;
+            float M[4]; for (int j = 0; j < 4; j++) M[j] = 0.5f * (T[4 * i0 + j] + T[4 * i1 + j]);
+            float A[12], B[12];
+            memcpy(A, T + 4 * i0, 16); memcpy(A + 4, M, 16); memcpy(A + 8, T + 4 * i2, 16);
+            memcpy(B, M, 16); memcpy(B + 4, T + 4 * i1, 16); memcpy(B + 8, T + 4 * i2, 16);
+            memcpy(stk[sp++], A, sizeof A); memcpy(stk[sp++], B, sizeof B);
+        }
+    }
     for (int win = 0; win < nwin; win++) {
         int b0 = win ? base1 : 0;
         int cnt = 0;
-        for (int t = 0; t + 2 < nv; t += 3) {
-            float u0 = uvxy[4 * t], u1 = uvxy[4 * t + 4], u2 = uvxy[4 * t + 8];
-            float mx = u0 > u1 ? u0 : u1; mx = mx > u2 ? mx : u2;
-            int w1 = nwin > 1 && mx > 511.0f;
-            if (w1 == win) cnt += 3;
-        }
+        for (int t = 0; t < nt; t++) if (twin[t] == win) cnt += 3;
         if (!cnt) continue;
         sceGuTexImage(0, tw, pow2(h), stride, tex + b0);
         sceGuTexFlush();
         VT *v = (VT *)sceGuGetMemory(cnt * sizeof(VT));
         int k = 0;
-        for (int t = 0; t + 2 < nv; t += 3) {
-            float u0 = uvxy[4 * t], u1 = uvxy[4 * t + 4], u2 = uvxy[4 * t + 8];
-            float mx = u0 > u1 ? u0 : u1; mx = mx > u2 ? mx : u2;
-            int w1 = nwin > 1 && mx > 511.0f;
-            if (w1 != win) continue;
-            for (int i = t; i < t + 3; i++, k++) {
-                v[k].u = uvxy[4 * i] - b0; v[k].v = uvxy[4 * i + 1]; v[k].x = uvxy[4 * i + 2]; v[k].y = uvxy[4 * i + 3]; v[k].z = 0;
+        for (int t = 0; t < nt; t++) {
+            if (twin[t] != win) continue;
+            for (int i = 0; i < 3; i++, k++) {
+                v[k].u = tri[t][4 * i] - b0; v[k].v = tri[t][4 * i + 1]; v[k].x = tri[t][4 * i + 2]; v[k].y = tri[t][4 * i + 3]; v[k].z = 0;
             }
         }
         sceGuDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, cnt, 0, v);
