@@ -733,11 +733,27 @@ static int rg_light_green(int e, int dir) {                         /* світ�
 
 #define NTRAF 14
 static struct { int on, e, dir, lane, model, stop_t, brake; float s, spd, vmax, x, y, a; } traf[NTRAF];
+static int br_on = -1, br_up;                 /* номер мосту, на/під яким машина; верх? */
+static void br_local(int i, float x, float y, float *al, float *ac) {
+    const Bridge *B = &BRIDGES[i]; float dx = x - B->cx, dy = y - B->cy;
+    *al = dx * B->ux + dy * B->uy; *ac = -dx * B->uy + dy * B->ux;
+}
+/* рівень на мосту для машини трафіку: -1 поза мостом, інакше міст*2 + (1 — верх: їде вздовж мосту) */
+static int br_lvl(float x, float y, float a) {
+    for (int i = 0; i < NBRIDGE; i++) {
+        const Bridge *B = &BRIDGES[i]; float al, ac; br_local(i, x, y, &al, &ac);
+        if (fabsf(al) < B->hl && fabsf(ac) < B->hw + OP(12)) return i * 2 + (fabsf(cosf(a) * B->ux + sinf(a) * B->uy) > 0.7f);
+    }
+    return -1;
+}
+static int pl_lvl(void) { return br_on >= 0 ? br_on * 2 + br_up : -1; }
+static int other_lvl(int a, int b) { return a >= 0 && b >= 0 && a != b; }
 static int traf_hit(float x, float y) {                             /* точка в кузові машини трафіку? */
     for (int i = 0; i < NTRAF; i++) {
         if (!traf[i].on) continue;
         float dx = x - traf[i].x, dy = y - traf[i].y;
         if (dx * dx + dy * dy > CP(8) * CP(8)) continue;
+        if (other_lvl(pl_lvl(), br_lvl(traf[i].x, traf[i].y, traf[i].a))) continue;     /* на іншому рівні мосту */
         float c = cosf(traf[i].a), s = sinf(traf[i].a), lx = dx * c + dy * s, ly = -dx * s + dy * c;
         if (fabsf(lx) < CP(6.3f) && fabsf(ly) < CP(2.9f)) return i + 1;
     }
@@ -784,10 +800,11 @@ static void traffic_update(void) {
         if (!seen && dist(traf[i].x, traf[i].y, px_, py_) > OP(640)) { traf[i].on = 0; continue; }
         float c = cosf(traf[i].a), s = sinf(traf[i].a);
         /* хто попереду в моїй смузі (інші машини й гравець) */
-        float gap = 999;
+        float gap = 999; int lv = br_lvl(traf[i].x, traf[i].y, traf[i].a);
         for (int j = -1; j < NTRAF; j++) {
             float ox, oy;
-            if (j < 0) { ox = px_; oy = py_; } else { if (j == i || !traf[j].on) continue; ox = traf[j].x; oy = traf[j].y; }
+            if (j < 0) { if (other_lvl(lv, pl_lvl())) continue; ox = px_; oy = py_; }
+            else { if (j == i || !traf[j].on || other_lvl(lv, br_lvl(traf[j].x, traf[j].y, traf[j].a))) continue; ox = traf[j].x; oy = traf[j].y; }
             float dx = ox - traf[i].x, dy = oy - traf[i].y, lf = dx * c + dy * s, ll = -dx * s + dy * c;
             if (lf > 0 && lf < OP(60) && fabsf(ll) < CP(5.5f) && lf < gap) gap = lf;
         }
@@ -822,11 +839,6 @@ static void traffic_update(void) {
 
 /* ---- мости з двома рівнями (розв'язка): верх — їдеш мостом між огорожами; низ — проїжджаєш під ним.
    Рівень вирішується при в'їзді в зону мосту: з торця — верх, збоку — низ. */
-static int br_on = -1, br_up;                 /* номер мосту, на/під яким машина; верх? */
-static void br_local(int i, float x, float y, float *al, float *ac) {
-    const Bridge *B = &BRIDGES[i]; float dx = x - B->cx, dy = y - B->cy;
-    *al = dx * B->ux + dy * B->uy; *ac = -dx * B->uy + dy * B->ux;
-}
 static int br_wall(float x, float y) {        /* стіни мосту для поточного рівня */
     if (br_on < 0) return 0;
     const Bridge *B = &BRIDGES[br_on]; float al, ac; br_local(br_on, x, y, &al, &ac);
