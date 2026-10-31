@@ -49,7 +49,8 @@ sbits = np.packbits(solid.astype(np.uint8), axis=1, bitorder='little')     # (H,
 import cv2
 SHARP = float(os.environ.get('SHARP', '0.6'))         # різкість карти (нерізка маска, сигма 0,8); 0 — вимкнено
 chunks = []
-for cy in range(NCY):
+REUSE = os.environ.get('REUSE_MAP') == '1' and os.path.exists(os.path.join(BUILD, 'MAP.BIN'))   # лише ресурси (карта та сама)
+for cy in (range(0) if REUSE else range(NCY)):
     if SHARP > 0:
         y0 = max(0, cy * CS - 4); y1 = min(H, (cy + 1) * CS + 4)
         bf = np.asarray(rgbm[y0:y1]).astype(np.float32)
@@ -69,13 +70,18 @@ for cy in range(NCY):
         sb = sbits[cy * CS:(cy + 1) * CS, cx * CS // 8:(cx + 1) * CS // 8].tobytes()
         su = s4[:, cx * CS // 2:(cx + 1) * CS // 2].astype(np.uint8).tobytes()
         chunks.append(zlib.compress(pxl + sb + su, 9))
-hdr = 16 + 4 * (len(chunks) + 1)
-offs = [hdr]
-for c in chunks: offs.append(offs[-1] + len(c))
-with open(os.path.join(BUILD, 'MAP.BIN'), 'wb') as f:
-    f.write(b'KHM3' + struct.pack('<3I', NCX, NCY, CS) + struct.pack('<%dI' % len(offs), *offs))
-    for c in chunks: f.write(c)
-csizes = [len(c) for c in chunks]
+if REUSE:
+    with open(os.path.join(BUILD, 'MAP.BIN'), 'rb') as f:
+        f.read(16); offs = list(struct.unpack('<%dI' % (NCX * NCY + 1), f.read(4 * (NCX * NCY + 1))))
+    csizes = [b - a for a, b in zip(offs[:-1], offs[1:])]
+else:
+    hdr = 16 + 4 * (len(chunks) + 1)
+    offs = [hdr]
+    for c in chunks: offs.append(offs[-1] + len(c))
+    with open(os.path.join(BUILD, 'MAP.BIN'), 'wb') as f:
+        f.write(b'KHM3' + struct.pack('<3I', NCX, NCY, CS) + struct.pack('<%dI' % len(offs), *offs))
+        for c in chunks: f.write(c)
+    csizes = [len(c) for c in chunks]
 MAPBIN_SIZE = offs[-1]
 
 # ---- minimap (1/8): average colour -> nearest palette entry (рядками, щоб не тримати всю карту в RGB)
