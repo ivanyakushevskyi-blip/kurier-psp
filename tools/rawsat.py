@@ -23,12 +23,13 @@ def crop(gx0, gy0, gx1, gy1, ss=1):
     W, H = int((gx1 - gx0) * ss), int((gy1 - gy0) * ss)
     yy, xx = np.mgrid[0:H, 0:W].astype(np.float64)
     gx = gx0 + (xx + 0.5) / ss; gy = gy0 + (yy + 0.5) / ss
-    wx = META['x0'] + gx * 0.5; wy = META['y0'] + gy * 0.5
+    import citydraw as CD
+    wx = META['x0'] + gx * CD.MPP; wy = META['y0'] + gy * CD.MPP
     best = None
     for k, (p, M, img) in _IM.items():
         Mi = np.linalg.inv(M)
         cx, cy = (gx0 + gx1) / 2, (gy0 + gy1) / 2
-        q = Mi @ [META['x0'] + cx * 0.5, META['y0'] + cy * 0.5, 1]
+        q = Mi @ [META['x0'] + cx * CD.MPP, META['y0'] + cy * CD.MPP, 1]
         res = abs(M[0, 0])                                        # м на піксель знімка
         if img is None:
             import PIL.Image; PIL.Image.MAX_IMAGE_PIXELS = None

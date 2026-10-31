@@ -59,7 +59,7 @@ def buildings(CD, md, W, H, NCX, CS, play):
         if len(Q) < 3: continue
         cx, cy = Q.mean(0)
         if not (0 <= cx < W and 0 <= cy < H) or not play[int(cy), int(cx)]: continue
-        if cv2.contourArea(Q) < 12: continue
+        if cv2.contourArea(Q) < 3.0 / CD.MPP ** 2: continue
         if any(cv2.pointPolygonTest(A, (float(cx), float(cy)), False) >= 0 for A in arch): continue     # будинки над арками — окремо
         eps = 0.7
         while True:

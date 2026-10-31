@@ -10,12 +10,14 @@ import citydraw as CD, citygen as CG
 
 K = CD.K
 SS = 4
-MPP = CD.MPP                                     # 0,5 м на піксель карти
+MPP = CD.MPP                                     # м на піксель карти (з 31.10.2026 ≈0,278)
 LV = np.array([-0.5, -0.5, 0.7]); LV /= np.linalg.norm(LV)     # світло з північного заходу (тіні на південний схід)
 GOLD = (226, 182, 64)
 
 
 def m(x): return x / MPP                          # метри -> пікселі карти
+F = 0.5 / MPP                                    # старі пікселі (0,5 м; усі ручні координати нижче) -> пікселі карти
+def O(*v): return tuple(a * F for a in v)
 
 
 class Canvas:
@@ -90,11 +92,11 @@ def dome(cv, cx, cy, r_m, col, cross=True, onion=True):
     if onion:                                                      # гострий верх цибулини — темніше кільце й світла цятка
         rr = np.sqrt(d2) / R
         c *= (1 - 0.18 * np.exp(-((rr - 0.62) / 0.12) ** 2))[..., None]
-    edge = sel & (d2 > (R - 0.6) ** 2)
+    edge = sel & (d2 > (R - 0.6 * F) ** 2)
     c[edge] *= 0.6
     cv.put(sel, np.clip(c[sel], 0, 255))
     if cross:
-        s = max(R * 0.55, 1.6)
+        s = max(R * 0.55, 1.6 * F)
         for (ax, ay, bx, by) in ((cx - s * 0.6, cy, cx + s * 0.6, cy), (cx, cy - s, cx, cy + s)):
             mk = np.zeros(cv.A.shape, np.uint8)
             cv2.line(mk, tuple(cv.P([(ax, ay)])[0]), tuple(cv.P([(bx, by)])[0]), 1, max(1, int(SS * 0.7)), cv2.LINE_8, 4)
@@ -121,7 +123,7 @@ def tower(cv, cx, cy, side_m, wall, roof, ang=0.0, spire=True):
 def shadow(rgb, pts, h_m, strength=0.38):
     """Тінь високого об'єкта на південний схід (як у карті)."""
     P = np.asarray(pts, np.float32)
-    k = min(14.0, h_m * 0.22 * 1.6)
+    k = min(14.0, h_m * 0.22 * 1.6) * F
     x0, y0 = P.min(0) - 2; x1, y1 = P.max(0) + k + 3
     cv = Canvas(x0, y0, x1, y1)
     mk = np.zeros(cv.A.shape, np.uint8)
@@ -138,7 +140,7 @@ def shadow(rgb, pts, h_m, strength=0.38):
 def sat_color(sat, pts, default):
     """медіанний колір даху зі знімка (без найтемніших тіней), трохи світліший — як інші дахи карти"""
     if sat is None: return default
-    f = 0.5 / 0.32
+    f = MPP / 0.32
     P = np.asarray(pts, np.float32) * f
     x0, y0 = np.floor(P.min(0)).astype(int); x1, y1 = np.ceil(P.max(0)).astype(int) + 1
     if x0 < 0 or y0 < 0: return default
@@ -158,7 +160,7 @@ def map_color(rgb, pts, default):
     x0, y0 = np.floor(P.min(0)).astype(int); x1, y1 = np.ceil(P.max(0)).astype(int) + 1
     s = np.asarray(rgb[y0:y1, x0:x1]).astype(np.float32)
     mk = np.zeros(s.shape[:2], np.uint8); cv2.fillPoly(mk, [np.round(P - [x0, y0]).astype(np.int32)], 1)
-    mk = cv2.erode(mk, np.ones((5, 5), np.uint8))
+    mk = cv2.erode(mk, np.ones((int(5 * F) | 1,) * 2, np.uint8))
     px = s[mk.astype(bool)]
     if len(px) < 10: return default
     return tuple(int(v) for v in np.median(px, 0))
@@ -169,7 +171,7 @@ def find_poly(D, x, y, src=('B', 'SAT')):
     for s in src:
         for b in D[s]:
             Q = np.array(b['q'], np.float32) * K
-            if abs(Q[:, 0].mean() - x) > 300 or abs(Q[:, 1].mean() - y) > 300: continue
+            if abs(Q[:, 0].mean() - x) > 300 * F or abs(Q[:, 1].mean() - y) > 300 * F: continue
             d = cv2.pointPolygonTest(Q, (float(x), float(y)), True)
             if best is None or d > best[0]: best = (d, Q)
     return best[1]
@@ -201,17 +203,17 @@ PLAIN = {      # будівлі без бань: колір зі знімка, �
 
 def landmark_roofs(D, rgb, sat):
     for k, (pt, roofc, domec, domes) in CHURCHES.items():
-        P = find_poly(D, *pt, src=('B',))
+        P = find_poly(D, *O(*pt), src=('B',))
         c, u, v, L, W = rect_frame(P)
         cv = Canvas(*(P.min(0) - 3), *(P.max(0) + 3))
         hip_roof(cv, P, roofc, pitch_m=min(6.0, W * MPP * 0.45), steep=1.2)
         for x, y, r in domes:
-            dome(cv, x, y, r, domec)
-        if k in GOLDMAIN: dome(cv, *GOLDMAIN[k], (226, 182, 64))
+            dome(cv, x * F, y * F, r, domec)
+        if k in GOLDMAIN: g = GOLDMAIN[k]; dome(cv, g[0] * F, g[1] * F, g[2], (226, 182, 64))
         cv.commit(rgb)
         print('  дах', k)
     # костел: хрестоподібний сірий дах + вежа з гострим шпилем на південному кінці
-    P = find_poly(D, 8027, 3710, src=('B',))
+    P = find_poly(D, *O(8027, 3710), src=('B',))
     c, u, v, L, W = rect_frame(P)
     cv = Canvas(*(P.min(0) - 3), *(P.max(0) + 3))
     hip_roof(cv, P, (96, 100, 110), pitch_m=6.0, steep=1.3)
@@ -220,19 +222,19 @@ def landmark_roofs(D, rgb, sat):
     tower(cv, *end, 8.0, (196, 198, 204), (70, 76, 90), ang=math.atan2(u[1], u[0]))
     cv.commit(rgb); print('  дах kostel')
     for k, (pt, pitch) in PLAIN.items():
-        P = find_poly(D, *pt, src=('B',))
+        P = find_poly(D, *O(*pt), src=('B',))
         col = map_color(rgb, P, (180, 180, 184))
         cv = Canvas(*(P.min(0) - 3), *(P.max(0) + 3))
         hip_roof(cv, P, col, pitch_m=pitch, steep=1.0)
         cv.commit(rgb); print('  дах', k, col)
     # стара пожежна вежа (каланча): будівля + квадратна вежа над вузлом OSM з довгою тінню
-    P = find_poly(D, 6773, 7489, src=('B',))
+    P = find_poly(D, *O(6773, 7489), src=('B',))
     cv = Canvas(*(P.min(0) - 3), *(P.max(0) + 3))
     hip_roof(cv, P, (196, 82, 62), pitch_m=4.0)                   # червоний дах (сирий знімок)
     cv.commit(rgb)
     # вежа — в куті будівлі (найближчому до точки OSM), сторони вздовж осей будівлі, зовнішній кут = кут будівлі
     side = m(8.0); hs = side / 2
-    nx_, ny_ = 6772, 7489
+    nx_, ny_ = O(6772, 7489)
     _, ue, ve, _, _ = rect_frame(P)
     cn = P[np.argmin(((P - [nx_, ny_]) ** 2).sum(1))]
     best = None
@@ -245,11 +247,11 @@ def landmark_roofs(D, rgb, sat):
     ang = math.atan2(ue[1], ue[0])
     sq = [tuple(np.array([tx, ty]) + ue * a_ * hs + ve * b_ * hs) for a_, b_ in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
     shadow(rgb, sq, 30)
-    cv = Canvas(tx - 14, ty - 14, tx + 14, ty + 14)
+    cv = Canvas(tx - 14 * F, ty - 14 * F, tx + 14 * F, ty + 14 * F)
     tower(cv, tx, ty, 8.0, (232, 196, 92), (120, 64, 50), ang=ang)
     cv.commit(rgb); print('  пожежна вежа')
     # трибуни стадіону «Поділля»: ряди сидінь уздовж поля + дах-козирок
-    P = find_poly(D, 8742, 8930, src=('B',))
+    P = find_poly(D, *O(8742, 8930), src=('B',))
     c, u, v, L, W = rect_frame(P)
     cv = Canvas(*(P.min(0) - 3), *(P.max(0) + 3))
     sel = cv.mask(P).astype(bool)
@@ -288,9 +290,9 @@ def photo_roofs(D, rgb):
         img = cv2.inpaint(img, lab, 9, cv2.INPAINT_TELEA)
         img = cv2.bilateralFilter(img, 7, 30, 5)[..., ::-1].astype(np.float32)
         a, b_ = complex(*e['scr'][0]) * F, complex(*e['scr'][1]) * F
-        A, B = complex(*e['map'][0]), complex(*e['map'][1])
+        A, B = complex(*e['map'][0]) * F, complex(*e['map'][1]) * F
         kk = (B - A) / (b_ - a); tt = A - kk * a
-        P = find_poly(D, *e['at'], src=('B',))
+        P = find_poly(D, *O(*e['at']), src=('B',))
         cv = Canvas(*(P.min(0) - 2), *(P.max(0) + 2))
         X, Y = cv.grid()
         z = (X + 1j * Y - tt) / kk
@@ -354,10 +356,10 @@ def monblan(D, rgb):
     """Подіум ТРЦ — плаский сірий дах із білими парапетами, відкритий паркінг на даху, скляний ліхтар-«стадіон»,
     надбудови; висотна вежа з білим дахом, скляною ротондою на захід і довгою тінню на дах подіуму."""
     e = json.load(open('data/photo_roofs.json'))['_monblan']
-    a, b_ = complex(*e['scr'][0]), complex(*e['scr'][1]); A, B = complex(*e['map'][0]), complex(*e['map'][1])
+    a, b_ = complex(*e['scr'][0]), complex(*e['scr'][1]); A, B = complex(*e['map'][0]) * F, complex(*e['map'][1]) * F
     kk = (B - A) / (b_ - a); tt = A - kk * a
     def G(pts): return [((kk * complex(x, y) + tt).real, (kk * complex(x, y) + tt).imag) for x, y in pts]
-    P = find_poly(D, 6885, 5875, src=('B',))
+    P = find_poly(D, *O(6885, 5875), src=('B',))
     cv = Canvas(*(P.min(0) - 3), *(P.max(0) + 3))
     sel = cv.mask(P).astype(bool)
     X, Y = cv.grid()
@@ -426,7 +428,7 @@ def chekman(D, rgb):
     for w in D['w']:
         t = w['t']
         P = np.array(w['pts']) * K
-        if t.get('man_made') == 'bridge' and t.get('bridge:structure') == 'humpback' and abs(P[:, 0].mean() - 5465) < 40:
+        if t.get('man_made') == 'bridge' and t.get('bridge:structure') == 'humpback' and abs(P[:, 0].mean() - 5465 * F) < 40 * F:
             break
     else:
         print('  !! білий міст не знайдено'); return
@@ -450,12 +452,12 @@ def chekman(D, rgb):
     cv.put(posts, (150, 152, 156))
     cv.commit(rgb); print('  білий міст')
     # колесо огляду: згори — вузький обід із синіми кабінками, опори, довга тінь на південний схід
-    x, y = 4278, 6643
+    x, y = O(4278, 6643)
     Rw = m(16)
     ax = np.array([1.0, 0.0])
     rim = [(x - Rw, y - m(1.2)), (x + Rw, y - m(1.2)), (x + Rw, y + m(1.2)), (x - Rw, y + m(1.2))]
     shadow(rgb, rim, 34, 0.32)
-    cv = Canvas(x - Rw - 6, y - 10, x + Rw + 6, y + 10)
+    cv = Canvas(x - Rw - 6 * F, y - 10 * F, x + Rw + 6 * F, y + 10 * F)
     X, Y = cv.grid()
     base = (np.abs(X - x) < m(5)) & (np.abs(Y - y) < m(4))
     cv.put(base, (170, 172, 176))
@@ -523,7 +525,7 @@ def interchange(D, rgb):
         t = w['t']
         if 'янецька' in t.get('name', '') and t.get('bridge') == 'yes':
             P = np.array(w['pts']) * K
-            d = np.abs(P.mean(0) - [5659, 9951]).sum()
+            d = np.abs(P.mean(0) - np.array([5659, 9951]) * F).sum()
             if best is None or d < best[0]: best = (d, P, t)
     _, P, t = best
     A, B = P[0], P[-1]
@@ -533,7 +535,7 @@ def interchange(D, rgb):
     deck = [c - u * hl - v * hw, c + u * hl - v * hw, c + u * hl + v * hw, c - u * hl + v * hw]
     # проліт = продовження самої Кам'янецької: беремо чистий відрізок дороги перед мостом (той самий асфальт, бордюри,
     # розмітка) і повторюємо його вздовж прольоту з кроком, кратним кроку переривчастої лінії, — без швів і чужих кольорів
-    x0, y0 = np.floor(np.min(deck, 0) - 80).astype(int); x1, y1 = np.ceil(np.max(deck, 0) + 80).astype(int)
+    x0, y0 = np.floor(np.min(deck, 0) - 80 * F).astype(int); x1, y1 = np.ceil(np.max(deck, 0) + 80 * F).astype(int)
     sub = np.asarray(rgb[y0:y1, x0:x1]).astype(np.float32)
     def sample(al, ac):
         X = c[0] + al * u[0] + ac * v[0] - x0; Y = c[1] + al * u[1] + ac * v[1] - y0
@@ -541,7 +543,7 @@ def interchange(D, rgb):
     acs = np.arange(-hw, hw, 0.5, dtype=np.float32)
     best = (None, 0)
     for side in (-1, 1):                                               # з якого боку чистіша дорога (менше розмітки переходів)
-        al_ = side * (hl + np.arange(0, 30, dtype=np.float32))
+        al_ = side * (hl + np.arange(0, int(30 * F), dtype=np.float32))
         st = sample(al_[None, :].repeat(len(acs), 0), acs[:, None].repeat(len(al_), 1))
         var = st.std(1).mean()
         if best[0] is None or var < best[1]: best = (side, var, st)
@@ -549,8 +551,8 @@ def interchange(D, rgb):
     cen = best[2].mean(-1)
     row = cen[np.argmax(cen.std(1))]                                   # рядок із переривчастою лінією
     r = row - row.mean()
-    per = max(range(6, 16), key=lambda q: np.corrcoef(r[:-q], r[q:])[0, 1])
-    Pk = per * (30 // per)
+    per = max(range(int(6 * F), int(16 * F)), key=lambda q: np.corrcoef(r[:-q], r[q:])[0, 1])
+    Pk = per * (int(30 * F) // per)
     sh = max(0.0, 0.0)
     shadow(rgb, deck, 5, 0.22)
     cv = Canvas(*(np.min(deck, 0) - 2), *(np.max(deck, 0) + 2))
@@ -577,7 +579,7 @@ def carve_roads(D, solid):
         t = w['t']
         if not CD.drivable(t) or t.get('access') in ('private', 'no') or t.get('layer', '0') != '0': continue
         P = np.round(np.array(w['pts']) * K).astype(np.int32)
-        x0, y0 = P.min(0) - 20; x1, y1 = P.max(0) + 20
+        x0, y0 = P.min(0) - int(20 * F); x1, y1 = P.max(0) + int(20 * F)
         x0, y0 = max(0, x0), max(0, y0); x1, y1 = min(solid.shape[1], x1), min(solid.shape[0], y1)
         if x1 <= x0 or y1 <= y0: continue
         sub = np.asarray(solid[y0:y1, x0:x1]).copy()
@@ -595,7 +597,7 @@ def market_solid(D, rgb, solid):
         t = w['t']
         if t.get('amenity') != 'marketplace': continue
         P = np.array(w['pts']) * K
-        if abs(P[:, 0].mean() - 3766) > 400 or abs(P[:, 1].mean() - 9357) > 400: continue
+        if abs(P[:, 0].mean() - 3766 * F) > 400 * F or abs(P[:, 1].mean() - 9357 * F) > 400 * F: continue
         x0, y0 = np.floor(P.min(0)).astype(int); x1, y1 = np.ceil(P.max(0)).astype(int) + 1
         mk = np.zeros((y1 - y0, x1 - x0), np.uint8)
         cv2.fillPoly(mk, [np.round(P - [x0, y0]).astype(np.int32)], 1)

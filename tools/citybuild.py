@@ -17,18 +17,22 @@ CS = 64
 W = int(META['W'] * K) // CS * CS
 H = int(META['H'] * K) // CS * CS
 SS = int(os.environ.get('SS', '4'))              # надвибірка (згладжені краї); 1 — стара піксельна карта
-B, M = (1024 if SS == 1 else 512), 64
+B, M = (1024 if SS == 1 else 512), 96
+FS = 0.5 / CD.MPP                         # масштаб відносно старої сітки 0,5 м/пікс (1,8 з 31.10.2026)
+from numpy.lib.format import open_memmap
 LAT0, LON0 = 49.422, 26.995
 MLAT = 111320.0; MLON = 111320.0 * math.cos(math.radians(LAT0))
 G_YARD, G_GRASS, G_WATER, G_SIDE, G_ROAD, G_PATH, G_PED, G_RAIL, G_DIRT, G_PITCH, G_TRACK, G_PARK, G_PAVED, G_WOOD, G_SAND = range(1, 16)
 
 
-def zone(key):
-    """play / margin з build/bounds.npz у сітці гри."""
-    b = np.load('build/bounds.npz')
-    z = b[key]; G = float(b['G'])
-    lon0, lat1, mlon, mlat = float(b['lon0']), float(b['lat1']), float(b['mlon']), float(b['mlat'])
-    xs = META['x0'] + (np.arange(W) + 0.5) * CD.MPP; ys = META['y0'] + (np.arange(H) + 0.5) * CD.MPP
+_ZB = {}
+def zone(key, r0=0, r1=None, step=1):
+    """play / margin з build/bounds.npz у сітці гри: рядки [r0, r1) з кроком step (кроком — для грубих оцінок)."""
+    if key not in _ZB:
+        b = np.load('build/bounds.npz'); _ZB[key] = (b[key], float(b['G']), float(b['lon0']), float(b['lat1']), float(b['mlon']), float(b['mlat']))
+    z, G, lon0, lat1, mlon, mlat = _ZB[key]
+    r1 = H if r1 is None else r1
+    xs = META['x0'] + (np.arange(0, W, step) + 0.5) * CD.MPP; ys = META['y0'] + (np.arange(r0, r1, step) + 0.5) * CD.MPP
     lon = LON0 + xs / MLON; lat = LAT0 - ys / MLAT
     jx = np.clip(((lon - lon0) * mlon / G).astype(int), 0, z.shape[1] - 1)
     iy = np.clip(((lat1 - lat) * mlat / G).astype(int), 0, z.shape[0] - 1)
@@ -96,91 +100,118 @@ BAR_RED, BAR_WHITE = (200, 56, 44), (236, 236, 230)
 
 
 def barriers(rgb, cls, play):
-    """Межа зони на дорогах: червоно-білий бетонний блок поперек проїзду (смуга 5 пікс уздовж межі).
-    Лише там, де дорога перетинає межу; де дорога йде вздовж межі — нічого (довгі смуги відкидаються)."""
-    dist = cv2.distanceTransform(play.astype(np.uint8), cv2.DIST_L2, 3)
-    road = cv2.dilate((cls == G_ROAD).astype(np.uint8), np.ones((5, 5), np.uint8))
-    band = (road > 0) & (dist > 0) & (dist <= 6)
-    n, lab, st, _ = cv2.connectedComponentsWithStats(band.astype(np.uint8), connectivity=8)
-    ok = np.zeros(n, bool)
-    ok[1:] = (st[1:, cv2.CC_STAT_AREA] >= 20) & (st[1:, cv2.CC_STAT_AREA] <= 420) & \
-             (np.maximum(st[1:, cv2.CC_STAT_WIDTH], st[1:, cv2.CC_STAT_HEIGHT]) <= 70)
-    keep = ok[lab]; del lab, band
-    for r0 in range(0, H, 1024):
-        sl = slice(r0, r0 + 1024)
-        d = dist[sl]; kp = keep[sl]
+    """Межа зони на дорогах: червоно-білий бетонний блок поперек проїзду (смуга ≈2,5 м уздовж межі).
+    Лише там, де дорога перетинає межу; де дорога йде вздовж межі — нічого (довгі смуги відкидаються). Смугами рядків."""
+    R = 1024; PAD = int(60 * FS); n_ok = 0
+    k5 = max(3, int(round(5 * FS)) | 1); w6 = 6 * FS; w5 = 5 * FS
+    for r0 in range(0, H, R):
+        a0, a1 = max(0, r0 - PAD), min(H, r0 + R + PAD)
+        pl = np.asarray(play[a0:a1]).astype(np.uint8)
+        dist = cv2.distanceTransform(pl, cv2.DIST_L2, 3)
+        road = cv2.dilate((np.asarray(cls[a0:a1]) == G_ROAD).astype(np.uint8), np.ones((k5, k5), np.uint8))
+        band = (road > 0) & (dist > 0) & (dist <= w6)
+        n, lab, st, _ = cv2.connectedComponentsWithStats(band.astype(np.uint8), connectivity=8)
+        ok = np.zeros(n, bool)
+        ok[1:] = (st[1:, cv2.CC_STAT_AREA] >= 20 * FS * FS) & (st[1:, cv2.CC_STAT_AREA] <= 420 * FS * FS) & \
+                 (np.maximum(st[1:, cv2.CC_STAT_WIDTH], st[1:, cv2.CC_STAT_HEIGHT]) <= 70 * FS)
+        kp = ok[lab][r0 - a0:r0 - a0 + min(R, H - r0)]; d = dist[r0 - a0:r0 - a0 + kp.shape[0]]
         yy, xx = np.mgrid[r0:r0 + d.shape[0], 0:W]
-        red = ((xx + yy) // 6) % 2 == 0
-        blk = rgb[sl]
-        inner = kp & (d > 1) & (d <= 5)
+        red = ((xx + yy) // int(6 * FS)) % 2 == 0
+        blk = np.asarray(rgb[r0:r0 + d.shape[0]])
+        inner = kp & (d > FS) & (d <= w5)
         blk[inner & red] = BAR_RED; blk[inner & ~red] = BAR_WHITE
-        blk[kp & ((d <= 1) | (d > 5))] = CD.OUT
-    print('barriers', int(ok.sum()), flush=True)
+        blk[kp & ((d <= FS) | (d > w5))] = CD.OUT
+        rgb[r0:r0 + d.shape[0]] = blk
+        n_ok += int(ok.sum())
+    print('barriers', n_ok, flush=True)
+
+
+def fade_edge(rgb, play):
+    """За межею зони — м'який перехід у темне: ≈180 м (смугами; відстань рахується на грубій сітці 4 м)."""
+    st = max(1, int(round(4 / CD.MPP)))
+    pc = np.asarray(play[::st, ::st])
+    dc = cv2.distanceTransform((~pc).astype(np.uint8), cv2.DIST_L2, 5) * st * CD.MPP     # метри від межі
+    for r0 in range(0, H, 512):
+        r1 = min(H, r0 + 512)
+        rows = np.clip((np.arange(r0, r1) + 0.5) / st - 0.5, 0, dc.shape[0] - 1).astype(np.float32)
+        cols = np.clip((np.arange(W) + 0.5) / st - 0.5, 0, dc.shape[1] - 1).astype(np.float32)
+        d = cv2.remap(dc, np.tile(cols, (len(rows), 1)), np.repeat(rows[:, None], W, 1), cv2.INTER_LINEAR)
+        t = np.clip(d / 180.0, 0, 1); t = t * t * (3 - 2 * t)
+        k = 1 - 0.88 * t
+        k[np.asarray(play[r0:r1])] = 1
+        blk = np.asarray(rgb[r0:r1]).astype(np.float32) * k[..., None] + np.array(CD.OUT, np.float32) * (1 - k[..., None]) * 0.6
+        rgb[r0:r1] = np.clip(blk, 0, 255).astype(np.uint8)
 
 
 def main(nproc=2):
-    print('map', W, H, flush=True)
-    margin = zone('margin')
-    rgb = np.empty((H, W, 3), np.uint8); rgb[:] = CD.OUT
-    cls = np.zeros((H, W), np.uint8)
+    print('map', W, H, 'MPP %.4f' % CD.MPP, flush=True)
+    st = 16
+    mc = zone('margin', 0, H, st)                                  # грубо: які блоки малювати
     jobs = []
     for by in range(0, H, B):
         for bx in range(0, W, B):
-            if margin[max(0, by - M):by + B + M, max(0, bx - M):bx + B + M].any(): jobs.append((bx, by))
+            if mc[max(0, by - M) // st:(by + B + M) // st + 1, max(0, bx - M) // st:(bx + B + M) // st + 1].any(): jobs.append((bx, by))
     print('blocks', len(jobs), flush=True)
+    # усе велике — на диску (memmap): карта ≈26 500 × 24 000 не вміщається в пам'ять кілька разів
+    play = open_memmap('build/play.npy', 'w+', np.bool_, (H, W)); margin = open_memmap('build/margin.npy', 'w+', np.bool_, (H, W))
+    for r0 in range(0, H, 1024):
+        play[r0:r0 + 1024] = zone('play', r0, min(H, r0 + 1024)); margin[r0:r0 + 1024] = zone('margin', r0, min(H, r0 + 1024))
     if os.environ.get('REUSE') == '1' and os.path.exists('build/rgb_cache.npy') and os.path.exists('build/rgb_cache_ss%d' % SS):
-        rgb = np.load('build/rgb_cache.npy'); cls = np.load('build/cls_cache.npy')    # лише пост-обробка (межа, палітра, mapdata)
+        rgb = np.load('build/rgb_cache.npy', mmap_mode='r+'); cls = np.load('build/cls_cache.npy', mmap_mode='r+')
     else:
+        rgb = open_memmap('build/rgb_cache.npy', 'w+', np.uint8, (H, W, 3)); cls = open_memmap('build/cls_cache.npy', 'w+', np.uint8, (H, W))
+        for r0 in range(0, H, 1024): rgb[r0:r0 + 1024] = CD.OUT; cls[r0:r0 + 1024] = 0
         render_all(jobs, rgb, cls, nproc)
-        np.save('build/rgb_cache.npy', rgb); np.save('build/cls_cache.npy', cls)
+        rgb.flush(); cls.flush()
         for f_ in os.listdir('build'):
             if f_.startswith('rgb_cache_ss'): os.remove('build/' + f_)
         open('build/rgb_cache_ss%d' % SS, 'w').close()
-    # поза запасом — темне тло
-    rgb[~margin] = CD.OUT
-    play = zone('play')
+    out = open_memmap('build/map_rgb.npy', 'w+', np.uint8, (H, W, 3))        # робоча копія (кеш лишається чистим)
+    for r0 in range(0, H, 1024):
+        blk = np.asarray(rgb[r0:r0 + 1024]).copy(); blk[~np.asarray(margin[r0:r0 + 1024])] = CD.OUT; out[r0:r0 + 1024] = blk
+    rgb = out
     barriers(rgb, cls, play)
     # ---- зіткнення: будинки OSM + MS + ручні, вода; поза ігровою зоною — стіна
     D = CD.data()
-    solid = np.zeros((H, W), np.uint8)
+    solid = open_memmap('build/solid.npy', 'w+', np.uint8, (H, W))
     for b in D['B'] + D.get('SAT', []):
         P = np.array(b['q']) * K
         cv2.fillPoly(solid, [np.round(P).astype(np.int32)], 1)
-    # проїжджа частина вільна (будинки, що наїхали на дорогу, не заважають)
     for w in D['w']:
         if CD.drivable(w['t']):
             P = np.round(np.array(w['pts']) * K).astype(np.int32)
             cv2.polylines(solid, [P], False, 0, max(2, int(CD.ROAD_W[w['t']['highway']] / CD.MPP)))     # уся ширина: будинки не залазять на дорогу
     print('dropped buildings on roads', D.get('dropped'), flush=True)
-    # арки: дорога під будинком (tunnel=building_passage / covered) — проїзна
-    for w in D['w']:
+    for w in D['w']:                                                   # арки: дорога під будинком — проїзна
         t = w['t']
         if t.get('highway') in CD.ROAD_W and (t.get('tunnel') == 'building_passage' or t.get('covered') == 'yes'):
             P = np.round(np.array(w['pts']) * K).astype(np.int32)
-            cv2.polylines(solid, [P], False, 0, max(10, int(CD.ROAD_W[t['highway']] / CD.MPP)))
-            # будинок над аркою: гра домальовує його поверх машини
+            cv2.polylines(solid, [P], False, 0, max(int(10 * FS), int(CD.ROAD_W[t['highway']] / CD.MPP)))
             for b in D['B'] + D['SAT']:
                 Q = np.array(b['q'], np.float32) * K
                 if any(cv2.pointPolygonTest(Q, (float(x), float(y)), False) >= 0 for x, y in P.tolist()):
                     ARCH_ROOFS.append(arch_poly(Q))
-    # паркани, сараї, теплиці (з деталей карти): тверді
     seen = set()
-    for kind, pts in EXTRA_SOLID:
-        key = (kind, tuple(np.round(np.array(pts[:2], float).ravel(), 1)))
-        if key in seen: continue
-        seen.add(key)
+    for kind, pts in EXTRA_SOLID:                                      # паркани, сараї, теплиці
+        key_ = (kind, tuple(np.round(np.array(pts[:2], float).ravel(), 1)))
+        if key_ in seen: continue
+        seen.add(key_)
         P = np.round(np.array(pts, float)).astype(np.int32)
         if kind == 'poly': cv2.fillPoly(solid, [P], 1)
-        else: cv2.polylines(solid, [P], True, 1, 2)
+        else: cv2.polylines(solid, [P], True, 1, max(2, int(round(2 * FS))))
     print('extra solids', len(seen), flush=True)
-    solid = solid.astype(bool)                       # вода — не стіна: у неї можна заїхати (і втопити машину)
-    solid |= ~play
-    # ---- палітра карти: лічильник 24-бітних кольорів
+    solid.flush()
+    sb = open_memmap('build/solid_b.npy', 'w+', np.bool_, (H, W))
+    for r0 in range(0, H, 1024): sb[r0:r0 + 1024] = (np.asarray(solid[r0:r0 + 1024]) > 0) | ~np.asarray(play[r0:r0 + 1024])
+    sb.flush(); del sb, solid
+    os.replace('build/solid_b.npy', 'build/solid.npy')
+    solid = np.load('build/solid.npy', mmap_mode='r')
+    # ---- палітра карти (для мінікарти й води): лічильник 24-бітних кольорів
     import palgame
     cnt = np.zeros(1 << 24, np.int64)
     key = lambda a: (a[..., 0].astype(np.int32) << 16) | (a[..., 1].astype(np.int32) << 8) | a[..., 2]
     for r0 in range(0, H, 512):
-        cnt += np.bincount(key(rgb[r0:r0 + 512]).ravel(), minlength=1 << 24)
+        cnt += np.bincount(key(np.asarray(rgb[r0:r0 + 512])).ravel(), minlength=1 << 24)
     keys = np.nonzero(cnt)[0]
     cols = np.stack([(keys >> 16) & 255, (keys >> 8) & 255, keys & 255], 1).astype(np.uint8)
     print('unique colors', len(cols), flush=True)
@@ -198,39 +229,38 @@ def main(nproc=2):
     del cnt
     lut24 = np.zeros(1 << 24, np.uint8); lut24[keys] = (lut + palgame.MAP_START).astype(np.uint8)
     json.dump([list(map(int, c)) for c in pal_cols], open('build/map_colors.json', 'w'))
-    mp_ = np.empty((H, W), np.uint8)
-    for r0 in range(0, H, 512): mp_[r0:r0 + 512] = lut24[key(rgb[r0:r0 + 512])]
-    del lut24
-    # поза ігровою зоною — неяскраво приглушено (той самий колір ×0,72, найближчий у палітрі)
+    mp_ = open_memmap('build/map.npy', 'w+', np.uint8, (H, W))
     pc = pal_cols.astype(np.float32)
     dim = np.arange(256, dtype=np.uint8)
     for k, c in enumerate(pc): dim[palgame.MAP_START + k] = palgame.MAP_START + int(((pc - c * 0.72) ** 2).sum(1).argmin())
     for r0 in range(0, H, 512):
-        o = ~play[r0:r0 + 512]; blk = mp_[r0:r0 + 512]; blk[o] = dim[blk[o]]
-    # які індекси палітри — вода (для «машина тоне»)
-    tot = np.zeros(256, np.int64); wat = np.zeros(256, np.int64)
+        blk = lut24[key(np.asarray(rgb[r0:r0 + 512]))]; o = ~np.asarray(play[r0:r0 + 512]); blk[o] = dim[blk[o]]; mp_[r0:r0 + 512] = blk
+    del lut24
+    tot = np.zeros(256, np.int64); wat = np.zeros(256, np.int64)                     # які індекси палітри — вода
     for r0 in range(0, H, 1024):
-        a = mp_[r0:r0 + 1024]; m = (cls[r0:r0 + 1024] == G_WATER) & play[r0:r0 + 1024]
-        tot += np.bincount(a.ravel(), minlength=256); wat += np.bincount(a[m].ravel(), minlength=256)
+        a = np.asarray(mp_[r0:r0 + 1024]); m_ = (np.asarray(cls[r0:r0 + 1024]) == G_WATER) & np.asarray(play[r0:r0 + 1024])
+        tot += np.bincount(a.ravel(), minlength=256); wat += np.bincount(a[m_].ravel(), minlength=256)
     widx = [int(i) for i in range(256) if wat[i] > 500 and wat[i] > 0.8 * tot[i]]
     json.dump(widx, open('build/water_idx.json', 'w'))
     print('water palette ids', len(widx), flush=True)
-    np.save('build/map.npy', mp_); np.save('build/solid.npy', solid); np.save('build/play.npy', play)
-    del mp_
-    # ---- повнокольорова карта для гри (поза зоною приглушена) + поверхня: 0 тверда, 1 ґрунт/трава, 2 вода
-    for r0 in range(0, H, 512):
-        o = ~play[r0:r0 + 512]; blk = rgb[r0:r0 + 512]; blk[o] = (blk[o] * 0.72).astype(np.uint8)
-    np.save('build/map_rgb.npy', rgb)
-    surf = np.zeros((H, W), np.uint8)
-    surf[np.isin(cls, (G_GRASS, G_DIRT, G_WOOD, G_SAND, G_PITCH))] = 1
-    surf[cls == G_WATER] = 2
-    walk = np.isin(cls, (G_SIDE, G_PED))
-    surf[walk] = 3                                                     # тротуар
-    surf[walk & (cv2.dilate((cls == G_ROAD).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0)] = 4   # бордюр
-    del walk
-    np.save('build/surf.npy', surf); del surf
+    mp_.flush(); del mp_
+    # ---- повнокольорова карта: за межею — м'який перехід у темне
+    fade_edge(rgb, play)
+    rgb.flush()
+    surf = open_memmap('build/surf.npy', 'w+', np.uint8, (H, W))
+    k3 = max(3, int(round(3 * FS)) | 1)
+    for r0 in range(0, H, 1024):
+        c_ = np.asarray(cls[max(0, r0 - 8):r0 + 1024 + 8]); o0 = r0 - max(0, r0 - 8)
+        sf = np.zeros(c_.shape, np.uint8)
+        sf[np.isin(c_, (G_GRASS, G_DIRT, G_WOOD, G_SAND, G_PITCH))] = 1
+        sf[c_ == G_WATER] = 2
+        walk = np.isin(c_, (G_SIDE, G_PED))
+        sf[walk] = 3
+        sf[walk & (cv2.dilate((c_ == G_ROAD).astype(np.uint8), np.ones((k3, k3), np.uint8)) > 0)] = 4
+        surf[r0:r0 + 1024] = sf[o0:o0 + min(1024, H - r0)]
+    surf.flush(); del surf
     mapdata(D, cls, solid, play)
-    pv = rgb[::3, ::3].copy(); pl = play[::3, ::3]; pv[~pl] = (pv[~pl] * 0.5).astype(np.uint8)
+    pv = np.asarray(rgb[::5, ::5]).copy()
     cv2.imwrite('build/preview_full.jpg', pv[..., ::-1], [cv2.IMWRITE_JPEG_QUALITY, 88])
 
 
@@ -239,12 +269,17 @@ def mapdata(D, cls, solid, play):
     import citygen as CG
     MG = CG.MG
     # точки забору/доставки — на проїжджій частині або паркуванні, де вміщається машина
-    free = cv2.erode((~solid & play).astype(np.uint8), np.ones((9, 9), np.uint8)).astype(bool)
-    access = (cls == G_ROAD) & free                  # лише проїжджа частина (не парки й кущі)
+    kk = max(3, int(round(9 * FS * 5.5 / 8.5)) | 1)              # де вміщається машина (5,5 м)
+    access = open_memmap('build/access_tmp.npy', 'w+', np.bool_, (H, W))
+    for r0 in range(0, H, 1024):
+        a0 = max(0, r0 - kk); fr = (~np.asarray(solid[a0:r0 + 1024 + kk]) & np.asarray(play[a0:r0 + 1024 + kk])).astype(np.uint8)
+        fr = cv2.erode(fr, np.ones((kk, kk), np.uint8)).astype(bool)[r0 - a0:r0 - a0 + min(1024, H - r0)]
+        access[r0:r0 + 1024] = fr & (np.asarray(cls[r0:r0 + 1024]) == G_ROAD)     # лише проїжджа частина
 
     def gp(p): return (p[0] * K, p[1] * K)
 
     def stop_at(x, y, maxd=70):
+        maxd = int(maxd * FS)
         x, y = int(round(x)), int(round(y))
         if not (40 <= x < W - 40 and 40 <= y < H - 40) or not play[y, x]: return None
         xa, ya = max(0, x - maxd), max(0, y - maxd)
@@ -299,14 +334,14 @@ def mapdata(D, cls, solid, play):
     cs_ += [(w['t'], gp(np.array(w['pts']).mean(0))) for w in D['w'] if w['closed'] and (w['t'].get('shop') == 'car_repair' or w['t'].get('craft') == 'car_repair')]
     for t, (x, y) in cs_:
         s_ = stop_at(x, y, 90)
-        if s_ and all(abs(s_[0] - a['x']) + abs(s_[1] - a['y']) > 60 for a in sto):
+        if s_ and all(abs(s_[0] - a['x']) + abs(s_[1] - a['y']) > 60 * FS for a in sto):
             sto.append(dict(x=s_[0], y=s_[1], name=MG.clean(t.get('name', 'СТО'))))
     fuel = []
     cf = [(t, gp(CG.px(*D['nodes'][nid]))) for nid, t in D['n'].items() if nid in D['nodes'] and t.get('amenity') == 'fuel']
     cf += [(w['t'], gp(np.array(w['pts']).mean(0))) for w in D['w'] if w['closed'] and w['t'].get('amenity') == 'fuel']
     for t, (x, y) in cf:
         s_ = stop_at(x, y, 90)
-        if s_ and all(abs(s_[0] - a['x']) + abs(s_[1] - a['y']) > 60 for a in fuel):
+        if s_ and all(abs(s_[0] - a['x']) + abs(s_[1] - a['y']) > 60 * FS for a in fuel):
             fuel.append(dict(x=s_[0], y=s_[1], name=MG.clean(t.get('name') or t.get('brand') or 'АЗС')))
     # осьові ліній доріг для помічника смуги: x0,y0,x1,y1, напівширина смуги (пікс), одностороння
     lanes = []

@@ -58,8 +58,8 @@ def build(D, play, W, H):
             for k in range(1, len(idx)): acc += math.hypot(*(P[idx[k]] - P[idx[k - 1]])); arc.append(acc)
             for k, ii in enumerate(idx):
                 if nds[ii] in sig_nodes:
-                    if arc[k] < 30: sig |= 1
-                    if L - arc[k] < 30: sig |= 2
+                    if arc[k] < 15 / CD.MPP: sig |= 1
+                    if L - arc[k] < 15 / CD.MPP: sig |= 2
             edges.append(dict(a=ia, b=ib, p0=len(pts), n=len(q), cls=CLS[h], lanes=min(nl, 6), one=1 if one else 0,
                               w=CD.ROAD_W[h] / CD.MPP, L=L, sig=sig))
             pts.extend(np.round(q).astype(int).tolist())

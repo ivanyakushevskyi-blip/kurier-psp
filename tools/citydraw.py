@@ -9,7 +9,7 @@ import numpy as np, cv2
 from PIL import Image, ImageDraw
 from scipy import ndimage as ndi
 
-MPP = float(os.environ.get("CITY_MPP", "0.5"))           # м на піксель карти (0,5; для зразків інших масштабів — змінна середовища)
+MPP = float(os.environ.get("CITY_MPP", str(0.5 / 1.8)))    # м на піксель карти: з 31.10.2026 — 1,8× від 0,5 (0,2778); змінна середовища — для зразків
 SRC = 0.32
 K = SRC / MPP
 
@@ -555,7 +555,7 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
     # ---------- тіні (на південний схід), м'які краї
     shadow = np.zeros((HF, WF), np.uint8)
     for i, b, pts, ptf in blds:
-        s_ = int(np.clip(b['h'] * 0.22, 1, 7)) * S
+        s_ = int(np.clip(b['h'] * 0.22 * (0.5 / MPP), 1, 7 * (0.5 / MPP)) * S)
         P = np.round(np.array(ptf)).astype(np.int32)
         for k in range(1, s_ + 1, max(1, S // 2)): cv2.fillPoly(shadow, [P + [k, k]], 1)
     for x, y, rr, _ in trees: cv2.circle(shadow, (int((x + 2.5) * S), int((y + 2.5) * S)), int(rr * S), 1, -1)

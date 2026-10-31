@@ -124,11 +124,34 @@ void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const fl
     sceGuTexMode(fmt ? GU_PSM_5551 : GU_PSM_5650, 0, 0, 0);
     sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
     sceGuTexFilter(GU_LINEAR, GU_LINEAR);
-    sceGuTexImage(0, pow2(w), pow2(h), stride, tex);
-    sceGuTexFlush();
-    VT *v = (VT *)sceGuGetMemory(nv * sizeof(VT));
-    for (int i = 0; i < nv; i++) { v[i].u = uvxy[4 * i]; v[i].v = uvxy[4 * i + 1]; v[i].x = uvxy[4 * i + 2]; v[i].y = uvxy[4 * i + 3]; v[i].z = 0; }
-    sceGuDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, nv, 0, v);
+    /* текстура на PSP — не ширша за 512: ширший буфер (віддалена камера) — два вікна, [0, 512) і [w-512, w);
+       кожен трикутник — у те вікно, куди він вліз (дахи малі, стику не видно) */
+    int nwin = w > 512 ? 2 : 1, tw = w > 512 ? 512 : pow2(w), base1 = w > 512 ? ((w - 512) & ~15) : 0;
+    for (int win = 0; win < nwin; win++) {
+        int b0 = win ? base1 : 0;
+        int cnt = 0;
+        for (int t = 0; t + 2 < nv; t += 3) {
+            float u0 = uvxy[4 * t], u1 = uvxy[4 * t + 4], u2 = uvxy[4 * t + 8];
+            float mx = u0 > u1 ? u0 : u1; mx = mx > u2 ? mx : u2;
+            int w1 = nwin > 1 && mx > 511.0f;
+            if (w1 == win) cnt += 3;
+        }
+        if (!cnt) continue;
+        sceGuTexImage(0, tw, pow2(h), stride, tex + b0);
+        sceGuTexFlush();
+        VT *v = (VT *)sceGuGetMemory(cnt * sizeof(VT));
+        int k = 0;
+        for (int t = 0; t + 2 < nv; t += 3) {
+            float u0 = uvxy[4 * t], u1 = uvxy[4 * t + 4], u2 = uvxy[4 * t + 8];
+            float mx = u0 > u1 ? u0 : u1; mx = mx > u2 ? mx : u2;
+            int w1 = nwin > 1 && mx > 511.0f;
+            if (w1 != win) continue;
+            for (int i = t; i < t + 3; i++, k++) {
+                v[k].u = uvxy[4 * i] - b0; v[k].v = uvxy[4 * i + 1]; v[k].x = uvxy[4 * i + 2]; v[k].y = uvxy[4 * i + 3]; v[k].z = 0;
+            }
+        }
+        sceGuDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, cnt, 0, v);
+    }
 }
 
 void gfx_tris_flat(const float *xy, int nv, uint32_t col) {
