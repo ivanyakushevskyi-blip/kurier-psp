@@ -574,6 +574,7 @@ def interchange(D, rgb):
 
 # ---------------------------------------------------------------- дороги вільні: паркани/лінії-бар'єри з деталей не перетинають проїжджу частину
 def carve_roads(D, solid):
+    play = np.load('build/play.npy', mmap_mode='r')
     n = 0
     for w in D['w']:
         t = w['t']
@@ -585,9 +586,10 @@ def carve_roads(D, solid):
         sub = np.asarray(solid[y0:y1, x0:x1]).copy()
         mk = np.zeros(sub.shape, np.uint8)
         cv2.polylines(mk, [P - [x0, y0]], False, 1, max(3, int(CD.ROAD_W[t['highway']] / MPP * 0.7)))
-        hit = sub & mk.astype(bool)
+        mk = mk.astype(bool) & np.asarray(play[y0:y1, x0:x1])       # за межею ігрової зони — лишається твердим
+        hit = sub & mk
         if hit.any():
-            n += int(hit.sum()); sub[mk.astype(bool)] = False; solid[y0:y1, x0:x1] = sub
+            n += int(hit.sum()); sub[mk] = False; solid[y0:y1, x0:x1] = sub
     print('  дороги очищено від перешкод: %d пікс' % n)
 
 

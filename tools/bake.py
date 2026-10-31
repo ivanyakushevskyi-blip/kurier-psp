@@ -274,11 +274,12 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     # смуги для помічника: відрізки осі дороги + сітка 128 пікс
     import roadgraph
     roadgraph.write_c(f, roadgraph.build(CD.data(), _pl, W, H))
-    lanes = md.get('lanes', [])
+    _in = lambda x, y: 0 <= x < W and 0 <= y < H and bool(_pl[int(y), int(x)])
+    lanes = [l for l in md.get('lanes', []) if _in(l[0], l[1]) or _in(l[2], l[3]) or _in((l[0] + l[2]) / 2, (l[1] + l[3]) / 2)]
     LG = 128; gw, gh = (W + LG - 1) // LG, (H + LG - 1) // LG
     cells = [[] for _ in range(gw * gh)]
     for k, (x0, y0, x1, y1, off, ow) in enumerate(lanes):
-        m = 26
+        m = int(round(13 / CD.MPP))
         for cy in range(max(0, (min(y0, y1) - m) // LG), min(gh, (max(y0, y1) + m) // LG + 1)):
             for cx in range(max(0, (min(x0, x1) - m) // LG), min(gw, (max(x0, x1) + m) // LG + 1)):
                 cells[cy * gw + cx].append(k)
