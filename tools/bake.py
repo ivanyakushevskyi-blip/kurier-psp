@@ -296,6 +296,15 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('static const int16_t LANES[][6] = {%s};\n' % (','.join('{%d,%d,%d,%d,%d,%d}' % tuple(l) for l in lanes) or '{0}'))
     f.write('static const uint32_t LANE_CELL[] = {%s};\n' % ','.join(map(str, starts)))
     f.write('static const uint16_t LANE_IDX[] = {%s};\n' % (','.join(map(str, idx)) or '0'))
+    # замовлення не далі від центру, ніж ~200 м до межі зони (31.10.2026, Іван: на краю міста адресу важко знайти)
+    EDGE_M = float(os.environ.get('POI_EDGE_M', '200'))
+    _g = 8
+    _pc = np.ascontiguousarray(_pl[::_g, ::_g]).astype(np.uint8)
+    _dist = cv2.distanceTransform(_pc, cv2.DIST_L2, 5) * _g * CD.MPP
+    def _far(q): return _dist[min(_dist.shape[0] - 1, q['y'] // _g), min(_dist.shape[1] - 1, q['x'] // _g)] >= EDGE_M
+    _n0 = (len(md['shops']), len(md['addrs']))
+    md['shops'] = [q for q in md['shops'] if _far(q)]; md['addrs'] = [q for q in md['addrs'] if _far(q)]
+    print('замовлення: магазинів %d -> %d, адрес %d -> %d (не ближче %.0f м до межі)' % (_n0[0], len(md['shops']), _n0[1], len(md['addrs']), EDGE_M))
     f.write('typedef struct { int16_t x, y; const char *name; const char *kind; } Poi;\n')
     f.write('static const Poi SHOPS[] = {\n%s};\n' % ',\n'.join('{%d,%d,%s,%s}' % (s['x'], s['y'], cstr(s['name']), cstr(s['kind'])) for s in md['shops']))
     f.write('#define NSHOPS (int)(sizeof(SHOPS)/sizeof(SHOPS[0]))\n')
