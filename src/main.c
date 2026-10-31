@@ -783,10 +783,16 @@ static int rg_next(int e, int dir, int straight, int main_only, float tx, float 
     if (rand() % 100 < 55 && best >= 0) return best;               /* частіше прямо */
     return cand[rand() % nc];
 }
-static float rg_lane_off(int e, int lane) {                         /* зміщення праворуч від осі до центру смуги */
-    const REdge *E = &RG_EDGE[e]; float w = E->w2, nl = E->lanes ? E->lanes : 2, lw = w / nl;
-    if (!E->one) { int per = (int)nl / 2; if (per < 1) per = 1; if (w < OP(14)) return 0; return lw * (lane % per + 0.5f); }
-    return -w / 2 + lw * (lane % (int)nl + 0.5f);
+static int rg_per(int e) { const REdge *E = &RG_EDGE[e]; int nl = E->lanes ? E->lanes : (E->one ? 1 : 2); int per = E->one ? nl : nl / 2; return per < 1 ? 1 : (per > 3 ? 3 : per); }
+/* зміщення праворуч від осі ребра до центру смуги lane (0 — ближча до осьової / лівіша); спільне для трафіку й помічника.
+   31.10.2026: і на вузьких двосторонніх — своя права смуга (не по центру), крайня — ще трохи ближче до бордюру, щоб розминатися */
+static float rg_lane_off(int e, int lane) {
+    const REdge *E = &RG_EDGE[e]; int per = rg_per(e); if (lane > per - 1) lane = per - 1; if (lane < 0) lane = 0;
+    float w = E->w2, lw = fminf(OP(6.8f), E->one ? w / per : w / (2 * per));
+    if (E->one) return (lane + 0.5f) * lw - per * lw * 0.5f;
+    float o = lw * (lane + 0.5f);
+    if (lane == per - 1) { float edge = w / 2 - OP(2.9f); if (edge > o) o = fminf(edge, o + OP(1.2f)); }   /* права крайня: ~1,45 м від бордюру */
+    return o;
 }
 static int rg_light_green(int e, int dir) {                         /* світлофор на кінці ребра: зелений для цього підходу? */
     int nd = rg_end_node(e, dir);
@@ -830,14 +836,8 @@ static int traf_hit(float x, float y) {                             /* точк�
 }
 #define TM(m) ((m) / MPP)                                            /* метри -> пікселі карти */
 static float tv_ms(float spd) { return spd * MPP * 60.0f; }          /* пікс/кадр -> м/с */
-static int tr_per(int e) { const REdge *E = &RG_EDGE[e]; int nl = E->lanes ? E->lanes : (E->one ? 1 : 2); int per = E->one ? nl : nl / 2; return per < 1 ? 1 : (per > 3 ? 3 : per); }
-/* зміщення праворуч від осі ребра до центру смуги lane (0 — ближча до осьової / лівіша), для трафіку */
-static float tr_off(int e, int lane) {
-    const REdge *E = &RG_EDGE[e]; int per = tr_per(e); if (lane > per - 1) lane = per - 1;
-    float w = E->w2, lw = fminf(TM(3.4f), E->one ? w / per : w / (2 * per));
-    if (E->one) return (lane + 0.5f) * lw - per * lw * 0.5f;
-    return lw * (lane + 0.5f);
-}
+static int tr_per(int e) { return rg_per(e); }
+static float tr_off(int e, int lane) { return rg_lane_off(e, lane); }
 static void tr_tan_end(int e, int dir, float *tx, float *ty) { float x, y; rg_at(e, dir, rg_len(e) - 0.5f, &x, &y, tx, ty); }
 static void tr_tan_start(int e, int dir, float *tx, float *ty) { float x, y; rg_at(e, dir, 0.5f, &x, &y, tx, ty); }
 /* поворот з (e,dir) на code: кут (+ праворуч на екрані) */
@@ -1316,9 +1316,13 @@ static float lane_steer2(void) {
         float s_ = rg_proj(la_e, la_dir, px_, py_, &d2, &tx, &ty), cx, cy, ux, uy;
         rg_at(la_e, la_dir, s_, &cx, &cy, &ux, &uy);
         float lat = (px_ - cx) * (-uy) + (py_ - cy) * ux;
-        const REdge *E = &RG_EDGE[la_e]; int nl = E->lanes ? E->lanes : 2; float w = E->w2, lw = w / nl, best_l = 0, bd = 1e9f;
-        if (w < OP(14) && !E->one) { best_l = 0; }
-        else for (int i = 0; i < nl; i++) { float c_ = -w / 2 + lw * (i + 0.5f); if (fabsf(c_ - lat) < bd) { bd = fabsf(c_ - lat); best_l = c_; } }
+        /* своя (права) смуга; зустрічну — лише коли машина вже явно в ній (обгін) */
+        const REdge *E = &RG_EDGE[la_e]; int per = rg_per(la_e); float best_l = rg_lane_off(la_e, per - 1), bd = 1e9f;
+        for (int i = 0; i < per; i++) {
+            float c_ = rg_lane_off(la_e, i);
+            if (fabsf(c_ - lat) < bd) { bd = fabsf(c_ - lat); best_l = c_; }
+            if (!E->one && lat < -OP(2.4f) && fabsf(-c_ - lat) < bd) { bd = fabsf(-c_ - lat); best_l = -c_; }
+        }
         la_lat = best_l;
     }
     /* точка огляду: 10 + швидкість*28 пікс уперед уздовж дороги */
