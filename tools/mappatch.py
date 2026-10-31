@@ -618,6 +618,134 @@ def market_solid(D, rgb, solid):
         print('  ринок: тверді кіоски %.0f м²' % (kiosk.sum() * MPP * MPP))
 
 
+# ---------------------------------------------------------------- Ліцей №16 (Грушевського, 72) біля парку Шевченка
+def school16(D, rgb):
+    """За знімком згори (31.10.2026, Іван): червоний скатний дах літерою «С» — довге крило вздовж Грушевського (південний схід)
+    і два поперечні крила на кінцях; між ними й на північний захід — плаский сірий дах із надбудовами та рядом ліхтарів."""
+    P = find_poly(D, *O(7055, 8290), src=('B',))
+    c, u, v, L, W = rect_frame(P)
+    if u[0] < 0: u = -u                                            # уздовж: з південного заходу на північний схід
+    if v[0] + v[1] < 0: v = -v                                     # поперек: з північного заходу на південний схід
+    def Q(fs, ft): return tuple(c + u * (fs - 0.5) * L + v * (ft - 0.5) * W)
+    def R(s0, s1, t0, t1): return [Q(s0, t0), Q(s1, t0), Q(s1, t1), Q(s0, t1)]
+    cv = Canvas(*(P.min(0) - 3), *(P.max(0) + 3))
+    sel = cv.mask(P).astype(bool)
+    FLAT, FLAT2, PARA, DARK = (140, 142, 148), (162, 164, 170), (196, 198, 202), (92, 96, 106)
+    cv.put(sel, FLAT)
+    edge = sel & ~cv2.erode(sel.astype(np.uint8), np.ones((int(SS * 1.4),) * 2, np.uint8)).astype(bool)
+    cv.put(edge, PARA)
+    # ряд ліхтарів уздовж північно-західного краю
+    X, Y = cv.grid()
+    fs = ((X - c[0]) * u[0] + (Y - c[1]) * u[1]) / L + 0.5
+    ft = ((X - c[0]) * v[0] + (Y - c[1]) * v[1]) / W + 0.5
+    ls = (fs - 0.06) * L * MPP
+    cv.put(sel & (fs > 0.06) & (fs < 0.78) & (ft > 0.035) & (ft < 0.085) & (np.mod(ls, 2.6) < 1.3), (78, 88, 104))
+    # надбудови (вищі плоскі об'єми): тінь на південний схід, світлий парапет
+    for s0, s1, t0, t1 in ((0.17, 0.35, 0.12, 0.40), (0.39, 0.55, 0.28, 0.53), (0.60, 0.76, 0.30, 0.53), (0.60, 0.79, 0.07, 0.29)):
+        bx = R(s0, s1, t0, t1)
+        sh = cv.mask([tuple(np.array(q) + m(1.6)) for q in bx]).astype(bool) & sel
+        cv.put(sh, DARK, 0.45)
+        bm = cv.mask(bx).astype(bool) & sel
+        cv.put(bm, FLAT2)
+        be = bm & ~cv2.erode(bm.astype(np.uint8), np.ones((int(SS * 1.2),) * 2, np.uint8)).astype(bool)
+        cv.put(be, PARA)
+        hx = R(s0 + (s1 - s0) * 0.4, s0 + (s1 - s0) * 0.55, t0 + (t1 - t0) * 0.4, t0 + (t1 - t0) * 0.6)    # люк
+        cv.put(cv.mask(hx).astype(bool), DARK)
+    # червоний скатний дах «С»: крило вздовж вулиці + поперечні крила на кінцях (коньки й ендови — за формою)
+    cpoly = [Q(0, 0.2), Q(0.22, 0.2), Q(0.22, 0.56), Q(0.81, 0.56), Q(0.81, 0.15), Q(1.0, 0.15), Q(1.0, 1.0), Q(0, 1.0)]
+    cv2_ = Canvas(cv.x0, cv.y0, cv.x0 + cv.w, cv.y0 + cv.h)
+    hip_roof(cv2_, cpoly, (204, 98, 80), pitch_m=6.5, steep=1.1)
+    rm = cv2_.A > 0
+    cv.C[rm & sel] = cv2_.C[rm & sel]
+    cv.A[rm & sel] = 1
+    # тінь крила «С» на плаский дах (воно вище) — на південний схід від внутрішніх країв
+    cv.commit(rgb)
+    print('  ліцей №16: дах «С» + плаский сірий з надбудовами')
+
+
+# ---------------------------------------------------------------- міський пляж: парасольки-«грибки» рядами вздовж води
+def beach(D, rgb):
+    """Як на знімку (31.10.2026): солом'яні «грибки» ~2,4 м у 2–3 нерівні ряди паралельно воді, крок ~11 м;
+    біля частини — білі лежаки, повернуті до води. Більше нічого на піску."""
+    surf = np.load('build/surf.npy', mmap_mode='r')
+    import random
+    for w in D['w']:
+        t = w['t']
+        if t.get('natural') != 'beach': continue
+        P = np.array(w['pts']) * K
+        x0, y0 = np.floor(P.min(0)).astype(int) - int(m(40)); x1, y1 = np.ceil(P.max(0)).astype(int) + int(m(40))
+        x0, y0 = max(0, x0), max(0, y0)
+        sub = np.asarray(surf[y0:y1, x0:x1])
+        water = (sub & 15) == 2
+        if not water.any(): continue
+        sand = np.zeros(water.shape, np.uint8)
+        cv2.fillPoly(sand, [np.round(P - [x0, y0]).astype(np.int32)], 1)
+        sand = sand.astype(bool) & ~water
+        dw = cv2.distanceTransform((~water).astype(np.uint8), cv2.DIST_L2, 5) * MPP              # м до води
+        dl = cv2.distanceTransform(sand.astype(np.uint8), cv2.DIST_L2, 5) * MPP                    # м до краю піску (будь-якого)
+        rs = random.Random(1031)
+        pts = []
+        # ряди — ізолінії відстані до води (10…36 м, чотири ряди), уздовж ряду крок 10 м, сусідні ряди зі зсувом на півкроку
+        safe = sand & (dl > 4.5)
+        for k_, row in enumerate((10.0, 18.5, 27.0, 35.5)):
+            cs, _ = cv2.findContours((dw < row).astype(np.uint8), cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+            for cn in cs:
+                cn = cn[:, 0, :].astype(np.float64)
+                if len(cn) < 10: continue
+                seg = np.r_[0, np.cumsum(np.hypot(*np.diff(cn, axis=0).T))] * MPP     # довжина вздовж ізолінії, м
+                nxt = (k_ % 2) * 5.0 + 2.0
+                for (xx, yy), sl in zip(cn, seg):
+                    if sl < nxt: continue
+                    ix, iy = int(xx), int(yy)
+                    if not safe[iy, ix]: continue
+                    if any((yy - a_) ** 2 + (xx - b_) ** 2 < m(6.5) ** 2 for a_, b_, _ in pts): continue
+                    nxt = sl + 10.0
+                    if rs.random() < 0.12: continue                                # де-не-де пропуск у ряду
+                    pts.append((yy + rs.uniform(-0.35, 0.35) / MPP, xx + rs.uniform(-0.35, 0.35) / MPP, row))
+                    nxt = sl + 10.0
+        # напрям до води в кожній точці (для лежаків)
+        gy, gx = np.gradient(cv2.GaussianBlur(dw, (0, 0), m(3)))
+        cv = Canvas(x0, y0, x1, y1)
+        X, Y = cv.grid()
+        Rr = m(1.3)
+        for yy, xx, row in pts:
+            cx_, cy_ = xx + x0 + 0.5, yy + y0 + 0.5
+            iy, ix = int(min(gy.shape[0] - 1, yy)), int(min(gx.shape[1] - 1, xx))
+            nx_, ny_ = -gx[iy, ix], -gy[iy, ix]; nn = math.hypot(nx_, ny_) or 1; nx_, ny_ = nx_ / nn, ny_ / nn   # до води
+            if rs.random() < 0.3:                                                  # лежаки перед парасолькою
+                k_ = rs.choice((1, 2))
+                for j in range(k_):
+                    off = (j - (k_ - 1) / 2) * m(1.05)
+                    bc = np.array([cx_, cy_]) + np.array([nx_, ny_]) * m(1.9) + np.array([-ny_, nx_]) * off
+                    a_, b_ = np.array([nx_, ny_]) * m(0.95), np.array([-ny_, nx_]) * m(0.33)
+                    q = [bc - a_ - b_, bc + a_ - b_, bc + a_ + b_, bc - a_ + b_]
+                    bm = cv.mask(q).astype(bool)
+                    cv.put(bm, (236, 234, 226))
+                    be = bm & ~cv2.erode(bm.astype(np.uint8), np.ones((SS,) * 2, np.uint8)).astype(bool)
+                    cv.put(be, (168, 164, 154))
+            dx, dy = X - cx_, Y - cy_
+            sh = (dx - m(0.9)) ** 2 + (dy - m(0.9)) ** 2 < (Rr * 0.95) ** 2           # тінь на південний схід
+            cv.put(sh, (150, 128, 92), 0.55)
+        for yy, xx, row in pts:                                                    # самі «грибки» — поверх тіней і лежаків
+            cx_, cy_ = xx + x0 + 0.5, yy + y0 + 0.5
+            dx, dy = X - cx_, Y - cy_
+            d2 = dx * dx + dy * dy
+            um = d2 < Rr * Rr
+            if not um.any(): continue
+            r = np.sqrt(d2[um]) / Rr
+            ang = np.arctan2(dy[um], dx[um])
+            z = np.sqrt(np.maximum(1 - r * r * 0.85, 0))                           # пологий конус-купол
+            lam = np.clip((-dx[um] / Rr * 0.5 - dy[um] / Rr * 0.5) * 0.6 + 0.75, 0.45, 1.15)
+            straw = 0.86 + 0.14 * np.sin(ang * 16 + r * 2)                         # солом'яні пасма від центру
+            col = np.array([184, 146, 96], np.float32)[None, :] * (lam * straw)[:, None]
+            col[r > 0.84] *= 0.62                                                  # край стріхи
+            col[r < 0.14] = (96, 72, 48)                                           # маківка
+            cv.put(um, np.clip(col, 0, 255))
+        cv.commit(rgb)
+        print('  пляж: парасольок %d' % len(pts))
+
+
+
 def fresh_base():
     """латки кладуться на чисту карту: першого разу (або після нового citybuild) зберегти чисті копії, далі — відновлювати з них"""
     import shutil
@@ -642,6 +770,8 @@ def main():
     monblan(D, rgb)
     chekman(D, rgb)
     mz = None                                                     # скульптури Мазура прибрано (25.10.2026: не схоже)
+    school16(D, rgb)
+    beach(D, rgb)
     br = interchange(D, rgb)
     carve_roads(D, solid)
     market_solid(D, rgb, solid)

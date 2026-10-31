@@ -95,6 +95,11 @@ def data():
                 for b in _CACHE['B'] + _CACHE['SAT']:
                     if cv2.pointPolygonTest(np.array(b['q'], np.float32), pt, False) >= 0:
                         b['roof'] = o['roof']
+        # дахи зі знімка/MS, що дублюють перемальовані вручну будівлі (data/sat_drop.json, точки в сітці 0,32 м)
+        if os.path.exists('data/sat_drop.json'):
+            for o in json.load(open('data/sat_drop.json')):
+                pt = grid_pt(o['pt'], o.get('grid', 'v1'))
+                _CACHE['SAT'] = [b for b in _CACHE['SAT'] if cv2.pointPolygonTest(np.array(b['q'], np.float32), pt, False) < 0]
         for b in _CACHE['B'] + _CACHE['SAT']:
             a = np.array(b['q'], np.float32); b['bb'] = (a[:, 0].min(), a[:, 1].min(), a[:, 0].max(), a[:, 1].max())
         _drop_on_roads(_CACHE, GW, GH)
@@ -573,20 +578,7 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
         CDt.playgrounds(ctx); CDt.benches(ctx); CDt.markets(ctx, bmaskf); CDt.fountains(ctx)
         CDt.park_furniture(ctx, park); CDt.planters(ctx); CDt.kiosks(ctx, solid_out)
 
-    # ---------- пляж
-    sand = cls == G_SAND
-    if sand.any():
-        gx0, gy0 = int(round(x0)), int(round(y0))
-        UMB = [(214, 64, 52), (244, 196, 52), (52, 120, 200), (238, 238, 232)]
-        for yy_ in range(-(gy0 % 16) + 8, H, 16):
-            for xx_ in range(-(gx0 % 18) + 9, W, 18):
-                if not (0 <= yy_ < H and 0 <= xx_ < W) or not sand[yy_ * S, xx_ * S]: continue
-                hsh = ((xx_ + gx0) * 73856093 ^ (yy_ + gy0) * 19349663) & 0xFFFF
-                if hsh % 3 == 0: continue
-                if not sand[max(0, yy_ - 5) * S:(yy_ + 6) * S, max(0, xx_ - 5) * S:(xx_ + 6) * S].all(): continue
-                c = UMB[hsh % 4]
-                cv2.rectangle(img, ((xx_ + 3) * S, (yy_ + 1) * S), ((xx_ + 7) * S, (yy_ + 2) * S + S - 1), (236, 232, 220), -1)
-                cv2.circle(img, (xx_ * S + S // 2, yy_ * S + S // 2), 4 * S, OUT, -1); cv2.circle(img, (xx_ * S + S // 2, yy_ * S + S // 2), 3 * S, c, -1)
+    # ---------- пляж: парасольки-«грибки» рядами вздовж води малює mappatch.beach (31.10.2026)
     # ---------- дахи
     img_ground = img.copy()
     for i, b, pts, ptf in sorted(blds, key=lambda z: z[1]['h']):
