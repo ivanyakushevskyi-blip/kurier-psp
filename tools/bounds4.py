@@ -56,11 +56,16 @@ def main():
             [tuple(p) for p in skl if p[1] < -3180] + [(1166, -3193), (970, -3597)]
     cv2.fillPoly(play, [np.round(np.array([m2px(p) for p in north]) * 8).astype(np.int32)], 1, shift=3)
     # ---- схід: усе на схід від шосе між Січових стрільців і Автовокзалом №1 — геть (сам автовокзал і пр. Миру лишаються)
-    east = [tuple(np.array(p) + [35, 0]) for p in skl if p[1] < -1450] + [(1700, -1300), (2120, -1300), (2120, -1250),
-            (3200, -1250), (3200, -3700), (1860, -3700)]
+    # схід: прибрати лише гаражі/дачі на північ і схід від Дендропарку — лінія Івана (31.10): від шосе вздовж
+    # північного краю Дендропарку, далі вздовж дороги на південний схід до Тихої; Дендропарк і обидві пам'ятки лишаються
+    ivan = [(1700, -1960), (1800, -1936), (2160, -1760), (2300, -1800), (2396, -1880), (2580, -1540), (2772, -1200), (2840, -1080)]
+    east = [tuple(np.array(p) + [35, 0]) for p in skl if p[1] < -1960] + ivan + [(3300, -1080), (3300, -3700), (1860, -3700)]
     cv2.fillPoly(play, [np.round(np.array([m2px(p) for p in east]) * 8).astype(np.int32)], 0, shift=3)
     north_strip = [(1830, -3385)] + [tuple(np.array(p) + [35, 0]) for p in skl if p[1] < -3180] + [(1866, -3180), (2000, -3700), (1860, -3700)]
     cv2.fillPoly(play, [np.round(np.array([m2px(p) for p in north_strip]) * 8).astype(np.int32)], 0, shift=3)
+    # Вокзальна: у v3 межа робила незрозумілий виступ навколо колії — випрямити
+    vk = [(-3548, -1412), (-3534, -1382), (-3506, -1372), (-3492, -1328), (-3514, -1312), (-3540, -1316), (-3560, -1332), (-3590, -1312)]
+    cv2.fillPoly(play, [np.round(np.array([m2px(p) for p in vk]) * 8).astype(np.int32)], 1, shift=3)
     play = cv2.morphologyEx(play, cv2.MORPH_OPEN, np.ones((9, 9), np.uint8))
     n, lab, st, _ = cv2.connectedComponentsWithStats(play)
     play = (lab == 1 + int(np.argmax(st[1:, cv2.CC_STAT_AREA]))).astype(np.uint8)
