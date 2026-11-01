@@ -12,9 +12,10 @@ export PSPDEV="${PSPDEV:-$HOME/pspdev}"; export PATH="$PATH:$PSPDEV/bin"
 # 4) карта міста (citydraw, 0,5 м/пікс)  -> build/map.npy, solid.npy, mapdata.json
 # 5) пакування                          -> build/MAP.BIN + src/assets*
 [[ -f build/bounds.npz ]] || python3 -I tools/bounds2.py
-if [[ ! -f build/sat_map.npy || "${SAT:-}" == "1" ]]; then
+if [[ "${REUSE_MAP:-}" != "1" ]] && [[ ! -f build/sat_map.npy || "${SAT:-}" == "1" ]]; then
   python3 -I tools/satalign2.py
 fi
+if [[ "${REUSE_MAP:-}" != "1" ]]; then          # REUSE_MAP=1 — карту (MAP.BIN) не перемальовувати, лише ресурси EBOOT
 python3 -I tools/manualbld.py
 python3 -I tools/buildings.py
 python3 -I tools/msbld.py
@@ -22,6 +23,7 @@ python3 -I tools/citybuild.py
 python3 -I tools/mappatch.py
 python3 -I tools/poifix.py
 python3 -I tools/lmbuild.py
+fi
 python3 -I tools/bake.py build src
 
 if [[ "${1:-}" == "--host" ]]; then

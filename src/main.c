@@ -1535,7 +1535,7 @@ static void update_player(unsigned btn, int lx) {
         if (spd > OP(0.28f)) {
             float so = spd / OPK;                                   /* у старих одиницях (пікс 0,5 м/кадр) */
             float dmg = (so - 0.28f) * 42.0f;
-            health -= dmg; bump = 10; shake = (int)(2 + so * 6); audio_play(SND_CRASH, fminf(1, 0.3f + so * 0.9f), 0.85f + (rand() % 30) * 0.01f, 0);
+            health -= dmg; bump = 10; shake = (int)(2 + so * 6); { static int crash_t = -100; if (tick - crash_t > 12) { crash_t = tick; audio_play(SND_CRASH, 0.6f * fminf(1, 0.3f + so * 0.9f), 0.85f + (rand() % 30) * 0.01f, 0); } }
             cargo_hit(so);
             for (int k = 0; k < 4; k++) puff(px_ + fx * CP(7.5f), py_ + fy * CP(7.5f), (rand() % 7 - 3) * 0.08f, (rand() % 7 - 3) * 0.08f, 22, 1);
         }

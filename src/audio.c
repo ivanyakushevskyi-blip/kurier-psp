@@ -5,7 +5,7 @@
 typedef struct { int snd; float pos, pitch, vol, pan, cvol, cpan; int on; } Voice;
 static volatile Voice V[V_TOTAL];
 static const int16_t *const *SD; static const uint32_t *SL; static int NS, RATE;
-static float master = 1.5f;                      /* PSP-динаміки тихі */
+static float master = 1.25f;                      /* PSP-динаміки тихі */
 static int next_one;
 
 void audio_master(float v) { master = v; }
@@ -43,7 +43,7 @@ void audio_mix(int16_t *out, int frames) {
     }
     for (int i = 0; i < 2 * frames; i++) {                       /* м'яке обмеження гучних ударів, далі — жорстке */
         float x = acc[i], ax = x < 0 ? -x : x;
-        if (ax > 22000) { ax = 22000 + (ax - 22000) * 0.25f; x = x < 0 ? -ax : ax; }
+        if (ax > 22000) { float e = (ax - 22000) / 10000.0f; ax = 22000 + 10000 * e / (1 + e); x = x < 0 ? -ax : ax; }   /* м'яке обмеження: ніколи не вище 32000 */
         if (x > 32767) x = 32767; if (x < -32768) x = -32768; out[i] = (int16_t)x;
     }
 }
