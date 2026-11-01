@@ -513,6 +513,16 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
         for w, pts, ptf in ways:
             if w['closed'] and w['t'].get('amenity') == 'marketplace': cv2.fillPoly(mk_, [np.round(np.array(pts)).astype(np.int32)], 1)
         canopy &= ~mk_.astype(bool)
+    # великі відкриті паркування (> 1500 м²) — без дерев усередині (01.11.2026: зі знімка там «крони» — машини й тіні); край 3 м лишається
+    pk_ = np.zeros((H, W), np.uint8)
+    for w, pts, ptf in ways:
+        t_ = w['t']
+        if w['closed'] and t_.get('amenity') == 'parking' and t_.get('parking') not in ('underground', 'multi-storey') and len(pts) >= 4:
+            P_ = np.array(pts, np.float32)
+            if cv2.contourArea(P_) * MPP * MPP > 1500: cv2.fillPoly(pk_, [np.round(P_).astype(np.int32)], 1)
+    if pk_.any():
+        e_ = max(1, int(round(3.0 / MPP)))
+        canopy &= ~cv2.erode(pk_, np.ones((2 * e_ + 1, 2 * e_ + 1), np.uint8)).astype(bool)
     FS = 0.5 / MPP                                                # масштаб відносно 0,5 м/пікс (розміри дерев — у метрах)
     _k = lambda n: max(1, int(round(n * FS)) | 1)
     canopy = cv2.morphologyEx(canopy.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((_k(5), _k(5)), np.uint8))
