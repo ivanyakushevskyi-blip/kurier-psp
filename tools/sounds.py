@@ -34,17 +34,18 @@ def engine():
     Рівно 40 періодів — петля без шва; у грі грається з кроком об/хв / 2000."""
     f0 = 2000 / 60 * 2; n = int(round(40 * SR / f0)); t = np.arange(n) / SR
     x = np.zeros(n)
-    for h, a in ((1, 1.0), (2, 0.55), (3, 0.42), (4, 0.25), (6, 0.12), (8, 0.06), (0.5, 0.35)):
+    # 01.11.2026: басовитіше — сильна половинна гармоніка (нерівномірність циліндрів), слабкі верхні, темний фільтр
+    for h, a in ((0.5, 0.8), (1, 1.0), (1.5, 0.25), (2, 0.4), (3, 0.14), (4, 0.05)):
         x += a * np.sin(2 * np.pi * f0 * h * t + rng.uniform(0, 6))
-    pulse = (np.sin(2 * np.pi * f0 * t) > 0.6).astype(float)                    # «бах» кожного спалаху
-    x += 0.35 * _lp(pulse * rng.standard_normal(n), 0.6)
-    x = np.tanh(x * 0.9)
+    pulse = (np.sin(2 * np.pi * f0 * t) > 0.6).astype(float)                    # глухий «бух» кожного спалаху
+    x += 0.15 * _lp(pulse * rng.standard_normal(n), 0.9)
+    x = _lp(np.tanh(x * 0.7), 0.55)
     return _norm(x, 0.8)
 
 
 def intake():
     """шум впуску/вихлопу під навантаженням (додається з газом)"""
-    x = _bp_noise(SR, 120, 1400) + 0.4 * _bp_noise(SR, 1400, 3500)
+    x = _bp_noise(SR, 70, 600) + 0.15 * _bp_noise(SR, 600, 1500)        # темний гул, без шипіння
     return _norm(_loop_fade(x), 0.7)
 
 
@@ -126,7 +127,7 @@ def night():
 def sounds():
     return {'engine': (engine(), 1), 'intake': (intake(), 1), 'skid': (skid(), 1), 'crash': (crash(), 0), 'bump': (bump(), 0),
             'horn': (horn(), 1), 'tick': (tick(), 0), 'pick': (chime([660, 880]), 0), 'deliver': (chime([523, 659, 784, 1047]), 0),
-            'fail': (chime([392, 311], 0.16, 0.4), 0), 'rain': (rain(), 1), 'city': (city(), 1), 'night': (night(), 1)}
+            'fail': (chime([392, 311], 0.16, 0.4), 0), 'rain': (rain(), 1), 'city': (city(), 1)}       # цвіркуни прибрано (01.11.2026)
 
 
 if __name__ == '__main__':
