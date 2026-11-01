@@ -1842,7 +1842,7 @@ static void light_tex_init(void) {
         uint32_t v = (uint32_t)(powf(d, 1.5f) * 255); glow_tex[y * 32 + x] = 0xFF000000u | v << 16 | v << 8 | v;
     }
     for (int y = 0; y < 32; y++) for (int x = 0; x < 64; x++) {
-        float fx = (x + 0.5f) / 64, fy = fabsf((y + 0.5f - 16) / 16), w = 0.18f + 0.62f * fx;   /* розкриття конуса */
+        float fx = (x + 0.5f) / 64, fy = fabsf((y + 0.5f - 16) / 16), w = 0.16f + 0.84f * fx;   /* розкриття конуса */
         float d = fy < w ? (1 - fy / w) : 0; d = powf(d, 0.8f) * powf(1 - fx, 1.2f) * fminf(1, fx * 8);
         uint32_t v = (uint32_t)(fminf(1, d * 1.15f) * 255); cone_tex[y * 64 + x] = 0xFF000000u | v << 16 | v << 8 | v;
     }
@@ -1853,7 +1853,7 @@ static uint32_t lcol(float r, float g, float b, float k) {
 }
 /* світло фар машини: конус уперед, червоні задні (яскравіші при гальмуванні) */
 static void car_lights(float x, float y, float a, float k, int brake) {
-    float c = cosf(a), s = sinf(a), L = CP(30) * ZOOM, hw = CP(8.5f) * ZOOM, f = CAR_LPX * 0.45f * ZOOM;
+    float c = cosf(a), s = sinf(a), L = CP(58) * ZOOM, hw = CP(19.0f) * ZOOM, f = CAR_LPX * 0.42f * ZOOM;   /* ширший і довший пучок (01.11.2026) */
     gfx_quad(cone_tex, 64, 32, x + c * (f + L / 2), y + s * (f + L / 2), a, L / 2, hw, lcol(255, 240, 210, k));
     gfx_quad(glow_tex, 32, 32, x - c * f, y - s * f, a, CP(4) * ZOOM, CP(5) * ZOOM, lcol(255, 40, 30, k * (brake ? 0.9f : 0.45f)));
 }
@@ -2336,13 +2336,13 @@ static void render(void *target_buf) {
         for (int i = 0; i < ndarkv; i++) { dv[2 * i] = sx + darkv[2 * i] * ZOOM; dv[2 * i + 1] = sy + darkv[2 * i + 1] * ZOOM; }
         gfx_tris_flat(dv, ndarkv, 0x80000000);
     }
+    static float vv[MAXRV * 4];
     if (nroofv) {                                                   /* дахи з паралаксом — над машиною */
-        static float vv[MAXRV * 4];
         for (int i = 0; i < nroofv; i++) {
             const float *r = roofv + 4 * i; float *o = vv + 4 * i;
             o[0] = r[0]; o[1] = r[1]; o[2] = sx + r[0] * ZOOM + r[2]; o[3] = sy + r[1] * ZOOM + r[3];
         }
-        gfx_tris16(wbuf, WW, WW, WH, 1, vv, nroofv);              /* дах — прямо з шару карти: біт 15 = непрозорість */
+        gfx_tris16(wbuf, WW, WW, WH, 1, vv, nroofv, 0xFFFFFFFF);  /* дах — прямо з шару карти: біт 15 = непрозорість */
     }
     for (int j = 0; j < nlmv; j++) {                                /* позначки пам'яток — над дахами, під машиною */
         int i = lmv[j].i;
@@ -2419,6 +2419,7 @@ static void render(void *target_buf) {
             }
         }
         gfx_light_end(cur_target);
+        if (nroofv) gfx_tris16(wbuf, WW, WW, WH, 1, vv, nroofv, lcol(amb_r, amb_g, amb_b, 1));   /* дахи — лише темрява ночі: світло з вікон і ліхтарів падає на землю, не на дах */
     }
     for (int i = 0; i < ndim; i++) gfx_rect(dimr[i][0], dimr[i][1], dimr[i][2], dimr[i][3], dimc[i]);
     gfx_layer8(fb, SW, SW, SH, 0, 0, 1, 1, 0);

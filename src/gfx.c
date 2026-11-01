@@ -118,12 +118,13 @@ void gfx_rect(float x, float y, float w, float h, uint32_t col) {
     sceGuDrawArray(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, 0, v);
 }
 
-void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const float *uvxy, int nv) {
+void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const float *uvxy, int nv, uint32_t col) {
     if (nv < 3) return;
     sceGuEnable(GU_TEXTURE_2D);
     sceGuEnable(GU_BLEND);
     sceGuTexMode(fmt ? GU_PSM_5551 : GU_PSM_5650, 0, 0, 0);
-    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+    if (col != 0xFFFFFFFF) { sceGuColor(col); sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA); }   /* дахи вночі — лише темрява, без світла з вікон */
+    else sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
     sceGuTexFilter(GU_LINEAR, GU_LINEAR);
     /* текстура на PSP — не ширша за 512: ширший буфер (віддалена камера) — два вікна, [0, 512) і [base1, base1 + 512);
        трикутник — у те вікно, куди він вліз повністю; довгий дах, що не влазить у жодне, ділиться навпіл (по найдовшому
@@ -328,7 +329,7 @@ void gfx_rect(float x, float y, float w, float h, uint32_t col) {
         if ((unsigned)i < 480 && (unsigned)j < 272) blend(dst + j * 512 + i, p[0], p[1], p[2], p[3] / 255);
 }
 
-void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const float *uvxy, int nv) {
+void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const float *uvxy, int nv, uint32_t col) {
     for (int t = 0; t + 2 < nv; t += 3) {
         const float *A = uvxy + 4 * t, *B = A + 4, *C = A + 8;
         float area = (B[2] - A[2]) * (C[3] - A[3]) - (B[3] - A[3]) * (C[2] - A[2]);
@@ -352,6 +353,7 @@ void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const fl
                 fetch16(tex + tv * stride + tu, fmt, p);
                 for (int j = 0; j < 4; j++) acc[j] += p[j] * wgt;
             }
+            if (col != 0xFFFFFFFF) { acc[0] *= (col & 255) / 255.0f; acc[1] *= ((col >> 8) & 255) / 255.0f; acc[2] *= ((col >> 16) & 255) / 255.0f; }
             blend(dst + y * 512 + x, acc[0], acc[1], acc[2], acc[3] / 255.0f);
         }
     }
