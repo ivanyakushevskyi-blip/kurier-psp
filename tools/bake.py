@@ -130,6 +130,9 @@ SPR_OFF = put(b''.join(f.tobytes() for f in fr))
 SPR_LIT = put(b''.join(f.tobytes() for f in sprites.car_frames(lit=True)))
 CARTEX_OFF, CARTEX_LIT, CARTEX_SHD = (put(t) for t in sprites.car_textures())
 _tt = sprites.traffic_textures(); TRAFTEX_OFF = put(b''.join(_tt)); NTRAFMODEL = len(_tt) // 2
+import sounds as SNDS                                             # звуки, синтезовані кодом (01.11.2026)
+_snd = SNDS.sounds(); _snd_tab = []
+for _k, (_a, _lp) in _snd.items(): _snd_tab.append((_k, put(_a.astype('<i2').tobytes()), len(_a), _lp))
 # ---- дерева: стовбури (колізія) і крони (поверх машини), відсортовані за блоком карти 64x64
 _tr = json.load(open(os.path.join(BUILD, 'trees.json'))) if os.path.exists(os.path.join(BUILD, 'trees.json')) else []
 _pl = np.load(os.path.join(BUILD, 'play.npy'), mmap_mode='r')
@@ -258,6 +261,10 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('#define SPAWN_X %d\n#define SPAWN_Y %d\n' % tuple(md['spawn']))
     f.write('#define SPR_LIT %d\n#define ICON_STO %d\n#define ICON_FUEL %d\n' % (SPR_LIT, ICON_STO, ICON_FUEL))
     f.write('#define TRAFTEX_OFF %d\n#define NTRAFMODEL %d\n' % (TRAFTEX_OFF, NTRAFMODEL))
+    f.write('#define SND_RATE %d\n' % SNDS.SR)
+    for _i, (_k, _o, _n, _lp) in enumerate(_snd_tab): f.write('#define SND_%s %d\n' % (_k.upper(), _i))
+    f.write('#define NSND %d\ntypedef struct { uint32_t off, len; uint8_t loop; } SndDef;\nstatic const SndDef SNDS[] = {%s};\n' % (
+        len(_snd_tab), ','.join('{%d,%d,%d}' % (_o, _n, _lp) for _k, _o, _n, _lp in _snd_tab)))
     f.write('#define TREE_OFF %d\n#define TREE_CELL_OFF %d\n#define NTREE %d\n' % (TREE_OFF, TREE_CELL_OFF, NTREE))
     f.write('#define BLD_OFF %d\n#define BLD_PO_OFF %d\n#define BLD_PT_OFF %d\n#define BLD_CELL_OFF %d\n#define NBLD %d\n' % (BLD_OFF, BLD_PO_OFF, BLD_PT_OFF, BLD_CELL_OFF, NBLD))
     f.write('#define BLD_EO_OFF %d\n#define BLD_EP_OFF %d\n#define BLD_TO_OFF %d\n#define BLD_TR_OFF %d\n#define BLD_OO_OFF %d\n#define BLD_OT_OFF %d\n' % (BLD_EO_OFF, BLD_EP_OFF, BLD_TO_OFF, BLD_TR_OFF, BLD_OO_OFF, BLD_OT_OFF))

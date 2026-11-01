@@ -51,6 +51,7 @@ typedef uint8_t u8;
 #define CP(x) ((x) * OPK * (5.5f / 7.0f))
 #include "pal_ids.h"
 #include "gfx.h"
+#include "audio.h"
 
 /* Буфери, з яких графічний чип бере текстури, — подвійні: поки чип малює кадр N з набору A,
    процесор уже готує кадр N+1 у набір B (swap_bufs після кожного кадру на PSP) */
@@ -657,7 +658,7 @@ static void notebook_input(unsigned pressed) {
         }
     }
 }
-static void fail_order(const char *why) { ostate = O_NONE; owait = 200; late++; say(why, C_red_3, 160); }
+static void fail_order(const char *why) { ostate = O_NONE; owait = 200; late++; say(why, C_red_3, 160); audio_play(SND_FAIL, 0.7f, 1, 0); }
 
 static void update_orders(unsigned pressed) {
     if (ostate == O_NONE) {
@@ -679,6 +680,7 @@ static void update_orders(unsigned pressed) {
         if (++load_t >= 60) {
             otimer = olimit;
             ostate = O_DROP;
+            audio_play(SND_PICK, 0.7f, 1, 0);
             say(otype == T_DANGER ? "ОБЕРЕЖНО! НЕ БИЙ МАШИНУ" : (otype == T_FRAGILE ? "КРИХКЕ! ЇДЬ АКУРАТНО" : "ЗАБРАВ! ВЕЗИ ДО КЛІЄНТА"), C_yellow_3, 110);
         }
         return;
@@ -689,7 +691,7 @@ static void update_orders(unsigned pressed) {
             int bonus = otimer / 60 / 3;
             int got = pay + bonus;
             if (otype == T_FRAGILE) got = (int)(got * cargo / 100.0f);
-            money += got; deliveries++;
+            money += got; deliveries++; audio_play(SND_DELIVER, 0.75f, 1, 0);
             char b[48]; snprintf(b, sizeof b, "+%d ГРН%s", got, bonus > 5 ? "  ШВИДКО!" : "");
             say(b, C_green_3, 150);
             ostate = O_NONE; owait = 140;
@@ -1423,6 +1425,7 @@ static float lane_steer2(void) {
 
 static int on_water(float x, float y) { return surf((int)x, (int)y) == 2; }
 
+static float snd_rpm = 850, snd_gas, snd_skid;
 static void update_player(unsigned btn, int lx) {
     float steer = 0;
     if (btn & PSP_CTRL_LEFT) steer = -1;
@@ -1454,7 +1457,7 @@ static void update_player(unsigned btn, int lx) {
     if (walk && prev_sfc != 3 && prev_sfc != 4 && fabsf(vf) > OP(0.1f)) {
         float k = fabsf(vf) / OPK;
         vf *= k > 0.6f ? 0.95f : 0.97f;
-        bump = 5; shake = k > 0.6f ? 2 : 1;
+        bump = 5; shake = k > 0.6f ? 2 : 1; audio_play(SND_BUMP, 0.35f + 0.4f * fminf(1, k), 0.9f + (rand() % 20) * 0.01f, 0);
         puff(px_ + fx * CP(5.5f), py_ + fy * CP(5.5f), (rand() % 5 - 2) * 0.06f, (rand() % 5 - 2) * 0.06f, 14, 0);
     } else if (!walk && (prev_sfc == 3 || prev_sfc == 4) && fabsf(vf) > OP(0.3f)) { vf *= 0.98f; bump = 3; shake = 1; }   /* з бордюра вниз */
     prev_sfc = sfc;
@@ -1469,7 +1472,11 @@ static void update_player(unsigned btn, int lx) {
     float v_ms = vf * MPP * 60.0f, mass = heavy ? 1580.0f : 1283.0f, a_ms = 0;
     { static const float SHIFT[4] = { 13.0f, 22.5f, 31.5f, 40.5f };     /* 47, 81, 113, 146 км/год */
       int g = 0; while (g < 4 && v_ms > SHIFT[g]) g++;
-      if (g > gear) shift_t = 21; gear = g; }
+      if (g > gear) shift_t = 21; gear = g;
+      float lo = g ? SHIFT[g - 1] : 0, hi = g < 4 ? SHIFT[g] : 51.0f, av = fabsf(v_ms);
+      float rpm = g == 0 ? 850 + av / 13.0f * 5150 : 3600 + (av - lo) / (hi - lo) * 2400;   /* об/хв для звуку */
+      if (shift_t > 0) rpm *= 0.86f;
+      snd_rpm += (rpm - snd_rpm) * 0.25f; snd_gas += ((gas ? 1.0f : 0.0f) - snd_gas) * 0.15f; }
     float resist = 0.42f * v_ms * fabsf(v_ms) + (off ? 0.05f : 0.013f) * mass * 9.81f * (v_ms > 0.05f ? 1 : (v_ms < -0.05f ? -1 : 0));
     if (gas && vf >= -OP(0.02f)) {
         float F = fminf(off ? 3200.0f : 4500.0f, 65000.0f / fmaxf(v_ms, 3.0f));
@@ -1528,7 +1535,7 @@ static void update_player(unsigned btn, int lx) {
         if (spd > OP(0.28f)) {
             float so = spd / OPK;                                   /* у старих одиницях (пікс 0,5 м/кадр) */
             float dmg = (so - 0.28f) * 42.0f;
-            health -= dmg; bump = 10; shake = (int)(2 + so * 6);
+            health -= dmg; bump = 10; shake = (int)(2 + so * 6); audio_play(SND_CRASH, fminf(1, 0.3f + so * 0.9f), 0.85f + (rand() % 30) * 0.01f, 0);
             cargo_hit(so);
             for (int k = 0; k < 4; k++) puff(px_ + fx * CP(7.5f), py_ + fy * CP(7.5f), (rand() % 7 - 3) * 0.08f, (rand() % 7 - 3) * 0.08f, 22, 1);
         }
@@ -1539,6 +1546,7 @@ static void update_player(unsigned btn, int lx) {
     vel = vx_ * fx + vy_ * fy;
     /* дим і сліди при заносі / пробуксовці */
     int burn = gas && sp < OP(0.35f) && vf > OP(0.02f) && !off && (tick & 1);
+    snd_skid = ((drifting || (hand && sp > OP(0.35f)) || burn) && !off) ? fminf(1, 0.4f + sp / OP(1.0f)) : 0;
     if ((drifting || (hand && sp > OP(0.35f)) || burn) && !off) {
         for (int sgn = -1; sgn <= 1; sgn += 2) {
             float wx = px_ - fx * CP(5.5f) + rx * CP(3) * sgn, wy = py_ - fy * CP(5.5f) + ry * CP(3) * sgn;
@@ -2264,10 +2272,28 @@ static void game_init(void) {
     update_camera(1);
 }
 
+/* ---- звук кадру: двигун за обертами й газом, шини, сигнал (стрілка вгору), найближча машина трафіку, фон міста й ночі */
+static void sound_update(unsigned btn) {
+    int play = state == S_PLAY && !freecam && !evac;
+    float eng = state == S_TITLE ? 0 : (play ? 0.32f + 0.30f * snd_gas : 0.18f);
+    audio_loop(V_ENGINE, SND_ENGINE, eng, snd_rpm / 2000.0f, 0);
+    audio_loop(V_INTAKE, SND_INTAKE, play ? (0.05f + 0.22f * snd_gas) * fminf(1, snd_rpm / 3000.0f) : 0, 0.7f + snd_rpm / 7000.0f, 0);
+    audio_loop(V_SKID, SND_SKID, play ? snd_skid * 0.55f : 0, 1, 0);
+    audio_loop(V_HORN, SND_HORN, play && (btn & PSP_CTRL_UP) ? 0.6f : 0, 1, 0);
+    audio_loop(V_CITY, SND_CITY, state == S_TITLE ? 0.12f : 0.20f * (1 - 0.5f * night_k), 1, 0);
+    audio_loop(V_NIGHT, SND_NIGHT, state == S_PLAY ? 0.16f * night_k : 0, 1, 0);
+    float best = 1e9f; int bi = -1;
+    for (int i = 0; i < NTRAF; i++) if (traf[i].on) { float d = dist(traf[i].x, traf[i].y, px_, py_); if (d < best) { best = d; bi = i; } }
+    if (play && bi >= 0 && best < TM(40)) {
+        float k = 1 - best / TM(40), sp = tv_ms(traf[bi].spd);
+        audio_loop(V_TRAF, SND_ENGINE, 0.22f * k * k, 0.55f + sp / 18.0f, fmaxf(-0.8f, fminf(0.8f, (traf[bi].x - px_) / TM(30))));
+    } else audio_loop(V_TRAF, SND_ENGINE, 0, 1, 0);
+}
 static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
     tick++;
     loads_frame = 0;
     tod_update();
+    sound_update(btn);
     if (toast_t > 0) toast_t--;
     if (bump > 0) bump--;
     if (map_err) return;
@@ -2277,6 +2303,7 @@ static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
     }
     if (state == S_BIGMAP) { if (pressed & (PSP_CTRL_SELECT | PSP_CTRL_START | PSP_CTRL_CIRCLE)) state = S_PLAY; return; }
     if (state == S_PAUSE) {
+        if (pressed & (PSP_CTRL_UP | PSP_CTRL_DOWN)) audio_play(SND_TICK, 0.5f, 1, 0);
         if (pressed & PSP_CTRL_UP) menu_i = (menu_i + 3) % 4;
         if (pressed & PSP_CTRL_DOWN) menu_i = (menu_i + 1) % 4;
         if (pressed & PSP_CTRL_START) state = S_PLAY;
@@ -2320,6 +2347,11 @@ static void assets_init(void) {
 }
 
 /* ================= platform ================= */
+static const int16_t *snd_ptr[NSND]; static uint32_t snd_len[NSND];
+static void snd_init(void) {
+    for (int i = 0; i < NSND; i++) { snd_ptr[i] = (const int16_t *)(assets_bin + SNDS[i].off); snd_len[i] = SNDS[i].len; }
+    audio_init(snd_ptr, snd_len, NSND, SND_RATE);
+}
 static void *cur_target;
 static void render(void *target_buf) {
     if (!world_mode) {
@@ -2467,7 +2499,7 @@ int main(int argc, char **argv) {
     }
     load_save();
     assets_init();
-    gfx_init(PALETTE); puff_tex_init(); light_tex_init(); pal16_init(); drt_init();
+    gfx_init(PALETTE); puff_tex_init(); light_tex_init(); pal16_init(); drt_init(); snd_init();
     { int lt = sceKernelCreateThread("loader", loader_thread, 0x30, 0x4000, 0, NULL); if (lt >= 0) sceKernelStartThread(lt, 0, NULL); }
     sceCtrlSetSamplingCycle(0);
     sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
@@ -2525,7 +2557,7 @@ int main(int argc, char **argv) {
     remove(save_path);
     snprintf(map_path, sizeof map_path, "%s", argc > 2 ? argv[2] : "build/MAP.BIN");
     assets_init();
-    gfx_init(PALETTE); puff_tex_init(); light_tex_init(); pal16_init(); drt_init();
+    gfx_init(PALETTE); puff_tex_init(); light_tex_init(); pal16_init(); drt_init(); snd_init();
     if (map_err) { printf("MAP.BIN error %d\n", map_err); return 1; }
     /* title */
     for (int i = 0; i < 40; i++) { game_update(0, 0, 128, 128); }
@@ -2764,6 +2796,11 @@ prof_only:
         for (int f = 0; f < 600; f++) {
             double a = now_s(); game_update(PSP_CTRL_CROSS, 0, 128 + (int)(sinf(f * 0.02f) * 60), 128);
             double b = now_s(); draw_frame(); double c = now_s(); tu += b - a; td += c - b;
+            { static FILE *af; static int16_t ab[735 * 2]; static long peak, clip, nz;
+              if (!af) af = fopen("build/test_audio.raw", "wb");
+              audio_mix(ab, 735); fwrite(ab, 2, 735 * 2, af);
+              for (int q = 0; q < 735 * 2; q++) { int v = abs(ab[q]); if (v > peak) peak = v; if (v >= 32767) clip++; if (v > 200) nz++; }
+              if (f == 599) { fclose(af); printf("audio: peak %ld, clipped %ld, non-silent %.0f%%\n", peak, clip, 100.0 * nz / (600.0 * 735 * 2)); } }
             if (getenv("ANIM") && f >= 200 && f < 320 && f % 2 == 0) { snprintf(nm, sizeof nm, "%s/anim_%03d.ppm", dir, (f - 200) / 2); dump(nm); }
         }
         printf("prof us/frame: update %.0f draw %.0f | map %.0f marks %.0f roofs %.0f crowns+arch+car %.0f particles %.0f\n",
