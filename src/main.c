@@ -2292,9 +2292,11 @@ static void sound_update(unsigned btn) {
     float eng = (state == S_TITLE || quiet) ? 0 : (play ? 0.20f + 0.14f * snd_gas : 0.12f);
     audio_loop(V_ENGINE, SND_ENGINE, eng, 0.8f * powf(snd_rpm / 2000.0f, 0.6f), 0);   /* тон стиснутий: басовитіше, не верещить на високих */
     audio_loop(V_INTAKE, SND_INTAKE, play ? (0.03f + 0.12f * snd_gas) * fminf(1, snd_rpm / 3000.0f) : 0, 0.6f + snd_rpm / 12000.0f, 0);
-    audio_loop(V_SKID, SND_SKID, play ? snd_skid * 0.55f : 0, 1, 0);
+    { static float sk; float tg = play ? snd_skid : 0;                    /* плавна огинаюча: прапорець заносу мерехтить між кадрами */
+      sk += (tg - sk) * (tg > sk ? 0.25f : 0.07f);
+      audio_loop(V_SKID, SND_SKID, sk * 0.45f, 0.9f + 0.15f * sk, 0); }
     audio_loop(V_HORN, SND_HORN, play && (btn & PSP_CTRL_UP) ? 0.6f : 0, 1, 0);
-    audio_loop(V_CITY, SND_CITY, quiet ? 0 : state == S_TITLE ? 0.12f : 0.24f * (1 - 0.7f * night_k), 1, 0);   /* удень гучніше, вночі тихо */
+    audio_loop(V_CITY, SND_CITY, quiet ? 0 : state == S_TITLE ? 0.12f : 0.12f * (1 - 0.7f * night_k), 1, 0);   /* удень гучніше, вночі тихо */
     float best = 1e9f; int bi = -1;
     for (int i = 0; i < NTRAF; i++) if (traf[i].on) { float d = dist(traf[i].x, traf[i].y, px_, py_); if (d < best) { best = d; bi = i; } }
     if (play && !quiet && bi >= 0 && best < TM(40)) {
