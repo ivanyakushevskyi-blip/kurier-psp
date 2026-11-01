@@ -6,7 +6,7 @@ import numpy as np, cv2
 import citydraw as CD
 
 M = lambda m: m / CD.MPP                         # метри -> пікселі карти
-CAR_L, CAR_W = 4.6, 1.9                          # габарит для перевірки місця (м)
+CAR_L, CAR_W = 5.0, 2.0                          # габарит для перевірки місця (м)
 
 
 def _free(x, y, a, solid, surf, play, tg, W, H, ok_surf):
@@ -36,7 +36,7 @@ def lots(D, W, H):
     return out
 
 
-ROW, AISLE, STALL = 5.0, 6.5, 2.6               # ряд, проїзд, місце (м)
+ROW, AISLE, STALL = 6.0, 6.5, 2.9               # ряд, проїзд, місце (м) — під машину гри 5,5 x 2,3 м
 
 
 def lot_rows(P):
@@ -83,27 +83,40 @@ def lot_slots(P):
     return out
 
 
-def build(D, g, W, H, play, solid, surf, trees, seed=11):
+def district(pois, W, H):
+    """щільність району 0..1: магазини (x4) й адреси в радіусі ~140 м; центр — 1, околиці й порожні дороги — 0"""
+    G = int(M(40)); gw, gh = W // G + 1, H // G + 1
+    c = np.zeros((gh, gw), np.float32)
+    for q, wgt in pois: c[min(gh - 1, q['y'] // G), min(gw - 1, q['x'] // G)] += wgt
+    d = cv2.blur(c, (7, 7)) * 49
+    f = np.clip((d - 18) / 90.0, 0, 1)
+    return lambda x, y: float(f[min(gh - 1, max(0, int(y) // G)), min(gw - 1, max(0, int(x) // G))])
+
+
+def build(D, g, W, H, play, solid, surf, trees, pois=(), seed=11):
     rs = random.Random(seed)
+    dens = district(pois, W, H)
     tg = {}
     for t in trees: tg.setdefault((int(t[0]) // 64, int(t[1]) // 64), []).append((t[0], t[1]))
     out = []
     taken = {}                                    # сітка 4 м — не ставити машини одна на одну
-    def put(x, y, a):
+    def put(x, y, a, rmin=None):
+        rmin = M(5.8) if rmin is None else rmin                       # на дорозі — довжина машини; на паркуванні — ширина місця
         k = (int(x // M(4)), int(y // M(4)))
-        for i in (-1, 0, 1):
-            for j in (-1, 0, 1):
+        for i in (-2, -1, 0, 1, 2):
+            for j in (-2, -1, 0, 1, 2):
                 for (qx, qy) in taken.get((k[0] + i, k[1] + j), ()):
-                    if (qx - x) ** 2 + (qy - y) ** 2 < M(4.4) ** 2: return False
+                    if (qx - x) ** 2 + (qy - y) ** 2 < rmin ** 2: return False
         taken.setdefault(k, []).append((x, y))
         out.append((int(round(x)), int(round(y)), int(round((a % (2 * math.pi)) / (2 * math.pi) * 256)) & 255, rs.randrange(8)))
         return True
     # ---- паркування: ряди «ніс до носа» з проїздами (lot_slots — та сама розкладка, що й розмітка в mappatch), ~50% місць
     npark = 0
     for P in lots(D, W, H):
+        occ = 0.25 * (0.5 + 0.5 * dens(*P.mean(0)))                      # удвічі менше, ніж було; в центрі більше
         for x, y, car_a, ok_in in lot_slots(P):
-            if not ok_in or rs.random() > 0.5: continue
-            if _free(x, y, car_a, solid, surf, play, tg, W, H, (0, 1, 3, 4)) and put(x, y, car_a): npark += 1
+            if not ok_in or rs.random() > occ: continue
+            if _free(x, y, car_a, solid, surf, play, tg, W, H, (0, 1, 3, 4)) and put(x, y, car_a, M(2.6)): npark += 1
     # ---- уздовж доріг: широкі — біля бордюру на проїжджій частині поза смугами; вузькі — наполовину на тротуарі
     nroad = ncurb = 0
     for e in g['edges']:
@@ -118,7 +131,7 @@ def build(D, g, W, H, play, solid, surf, trees, seed=11):
         if room >= 2.3 and e['cls'] <= 2: off_m, kind, ok = wm / 2 - 1.15, 'road', (0, 3, 4)
         elif e['cls'] >= 2: off_m, kind, ok = wm / 2 + 0.75, 'curb', (0, 1, 3, 4)
         else: continue
-        prob = 0.22 if kind == 'road' else 0.20
+        prob = 0.30 if kind == 'road' else 0.25
         sides = (1,) if e['one'] else (1, -1)
         acc = np.concatenate([[0], np.cumsum(sl)])
         s_ = M(16) + rs.random() * M(6)
@@ -126,8 +139,9 @@ def build(D, g, W, H, play, solid, surf, trees, seed=11):
             k = min(len(sl) - 1, int(np.searchsorted(acc, s_) - 1)); k = max(k, 0)
             tt = (s_ - acc[k]) / max(sl[k], 1e-3); bx, by = q[k] + seg[k] * tt
             ux, uy = seg[k] / max(sl[k], 1e-3)
+            f_ = dens(bx, by)
             for sd in sides:
-                if rs.random() > prob: continue
+                if rs.random() > prob * f_: continue                            # порожні околиці — без машин
                 x, y = bx - uy * M(off_m) * sd, by + ux * M(off_m) * sd
                 a = math.atan2(uy, ux) + (0 if sd > 0 else math.pi)
                 if _free(x, y, a, solid, surf, play, tg, W, H, ok) and put(x, y, a):

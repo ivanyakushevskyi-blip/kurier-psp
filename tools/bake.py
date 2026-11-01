@@ -283,7 +283,7 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     roadgraph.write_c(f, _g)
     # запарковані машини: сітка 256 пікс
     import parked
-    _pk = parked.build(CD.data(), _g, W, H, _pl, solid, surfm, _tr)
+    _pk = parked.build(CD.data(), _g, W, H, _pl, solid, surfm, _tr, [(q, 4) for q in md['shops']] + [(q, 1) for q in md['addrs']])
     PG = 256; pgw, pgh = (W + PG - 1) // PG, (H + PG - 1) // PG
     _pk.sort(key=lambda c: (c[1] // PG) * pgw + c[0] // PG)
     _pst = [0] * (pgw * pgh + 1)
