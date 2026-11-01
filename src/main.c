@@ -826,6 +826,22 @@ static int br_lvl(float x, float y, float a) {
 }
 static int pl_lvl(void) { return br_on >= 0 ? br_on * 2 + br_up : -1; }
 static int other_lvl(int a, int b) { return a >= 0 && b >= 0 && a != b; }
+/* ---- запарковані машини (01.11.2026): статичні, з ресурсів; тверді для гравця, перешкода для трафіку */
+#define PK_ANG(m) ((m) * (2 * PI_F / 256.0f))
+static int park_hit(float x, float y) {
+    int gx = (int)x / PK_G, gy = (int)y / PK_G;
+    for (int cy = gy - 1; cy <= gy + 1; cy++) for (int cx = gx - 1; cx <= gx + 1; cx++) {
+        if (cx < 0 || cy < 0 || cx >= PK_GW || cy >= PK_GH) continue;
+        int c = cy * PK_GW + cx;
+        for (int k = PK_CELL[c]; k < PK_CELL[c + 1]; k++) {
+            const Parked *P = &PARKED[k]; float dx = x - P->x, dy = y - P->y;
+            if (dx * dx + dy * dy > CP(8) * CP(8)) continue;
+            float a = PK_ANG(P->a), c_ = cosf(a), s_ = sinf(a), lx = dx * c_ + dy * s_, ly = -dx * s_ + dy * c_;
+            if (fabsf(lx) < CP(6.0f) && fabsf(ly) < CP(2.6f)) return 1;
+        }
+    }
+    return 0;
+}
 static int traf_hit(float x, float y) {                             /* точка в кузові машини трафіку? */
     for (int i = 0; i < NTRAF; i++) {
         if (!traf[i].on || traf[i].ghost > 0) continue;
@@ -976,7 +992,8 @@ static void traf_spawn(int i, float vx, float vy, float vw, float vh) {
         int clash = 0;
         for (int j = 0; j < NTRAF; j++) if (traf[j].on && dist(traf[j].x, traf[j].y, xx, yy) < TM(45)) clash = 1;
         if (clash) continue;
-        traf[i].on = 1; traf[i].e = e; traf[i].dir = dir; traf[i].s = s; traf[i].lane = rand() % tr_per(e);
+        traf[i].on = 1; traf[i].e = e; traf[i].dir = dir; traf[i].s = s;
+        { int per = tr_per(e), r = rand() % 10; traf[i].lane = per - 1 - (r < 6 ? 0 : (r < 9 ? 1 : 2)); if (traf[i].lane < 0) traf[i].lane = 0; }   /* частіше крайня права */
         traf[i].model = rand() % NTRAFMODEL;
         float kmh = E->cls <= 1 ? 45 + rand() % 16 : (E->cls == 2 ? 40 + rand() % 12 : 30 + rand() % 12);   /* за класом дороги */
         traf[i].vmax = kmh / 3.6f / (MPP * 60.0f); traf[i].spd = traf[i].vmax * 0.7f;
@@ -1024,6 +1041,17 @@ static float tr_leader(int i, int lv, float *lv_ms) {                /* шлях
                 float d = sd[k - 1] + (sd[k] - sd[k - 1]) * t - TM(5.0f);
                 if (d < best) { best = d; *lv_ms = tv_ms(ov) * cosf(ova - traf[i].a); tr_lead_j = j; }
                 break;
+            }
+        }
+    }
+    {   /* запарковані — лише якщо просто перед капотом (стоять поза смугами, але об'їзд/перестроювання) */
+        int gx = (int)traf[i].x / PK_G, gy = (int)traf[i].y / PK_G;
+        for (int cy = gy - 1; cy <= gy + 1; cy++) for (int cx = gx - 1; cx <= gx + 1; cx++) {
+            if (cx < 0 || cy < 0 || cx >= PK_GW || cy >= PK_GH) continue;
+            int c = cy * PK_GW + cx;
+            for (int k = PK_CELL[c]; k < PK_CELL[c + 1]; k++) {
+                float dx = PARKED[k].x - traf[i].x, dy = PARKED[k].y - traf[i].y, lf = dx * ca + dy * sa, ll = -dx * sa + dy * ca;
+                if (lf > TM(1) && lf < TM(9) && fabsf(ll) < TM(1.8f)) { float d = lf - TM(5.0f); if (d < best) { best = d; *lv_ms = 0; tr_lead_j = -3; } }
             }
         }
     }
@@ -1117,6 +1145,7 @@ static void traffic_update(void) {
             if (fabsf(turn) > 0.5f && left < TM(90)) want = turn > 0 ? per - 1 : 0;
             else if (RG_EDGE[e].one && traf[i].nx >= 0 && !RG_EDGE[traf[i].nx >> 1].one && left < TM(80)) want = per - 1;   /* роздільна → двостороння: у праву смугу */
             else if (gap < 25 && lvs < v0 * 0.6f && rand() % 3 == 0) want = traf[i].lane > 0 ? traf[i].lane - 1 : traf[i].lane + 1;
+            else if (traf[i].lane < per - 1 && gap > 30 && rand() % 4 == 0) want = traf[i].lane + 1;          /* тримайся правіше, коли вільно */
             if (want != traf[i].lane && want >= 0 && want < per && left > TM(20)) {
                 float to = tr_off(e, want), tx, ty, cx, cy; tr_path(i, 0, &cx, &cy, &tx, &ty);
                 float bx = cx - (-ty) * traf[i].off + (-ty) * to, by = cy - tx * traf[i].off + tx * to; int fr = 1;
@@ -1192,6 +1221,7 @@ static int hit(float x, float y, float a) {
         if (is_solid((int)(x + lx * c - ly * s), (int)(y + lx * s + ly * c))) return 1;
     }
     for (int i = 1; i < 9; i++) if (traf_hit(x + CP(HP[i][0]) * c - CP(HP[i][1]) * s, y + CP(HP[i][0]) * s + CP(HP[i][1]) * c)) return 1;
+    if (NPARKED > 0) for (int i = 0; i < 9; i++) if (park_hit(x + CP(HP[i][0]) * c - CP(HP[i][1]) * s, y + CP(HP[i][0]) * s + CP(HP[i][1]) * c)) return 1;
     return 0;
 }
 
@@ -2232,6 +2262,21 @@ static void render(void *target_buf) {
         int i = lmv[j].i;
         gfx_layer8(lm_frame(i), LMS[i].w, LMS[i].w, LMS[i].h, sx + lmv[j].x * ZOOM, sy + lmv[j].y * ZOOM, ZOOM, 1, 0);
     }
+    if (world_mode && NPARKED > 0) {                                     /* запарковані машини */
+        float k = CAR_LPX / CARTEX_LEN * ZOOM, hx = CARTEX_W / 2 * k, hy = CARTEX_H / 2 * k;
+        int gx0 = (int)(viewx - OP(12)) / PK_G, gy0 = (int)(viewy - OP(12)) / PK_G, gx1 = (int)(viewx + VW + OP(12)) / PK_G, gy1 = (int)(viewy + VH + OP(12)) / PK_G;
+        for (int cy = gy0; cy <= gy1; cy++) for (int cx = gx0; cx <= gx1; cx++) {
+            if (cx < 0 || cy < 0 || cx >= PK_GW || cy >= PK_GH) continue;
+            int c = cy * PK_GW + cx;
+            for (int q = PK_CELL[c]; q < PK_CELL[c + 1]; q++) {
+                const Parked *P = &PARKED[q];
+                float x = (P->x - viewx) * ZOOM, y = (P->y - viewy) * ZOOM, a = PK_ANG(P->a);
+                if (x < -20 || x > SW + 20 || y < -20 || y > SH + 20) continue;
+                gfx_quad((const uint32_t *)(assets_bin + CARTEX_SHD), CARTEX_W, CARTEX_H, x + 0.6f * ZOOM, y + 0.9f * ZOOM, a, hx, hy * 1.06f, 0xFFFFFFFF);
+                gfx_quad((const uint32_t *)(assets_bin + TRAFTEX_OFF + (P->m % NTRAFMODEL) * 2 * CARTEX_W * CARTEX_H * 4), CARTEX_W, CARTEX_H, x, y, a, hx, hy, 0xFFFFFFFF);
+            }
+        }
+    }
     if (world_mode && !freecam) {                                       /* трафік */
         float k = CAR_LPX / CARTEX_LEN * ZOOM, hx = CARTEX_W / 2 * k, hy = CARTEX_H / 2 * k;
         for (int i = 0; i < NTRAF; i++) {
@@ -2369,6 +2414,11 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 40; i++) { game_update(0, 0, 128, 128); }
     draw_frame(); snprintf(nm, sizeof nm, "%s/f_title.ppm", dir); dump(nm);
     game_update(0, PSP_CTRL_START, 128, 128);
+    if (getenv("SHOTAT")) {                                            /* кадр у заданій точці (налагодження) */
+        float x_, y_; sscanf(getenv("SHOTAT"), "%f,%f", &x_, &y_); px_ = x_; py_ = y_; ang = 0; stop_car(); update_camera(1);
+        for (int i = 0; i < 30; i++) game_update(0, 0, 128, 128);
+        px_ = x_; py_ = y_; update_camera(1); draw_frame(); draw_frame(); snprintf(nm, sizeof nm, "%s/f_shot.ppm", dir); dump(nm); return 0;
+    }
     if (getenv("PROFONLY")) goto prof_only;
     /* simple autopilot toward the current target */
     int shots = 0, stuck = 0; float lastx = 0, lasty = 0;

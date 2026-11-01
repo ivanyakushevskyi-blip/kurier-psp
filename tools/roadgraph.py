@@ -35,6 +35,7 @@ def build(D, play, W, H):
         ow = t.get('oneway')
         one = 1 if (ow in ('yes', '1', 'true') or t.get('junction') == 'roundabout' or h.endswith('_link') and ow != 'no' and False) else (-1 if ow == '-1' else 0)
         nl = 1 if one else 2
+        if one and 'lanes' not in t: nl = max(1, min(3, int(CD.ROAD_W[h] / 4.0)))     # одностороння без тегу: смуг за шириною (13 м — 3)
         try: nl = max(nl, int(str(t.get('lanes', nl)).split(';')[0]))
         except ValueError: pass
         P = np.array(w['pts'], np.float64) * K

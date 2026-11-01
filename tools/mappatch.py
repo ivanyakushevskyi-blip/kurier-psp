@@ -746,6 +746,43 @@ def beach(D, rgb):
 
 
 
+# ---------------------------------------------------------------- розмітка паркувань під запарковані машини (01.11.2026)
+def parking_marks(D, rgb):
+    """стара розмітка (смуги не в масштабі) — геть; нова: ряди «ніс до носа» по 5 м, місця 2,6 м (як у parked.lot_slots)"""
+    import parked as PK
+    H, W = rgb.shape[:2]; n = 0
+    for P in PK.lots(D, W, H):
+        cx, cy, ux, uy, L, S, rows = PK.lot_rows(P)
+        x0, y0 = np.floor(P.min(0)).astype(int) - 2; x1, y1 = np.ceil(P.max(0)).astype(int) + 3
+        x0, y0 = max(0, x0), max(0, y0); x1, y1 = min(W, x1), min(H, y1)
+        if x1 - x0 < 4 or y1 - y0 < 4: continue
+        img = np.asarray(rgb[y0:y1, x0:x1]).astype(np.float32)
+        mk = np.zeros(img.shape[:2], np.uint8); cv2.fillPoly(mk, [np.round(P - [x0, y0]).astype(np.int32)], 1)
+        mk = cv2.erode(mk, np.ones((3, 3), np.uint8)).astype(bool)
+        if mk.sum() < 50: continue
+        lum = img.mean(-1); sat_ = img.max(-1) - img.min(-1)
+        base = np.median(img[mk & (sat_ < 14)], 0) if (mk & (sat_ < 14)).sum() > 20 else np.median(img[mk], 0)
+        bl = base.mean()
+        old = mk & (sat_ < 16) & (lum > bl + 6)                                  # світлі сірі смуги старої розмітки
+        img[old] = base
+        rgb[y0:y1, x0:x1] = np.clip(img + 0.5, 0, 255).astype(np.uint8)
+        if not rows: continue
+        cv = Canvas(x0, y0, x1, y1)
+        sel = cv.mask(P).astype(bool)
+        X, Y = cv.grid()
+        al = (X - cx) * ux + (Y - cy) * uy; ac = -(X - cx) * uy + (Y - cy) * ux
+        nst = int(L / m(PK.STALL))
+        lines = np.zeros(X.shape, bool)
+        for acr, nose in rows:
+            inrow = np.abs(ac - acr) < m(PK.ROW) / 2
+            ph = np.mod(al + nst * m(PK.STALL) / 2, m(PK.STALL))
+            lines |= inrow & ((ph < m(0.07)) | (ph > m(PK.STALL) - m(0.07)))
+            lines |= (np.abs(np.abs(ac - acr) - m(PK.ROW) / 2) < m(0.07)) & (np.abs(al) < nst * m(PK.STALL) / 2) & (np.sign(ac - acr) == -nose)   # торцева лінія біля проїзду
+        cv.put(lines & sel, np.clip(base * 1.32 + 18, 0, 235))
+        cv.commit(rgb); n += 1
+    print('  розмітка паркувань: %d' % n)
+
+
 def fresh_base():
     """латки кладуться на чисту карту: першого разу (або після нового citybuild) зберегти чисті копії, далі — відновлювати з них"""
     import shutil
@@ -771,6 +808,7 @@ def main():
     chekman(D, rgb)
     mz = None                                                     # скульптури Мазура прибрано (25.10.2026: не схоже)
     school16(D, rgb)
+    parking_marks(D, rgb)
     beach(D, rgb)
     br = interchange(D, rgb)
     carve_roads(D, solid)

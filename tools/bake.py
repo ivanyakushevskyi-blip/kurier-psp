@@ -279,7 +279,20 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('static const Arch ARCHES[] = {%s};\n#define NARCH %d\n' % (','.join('{%d,%d,%d,%d,%d,{%s}}' % (len(q), min(a for a, b in q), min(b for a, b in q), max(a for a, b in q), max(b for a, b in q), ','.join('{%d,%d}' % (a, b) for a, b in q)) for q in ar) or '{0}', len(ar)))
     # смуги для помічника: відрізки осі дороги + сітка 128 пікс
     import roadgraph
-    roadgraph.write_c(f, roadgraph.build(CD.data(), _pl, W, H))
+    _g = roadgraph.build(CD.data(), _pl, W, H)
+    roadgraph.write_c(f, _g)
+    # запарковані машини: сітка 256 пікс
+    import parked
+    _pk = parked.build(CD.data(), _g, W, H, _pl, solid, surfm, _tr)
+    PG = 256; pgw, pgh = (W + PG - 1) // PG, (H + PG - 1) // PG
+    _pk.sort(key=lambda c: (c[1] // PG) * pgw + c[0] // PG)
+    _pst = [0] * (pgw * pgh + 1)
+    for c in _pk: _pst[(c[1] // PG) * pgw + c[0] // PG + 1] += 1
+    for i in range(1, len(_pst)): _pst[i] += _pst[i - 1]
+    f.write('#define PK_G %d\n#define PK_GW %d\n#define PK_GH %d\n#define NPARKED %d\n' % (PG, pgw, pgh, len(_pk)))
+    f.write('typedef struct { int16_t x, y; uint8_t a, m; } Parked;\n')
+    f.write('static const Parked PARKED[] = {%s};\n' % (','.join('{%d,%d,%d,%d}' % c for c in _pk) or '{0}'))
+    f.write('static const uint16_t PK_CELL[] = {%s};\n' % ','.join(map(str, _pst)))
     _in = lambda x, y: 0 <= x < W and 0 <= y < H and bool(_pl[int(y), int(x)])
     lanes = [l for l in md.get('lanes', []) if _in(l[0], l[1]) or _in(l[2], l[3]) or _in((l[0] + l[2]) / 2, (l[1] + l[3]) / 2)]
     LG = 128; gw, gh = (W + LG - 1) // LG, (H + LG - 1) // LG
