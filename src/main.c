@@ -1110,11 +1110,11 @@ static void traffic_update(void) {
         if (traf[i].lblk && traf[i].held == nd && line > TM(0.5f)) tr_release(i);
         /* об'їзд гравця, що стоїть на смузі: через 2 с — по зустрічній, якщо вона вільна на 40 м */
         if (lj == -1 && gap < 15 && fabsf(lvs) < 0.3f && traf[i].dg == 0 && !RG_EDGE[e].one && left > TM(25)) {
-            if (++traf[i].blk_t > 120) {
+            if (++traf[i].blk_t > 240) {
                 int fr = 1; float ca = cosf(traf[i].a), sa = sinf(traf[i].a);
                 for (int j = 0; j < NTRAF; j++) if (j != i && traf[j].on) {
                     float dx = traf[j].x - traf[i].x, dy = traf[j].y - traf[i].y, lf = dx * ca + dy * sa, ll = -dx * sa + dy * ca;
-                    if (lf > TM(1) && lf < TM(70) && ll < -TM(1) && ll > -TM(7) && cosf(traf[j].a - traf[i].a) < 0) fr = 0;   /* зустрічні попереду */
+                    if (lf > TM(1) && lf < TM(120) && ll < -TM(1) && ll > -TM(8) && cosf(traf[j].a - traf[i].a) < 0) fr = 0;   /* зустрічні попереду */
                 }
                 if (fr) { traf[i].dg = -2 * tr_off(e, 0) - TM(0.4f); traf[i].blk_t = 0; }
             }
@@ -1952,6 +1952,30 @@ static void render_particles(void) {
     }
 }
 
+static void crown_box(float x, float y, int ox, int oy) {
+    int R = (int)(CAR_LPX * 0.56f) + 1, x0 = (int)x - R, y0 = (int)y - R, x1 = (int)x + R, y1 = (int)y + R;
+    if (x1 - ox < 0 || y1 - oy < 0 || x0 - ox >= WW || y0 - oy >= WH) return;
+    const int16_t *TT[8]; float rr[8]; int nt = 0;
+    int cx = (int)x / CS, cy = (int)y / CS;
+    for (int gy = cy - 1; gy <= cy + 1; gy++) for (int gx = cx - 1; gx <= cx + 1; gx++) {
+        if (gx < 0 || gy < 0 || gx >= NCX || gy >= NCY) continue;
+        int k0 = TREE_CELL(gy * NCX + gx), k1 = TREE_CELL(gy * NCX + gx + 1);
+        for (int k = k0; k < k1 && nt < 8; k++) {
+            const int16_t *T = TREE(k); float r = abs(T[2]) * 0.82f, dx = T[0] - x, dy = T[1] - y;
+            if (dx * dx + dy * dy > (r + R * 1.42f) * (r + R * 1.42f)) continue;
+            TT[nt] = T; rr[nt++] = r * r;
+        }
+    }
+    if (!nt) return;
+    for (int wy = y0; wy <= y1; wy++) for (int wx = x0; wx <= x1; wx++) {
+        int lx = wx - ox, ly = wy - oy;
+        if ((unsigned)lx >= WW || (unsigned)ly >= WH) continue;
+        for (int t = 0; t < nt; t++) {
+            float dx = wx - TT[t][0], dy = wy - TT[t][1];
+            if (dx * dx + dy * dy <= rr[t]) { warch[ly * WW + lx] = (uint16_t)(map_px16(wx, wy) | 0x8000); WA_MARK(lx, ly); arch_used = 1; break; }
+        }
+    }
+}
 static void draw_world(void) {
     /* огляд (з наближенням ZOOM); струс — у пікселях карти */
     float vx = camx, vy = camy;
@@ -2012,6 +2036,18 @@ static void draw_world(void) {
                     warch[ly * WW + lx] = (uint16_t)(map_px16(wx, wy) | 0x8000); WA_MARK(lx, ly);
                 }
                 arch_used = 1;
+            }
+        }
+    }
+    if (state != S_TITLE && NTREE > 0) {
+        /* крони над трафіком і запаркованими (01.11.2026): лише в межах самої машини — дешево */
+        for (int i = 0; i < NTRAF; i++) if (traf[i].on && !freecam) crown_box(traf[i].x, traf[i].y, ox, oy);
+        if (NPARKED > 0) {
+            int gx0 = (int)(viewx - OP(12)) / PK_G, gy0 = (int)(viewy - OP(12)) / PK_G, gx1 = (int)(viewx + VW + OP(12)) / PK_G, gy1 = (int)(viewy + VH + OP(12)) / PK_G;
+            for (int cy = gy0; cy <= gy1; cy++) for (int cx = gx0; cx <= gx1; cx++) {
+                if (cx < 0 || cy < 0 || cx >= PK_GW || cy >= PK_GH) continue;
+                int c = cy * PK_GW + cx;
+                for (int q = PK_CELL[c]; q < PK_CELL[c + 1]; q++) crown_box(PARKED[q].x, PARKED[q].y, ox, oy);
             }
         }
     }

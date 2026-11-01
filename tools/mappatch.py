@@ -808,7 +808,7 @@ def main():
     chekman(D, rgb)
     mz = None                                                     # скульптури Мазура прибрано (25.10.2026: не схоже)
     school16(D, rgb)
-    parking_marks(D, rgb)
+    if os.environ.get("PARKMARKS") == "1": parking_marks(D, rgb)     # нова розмітка паркувань — лише з новим MAP.BIN
     beach(D, rgb)
     br = interchange(D, rgb)
     carve_roads(D, solid)
