@@ -142,7 +142,7 @@ void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const fl
                 if (T[4 * i] < mn) mn = T[4 * i]; if (T[4 * i] > mx) mx = T[4 * i];
                 if (T[4 * i + 1] < vn) vn = T[4 * i + 1]; if (T[4 * i + 1] > vx) vx = T[4 * i + 1];
             }
-            int big = mx - mn > 128.0f || vx - vn > 128.0f;            /* великі трикутники — дрібніше (точність і кеш текстур GE) */
+            int big = mx - mn > 480.0f || vx - vn > 480.0f;   /* (128 було зайве: лише ділило на тисячі дрібних) */            /* великі трикутники — дрібніше (точність і кеш текстур GE) */
             int win = -1;
             if (nwin == 1 || mx <= 510.0f) win = 0;
             else if (mn >= base1 + 1.0f) win = 1;

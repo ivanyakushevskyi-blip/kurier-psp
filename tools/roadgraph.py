@@ -16,7 +16,7 @@ def build(D, play, W, H):
     ways = []
     for w in D['w']:
         t = w['t']; h = t.get('highway')
-        if h not in CLS or not CD.drivable(t) or t.get('layer', '0') not in ('0',): continue
+        if h not in CLS or not CD.drivable(t) or t.get('layer', '0') not in ('0', '1', '2'): continue   # мости (верх розв'язки) — теж дороги
         if t.get('access') in ('private', 'no') or t.get('service') in ('parking_aisle', 'driveway'): continue
         ways.append(w)
     use = {}

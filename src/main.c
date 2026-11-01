@@ -61,8 +61,9 @@ static float zoom = 1.0f;                 /* 1 — піксель у піксе�
 #define ZOOM zoom
 #define VW (SW / ZOOM)                   /* огляд у пікселях карти: 384 x 217,6 */
 #define VH (SH / ZOOM)
-#define WW 608                           /* буфер світу: огляд + запас на субпіксельний зсув (крок кратний 16) */
-#define WH 344
+#define ZOOM_OUT 0.0f                     /* віддалення камери на макс. швидкості (01.11.2026: вимкнено до швидших авто; було 0,2) */
+#define WW 496                           /* буфер світу: огляд + запас на субпіксельний зсув (крок кратний 16); з віддаленням 0,8 — 608 x 344 */
+#define WH 288
 static uint16_t __attribute__((aligned(16))) wbuf_[2][WW * WH];     /* карта, 5551 (біт 15 — дах для паралаксу) */
 static uint16_t __attribute__((aligned(16))) warch_[2][WW * WH];    /* крони й будинки над арками, 5551 */
 static u8 __attribute__((aligned(16))) wover_[2][WW * WH];          /* бульбашки (індекси палітри, 0 — прозоро) */
@@ -806,7 +807,7 @@ static int rg_light_green(int e, int dir) {                         /* світ�
 /* машина трафіку (31.10.2026): своя позиція й швидкість, кермує до точки попереду на своїй смузі (дуги замість стрибків),
    маршрут на одне ребро наперед (nx), швидкість — IDM за лідером, поворотами й стоп-лініями */
 static struct { int on, e, dir, lane, model, stop_t, brake, nx, blink, lc_t, held, hold_t, wait, hold_ap;
-                float s, spd, vmax, x, y, a, off, T, hold_turn, fade, tn, dg, dc; int blk_t; } traf[NTRAF];
+                float s, spd, vmax, x, y, a, off, T, hold_turn, fade, tn, dg, dc; int blk_t, ghost, lblk; } traf[NTRAF];
 static uint32_t node_hold[RG_NN];                                    /* хто зайняв перехрестя (біти машин) */
 static int br_on = -1, br_up;                 /* номер мосту, на/під яким машина; верх? */
 static void br_local(int i, float x, float y, float *al, float *ac) {
@@ -817,7 +818,9 @@ static void br_local(int i, float x, float y, float *al, float *ac) {
 static int br_lvl(float x, float y, float a) {
     for (int i = 0; i < NBRIDGE; i++) {
         const Bridge *B = &BRIDGES[i]; float al, ac; br_local(i, x, y, &al, &ac);
-        if (fabsf(al) < B->hl && fabsf(ac) < B->hw + OP(12)) return i * 2 + (fabsf(cosf(a) * B->ux + sinf(a) * B->uy) > 0.7f);
+        int along = fabsf(cosf(a) * B->ux + sinf(a) * B->uy) > 0.7f;
+        if (along && fabsf(al) < B->hl && fabsf(ac) < B->hw) return i * 2 + 1;            /* на мосту (лише на самому прольоті) */
+        if (!along && fabsf(al) < B->hl + OP(6) && fabsf(ac) < B->hw + OP(12)) return i * 2;   /* під мостом — поперек */
     }
     return -1;
 }
@@ -825,7 +828,7 @@ static int pl_lvl(void) { return br_on >= 0 ? br_on * 2 + br_up : -1; }
 static int other_lvl(int a, int b) { return a >= 0 && b >= 0 && a != b; }
 static int traf_hit(float x, float y) {                             /* точка в кузові машини трафіку? */
     for (int i = 0; i < NTRAF; i++) {
-        if (!traf[i].on) continue;
+        if (!traf[i].on || traf[i].ghost > 0) continue;
         float dx = x - traf[i].x, dy = y - traf[i].y;
         if (dx * dx + dy * dy > CP(8) * CP(8)) continue;
         if (other_lvl(pl_lvl(), br_lvl(traf[i].x, traf[i].y, traf[i].a))) continue;     /* на іншому рівні мосту */
@@ -932,6 +935,15 @@ static int tr_can_enter(int i, int nd) {
     uint32_t m = node_hold[nd] & ~(1u << i);
     int ap = traf[i].e * 2 + traf[i].dir;
     float ti = traf[i].tn, ax, ay; tr_tan_end(traf[i].e, traf[i].dir, &ax, &ay);
+    if (fabsf(ti) > 1.1f && traf[i].nx >= 0) {                        /* крутий поворот мете ширше: не їхати, поки на моїй дорозі виїзду
+                                                                       хтось чекає біля стоп-лінії назустріч (на вузьких вулицях зачепив би) */
+        int ex = traf[i].nx >> 1;
+        for (int j = 0; j < NTRAF; j++) if (j != i && traf[j].on && traf[j].e == ex && rg_end_node(ex, traf[j].dir) == nd &&
+            rg_len(ex) - traf[j].s < RG_NODE_R[nd] + TM(9)) {
+            if (fabsf(traf[j].tn) > 1.1f && j < i) continue;           /* обидва круто — пріоритет за номером, без клинчення */
+            return 0;
+        }
+    }
     if (!m) return 1;
     for (int j = 0; j < NTRAF; j++) if (m & (1u << j)) {
         if (traf[j].hold_ap == ap) continue;                                           /* той самий під'їзд — слідом */
@@ -970,7 +982,7 @@ static void traf_spawn(int i, float vx, float vy, float vw, float vh) {
         traf[i].vmax = kmh / 3.6f / (MPP * 60.0f); traf[i].spd = traf[i].vmax * 0.7f;
         traf[i].T = 1.0f + (rand() % 9) * 0.1f;                         /* характер водія: дистанція 1–1,8 с */
         traf[i].off = tr_off(e, traf[i].lane); traf[i].x = xx - ty * traf[i].off; traf[i].y = yy + tx * traf[i].off; traf[i].a = atan2f(ty, tx);
-        traf[i].fade = 1; traf[i].dg = 0; traf[i].blk_t = 0; traf[i].stop_t = 0; traf[i].brake = 0; traf[i].blink = 0; traf[i].lc_t = 0; traf[i].held = -1; traf[i].hold_t = 0; traf[i].wait = 0;
+        traf[i].fade = 1; traf[i].dg = 0; traf[i].blk_t = 0; traf[i].ghost = 0; traf[i].lblk = 0; traf[i].stop_t = 0; traf[i].brake = 0; traf[i].blink = 0; traf[i].lc_t = 0; traf[i].held = -1; traf[i].hold_t = 0; traf[i].wait = 0;
         traf[i].nx = tr_choose(e, dir); traf[i].tn = tr_turn(e, dir, traf[i].nx); tr_set_dc(i);
         return;
     }
@@ -1025,6 +1037,7 @@ static void traffic_update(void) {
         if (!traf[i].on) { if (++sp_t % 5 == 0) traf_spawn(i, vx, vy, vw, vh); continue; }
         int seen = traf[i].x > vx - OP(30) && traf[i].x < vx + vw + OP(30) && traf[i].y > vy - OP(30) && traf[i].y < vy + vh + OP(30);
         if (!seen && (dist(traf[i].x, traf[i].y, px_, py_) > OP(640) || traf[i].wait > 60 * 25)) { tr_release(i); traf[i].on = 0; continue; }
+        if (traf[i].ghost > 0 && !(traf[i].ghost == 1 && dist(traf[i].x, traf[i].y, px_, py_) < CP(15))) traf[i].ghost--;   /* не тверднути, поки гравець усередині */
         int e = traf[i].e, dir = traf[i].dir, nd = rg_end_node(e, dir);
         float len = rg_len(e), left = len - traf[i].s, v = tv_ms(traf[i].spd);
         float turn = traf[i].tn;
@@ -1054,7 +1067,7 @@ static void traffic_update(void) {
             int must = 0;
             if ((RG_EDGE[e].sig & (dir ? 1 : 2)) && !rg_light_green(e, dir) && line > -TM(1)) must = 1;
             float need = line * MPP - (v * v) / (2 * 3.0f);                 /* ще встигаю зупинитися? */
-            if (!must && line * MPP < 22 + v * 1.5f) {
+            if (!must && !traf[i].lblk && line * MPP < 22 + v * 1.5f) {      /* займати лише коли сам можу їхати (не стою за кимось) */
                 if (tr_can_enter(i, nd)) { tr_release(i); traf[i].held = nd; traf[i].hold_t = 0; traf[i].hold_ap = e * 2 + dir; traf[i].hold_turn = turn; node_hold[nd] |= 1u << i; }
                 else if (need > -2) must = 1;
             }
@@ -1064,19 +1077,27 @@ static void traffic_update(void) {
         /* ---- IDM: вільний рух + лідер + стоп-лінія як нерухома перешкода */
         int lv = br_lvl(traf[i].x, traf[i].y, traf[i].a);
         float lvs, gap = tr_leader(i, lv, &lvs) * MPP, dv = v - lvs; int lj = tr_lead_j;
+        if (lj == -1) gap -= 2.0f;                                        /* до гравця — більший запас: є куди здати назад */
+        traf[i].lblk = lj != -2 && gap < 6.0f && v < 1.0f;                  /* стою за іншим — перехрестя не тримаю */
+        if (traf[i].lblk && traf[i].held == nd && line > TM(0.5f)) tr_release(i);
         /* об'їзд гравця, що стоїть на смузі: через 2 с — по зустрічній, якщо вона вільна на 40 м */
         if (lj == -1 && gap < 15 && fabsf(lvs) < 0.3f && traf[i].dg == 0 && !RG_EDGE[e].one && left > TM(25)) {
             if (++traf[i].blk_t > 120) {
                 int fr = 1; float ca = cosf(traf[i].a), sa = sinf(traf[i].a);
                 for (int j = 0; j < NTRAF; j++) if (j != i && traf[j].on) {
                     float dx = traf[j].x - traf[i].x, dy = traf[j].y - traf[i].y, lf = dx * ca + dy * sa, ll = -dx * sa + dy * ca;
-                    if (lf > TM(1) && lf < TM(40) && ll < -TM(1) && ll > -TM(6) && cosf(traf[j].a - traf[i].a) < 0) fr = 0;   /* зустрічні попереду */
+                    if (lf > TM(1) && lf < TM(70) && ll < -TM(1) && ll > -TM(7) && cosf(traf[j].a - traf[i].a) < 0) fr = 0;   /* зустрічні попереду */
                 }
                 if (fr) { traf[i].dg = -2 * tr_off(e, 0) - TM(0.4f); traf[i].blk_t = 0; }
             }
         } else if (lj != -1) traf[i].blk_t = 0;
         if (traf[i].dg != 0) {                                                    /* повернутися, коли гравець позаду */
-            float dx = px_ - traf[i].x, dy = py_ - traf[i].y;
+            float dx = px_ - traf[i].x, dy = py_ - traf[i].y, ca = cosf(traf[i].a), sa = sinf(traf[i].a);
+            if (dx * ca + dy * sa > TM(2))                                        /* ще не порівнявся з гравцем — зустрічна близько? назад у смугу */
+                for (int j = 0; j < NTRAF; j++) if (j != i && traf[j].on && cosf(traf[j].a - traf[i].a) < 0) {
+                    float ex = traf[j].x - traf[i].x, ey = traf[j].y - traf[i].y, lf = ex * ca + ey * sa;
+                    if (lf > -TM(3) && lf < TM(50) && fabsf(-ex * sa + ey * ca) < TM(7)) { traf[i].dg = 0; traf[i].blk_t = 0; break; }
+                }
             if (dx * cosf(traf[i].a) + dy * sinf(traf[i].a) < -TM(7) || dist(px_, py_, traf[i].x, traf[i].y) > TM(30) || left < TM(12)) traf[i].dg = 0;
         }
         if (stop < 1e8f) { float g2 = stop * MPP + 1.0f; if (g2 < gap) { gap = g2; dv = v; } }
@@ -1094,6 +1115,7 @@ static void traffic_update(void) {
         if (per > 1 && traf[i].lc_t == 0 && (tick + i * 13) % 30 == 0) {
             int want = traf[i].lane;
             if (fabsf(turn) > 0.5f && left < TM(90)) want = turn > 0 ? per - 1 : 0;
+            else if (RG_EDGE[e].one && traf[i].nx >= 0 && !RG_EDGE[traf[i].nx >> 1].one && left < TM(80)) want = per - 1;   /* роздільна → двостороння: у праву смугу */
             else if (gap < 25 && lvs < v0 * 0.6f && rand() % 3 == 0) want = traf[i].lane > 0 ? traf[i].lane - 1 : traf[i].lane + 1;
             if (want != traf[i].lane && want >= 0 && want < per && left > TM(20)) {
                 float to = tr_off(e, want), tx, ty, cx, cy; tr_path(i, 0, &cx, &cy, &tx, &ty);
@@ -1118,7 +1140,7 @@ static void traffic_update(void) {
         tr_path(i, ld, &gx, &gy, &gtx, &gty);
         float al = atan2f(gy - traf[i].y, gx - traf[i].x) - traf[i].a;
         while (al > PI_F) al -= 2 * PI_F; while (al < -PI_F) al += 2 * PI_F;
-        float kap = 2 * sinf(al) / (ld * MPP), kmax = 0.25f;
+        float kap = 2 * sinf(al) / (ld * MPP), kmax = v < 4.0f ? 0.34f : 0.25f;   /* на малій швидкості — тісніше (аркадно), щоб не виносило на зустрічну */
         if (kap > kmax) kap = kmax; if (kap < -kmax) kap = -kmax;
         if (v < 0.05f && fabsf(al) > 1.2f) kap = 0;
         traf[i].a += kap * v / 60.0f;
@@ -1242,10 +1264,24 @@ static void puff(float x, float y, float dx, float dy, int life, u8 kind) {
     part[part_i].x = x; part[part_i].y = y; part[part_i].dx = dx; part[part_i].dy = dy;
     part[part_i].life = part[part_i].max = life; part[part_i].kind = kind; part_i = (part_i + 1) % NPART;
 }
+static int in_arch(int x, int y) {                                  /* точка під будинком над проїздом (арка/тунель)? */
+    for (int i = 0; i < NARCH; i++) {
+        const Arch *A = &ARCHES[i];
+        if (x < A->x0 || x > A->x1 || y < A->y0 || y > A->y1) continue;
+        int in = 0;
+        for (int a = 0, b = A->n - 1; a < A->n; b = a++) {
+            int ya = A->p[a][1], yb = A->p[b][1];
+            if ((ya > y) != (yb > y) && x < (A->p[b][0] - A->p[a][0]) * (y - ya) / (float)(yb - ya) + A->p[a][0]) in = !in;
+        }
+        if (in) return 1;
+    }
+    return 0;
+}
 #define NSKID 1200
 static int16_t skid[NSKID][2]; static int skid_i, skid_n;
 static void add_skid(float x, float y) {
     int16_t ix = (int16_t)x, iy = (int16_t)y; int pi = (skid_i + NSKID - 1) % NSKID;
+    if (in_arch(ix, iy)) return;                                      /* під аркою слідів не видно */
     if (skid_n && skid[pi][0] == ix && skid[pi][1] == iy) return;
     skid[skid_i][0] = ix; skid[skid_i][1] = iy; skid_i = (skid_i + 1) % NSKID; if (skid_n < NSKID) skid_n++;
 }
@@ -1477,7 +1513,7 @@ static void update_player(unsigned btn, int lx) {
         for (int sgn = -1; sgn <= 1; sgn += 2) {
             float wx = px_ - fx * CP(5.5f) + rx * CP(3) * sgn, wy = py_ - fy * CP(5.5f) + ry * CP(3) * sgn;
             add_skid(wx, wy);
-            if ((tick + sgn) % 3 == 0) puff(wx, wy, -vx_ * 0.2f + (rand() % 5 - 2) * 0.05f, -vy_ * 0.2f - 0.05f, 34, 0);
+            if ((tick + sgn) % 5 == 0 && !in_arch((int)wx, (int)wy)) puff(wx, wy, -vx_ * 0.2f + (rand() % 5 - 2) * 0.05f, -vy_ * 0.2f - 0.05f, 26, 0);   /* менше диму (01.11.2026) */
         }
     }
     if (health < 35 && tick % 9 == 0) puff(px_ + fx * CP(6.5f), py_ + fy * CP(6.5f), 0.02f, -0.18f, 40, 2);   /* пара з-під капота */
@@ -1485,7 +1521,11 @@ static void update_player(unsigned btn, int lx) {
     fuel -= moved / OPK * 0.00156f * (heavy ? 1.4f : 1.0f) + (gas ? 0.0002f : 0);     /* повний бак ≈ 32 км */
     if (fuel < 0) fuel = 0;
     if (fuel < 20 && !fuel_warned) { fuel_warned = 1; say("МАЛО ПАЛЬНОГО! ЗАЇДЬ НА АЗС", C_yellow_3, 160); }
-    if ((gas || brake) && moved < OP(0.02f)) { if (++blocked_t > 90) unwedge(); } else blocked_t = 0;
+    if ((gas || brake) && moved < OP(0.02f)) {
+        if (++blocked_t == 40)                                         /* затиснуло трафіком — ці машини на 2 с не тверді для мене */
+            for (int t = 0; t < NTRAF; t++) if (traf[t].on && dist(traf[t].x, traf[t].y, px_, py_) < CP(15)) traf[t].ghost = 120;
+        if (blocked_t > 90) unwedge();
+    } else blocked_t = 0;
     static int win_t; static float wx, wy;
     if (gas || brake) {
         if (++win_t >= 240) { if (fabsf(px_ - wx) + fabsf(py_ - wy) < OP(6)) unwedge(); win_t = 0; wx = px_; wy = py_; }
@@ -1554,7 +1594,7 @@ static void update_camera(int snap) {
     float spd = sqrtf(vx_ * vx_ + vy_ * vy_), k = spd / VMAX; if (k > 1) k = 1;
     /* віддалення на швидкості: до 75 км/год камера найближча (найчіткіше), далі плавно до 80% на 90 км/год */
     { float t = k < 75.0f / 90.0f ? 0 : (k - 75.0f / 90.0f) / (15.0f / 90.0f); t = t * t * (3 - 2 * t);
-      float zt = 1.0f - 0.2f * t;
+      float zt = 1.0f - ZOOM_OUT * t;
       if (snap) zoom = zt; else zoom += (zt - zoom) * 0.025f;
       if (zoom > 0.997f && zt >= 1.0f) zoom = 1.0f; }
     float tx = px_ + vx_ * (32 + 36 * k) - VW / 2, ty = py_ + vy_ * (27 + 29 * k) - VH / 2 + 12 / ZOOM;
@@ -1756,7 +1796,7 @@ static void draw_hud(void) {
       /* що саме їсть процесор (0,1 мс): карта, позначки, дахи, крони/арки, частинки, решта малювання (інтерфейс), логіка */
       int P[8]; for (int i = 0; i < 8; i++) P[i] = prof_show[i];
       int rest = P[7] - P[0] - P[1] - P[2] - P[3] - P[4]; if (rest < 0) rest = 0;
-      snprintf(f_, sizeof f_, "M%d P%d D%d K%d C%d I%d L%d", P[0], P[1], P[2], P[3], P[4], rest, P[6]);
+      snprintf(f_, sizeof f_, "M%d P%d D%d K%d C%d I%d L%d R%d", P[0], P[1], P[2], P[3], P[4], rest, P[6], P[5]);
       otext8(4, y0 - 24, 1, C_white_2, C_ink_0, f_); }
     snprintf(w, sizeof w, "%d ГРН", money);
     /* вгорі: таймер ліворуч, вулиця по центру, радар праворуч, відстань під ним */
@@ -1871,11 +1911,12 @@ static void puff_tex_init(void) {
 static void render_particles(void) {
     for (int i = 0; i < NPART; i++) {
         if (part[i].life <= 0 || part[i].kind == 3) continue;
+        if ((map_px16((int)part[i].x, (int)part[i].y) & 0x8000) || in_arch((int)part[i].x, (int)part[i].y)) continue;   /* дим не крізь дахи */
         float t = 1.0f - (float)part[i].life / part[i].max;
-        float r = OP(part[i].kind == 1 ? 1.5f + t * 2 : 2.0f + t * 4.5f) * 0.8f;
+        float r = OP(part[i].kind == 1 ? 1.5f + t * 2 : (part[i].kind == 0 ? 1.6f + t * 3.2f : 2.0f + t * 4.5f)) * 0.8f;
         u8 c = part[i].kind == 2 ? (t < 0.5f ? C_ink_2 : C_white_0) : (t < 0.4f ? C_white_2 : (t < 0.75f ? C_white_1 : C_white_0));
         if (part[i].kind == 1) c = C_yellow_3;
-        float a = (part[i].kind == 1 ? 0.9f : 0.8f) * (1 - t * t);
+        float a = (part[i].kind == 1 ? 0.9f : (part[i].kind == 0 ? 0.6f : 0.8f)) * (1 - t * t);
         gfx_quad(puff_tex, 16, 16, (part[i].x - viewx) * ZOOM, (part[i].y - viewy) * ZOOM, 0, r * ZOOM * 1.3f, r * ZOOM * 1.3f,
                  (PALETTE[c] & 0xFFFFFF) | ((uint32_t)(a * 255) << 24));
     }
@@ -1896,7 +1937,7 @@ static void draw_world(void) {
     PROF(0)
     for (int i = 0; i < skid_n; i++) {                           /* сліди шин */
         int x = skid[i][0] - ox, y = skid[i][1] - oy;
-        if ((unsigned)x < WW && (unsigned)y < WH) { uint16_t *p = wbuf + y * WW + x; *p = DARK50(*p); }
+        if ((unsigned)x < WW && (unsigned)y < WH) { uint16_t *p = wbuf + y * WW + x; if (!(*p & 0x8000)) *p = DARK50(*p); }   /* не на дахах */
     }
     for (int i = 0; i < NFUEL; i++) {                             /* АЗС */
         int x = FUELS[i].x - ox, y = FUELS[i].y - oy;
@@ -2289,7 +2330,9 @@ int main(int argc, char **argv) {
         unsigned c2 = sceKernelGetSystemTimeLow();
         sceDisplayWaitVblankStart();
         if (shown_any) sceDisplaySetFrameBuf(vp[back ^ 1], STRIDE, PSP_DISPLAY_PIXEL_FORMAT_8888, PSP_DISPLAY_SETBUF_IMMEDIATE);
+        unsigned r0 = sceKernelGetSystemTimeLow();
         render((void *)(uintptr_t)(back * BUFSZ));
+        unsigned r1 = sceKernelGetSystemTimeLow(); prof_us[5] += r1 - r0; cpu_acc += r1 - r0;     /* список для чипа — теж час процесора */
         shown_any = 1; back ^= 1;
         swap_bufs();
         fps_n++; cpu_acc += c1 - c0; gpu_acc += c2 - c1;
@@ -2427,14 +2470,15 @@ int main(int argc, char **argv) {
         px_ = OP(8234); py_ = OP(7762); draw_frame(); snprintf(nm, sizeof nm, "%s/f_arch.ppm", dir); dump(nm);
     }
     /* трафік: стоїмо біля перехресть 2 хв (головна вулиця й Прибузька × Кам'янецька); накладання, ривки, поява/зникання на очах */
-    for (int place = 0; place < 2; place++) {
+    for (int place = 0; place < 3; place++) {
         evac = 0; health = 100; fuel = 100; ostate = O_NONE; owait = 100000; state = S_PLAY; freecam = 0;
         for (int i = 0; i < NTRAF; i++) { traf[i].on = 0; traf[i].held = -1; } memset(node_hold, 0, sizeof node_hold);
         if (place == 0) {
             int e0 = -1; for (int e = 0; e < RG_NE; e++) if (RG_EDGE[e].cls == 0 && RG_EDGE[e].len > OP(200)) { e0 = e; break; }
             float x, y, tx, ty; rg_at(e0, 0, RG_EDGE[e0].len / 2, &x, &y, &tx, &ty);
             px_ = x - ty * OP(30); py_ = y + tx * OP(30);
-        } else { px_ = 11933 * (0.5f / 0.2777778f) / 1.8f + TM(18); py_ = 11543 * (0.5f / 0.2777778f) / 1.8f + TM(18); }
+        } else if (place == 1) { px_ = 11933 * (0.5f / 0.2777778f) / 1.8f + TM(18); py_ = 11543 * (0.5f / 0.2777778f) / 1.8f + TM(18); }
+        else if (NBRIDGE > 0) { px_ = BRIDGES[0].cx - BRIDGES[0].uy * TM(25); py_ = BRIDGES[0].cy + BRIDGES[0].ux * TM(25); }   /* біля мосту розв'язки */
         stop_car(); unstick(); update_camera(1);
         int maxon = 0, overl = 0, moving = 0, samples = 0, shot = 0, jumps = 0, pops = 0, printed = 0; float maxturn = 0;
         int was_on[NTRAF]; float lx[NTRAF], ly[NTRAF], la[NTRAF], lfd[NTRAF];
@@ -2458,13 +2502,15 @@ int main(int argc, char **argv) {
                 was_on[i] = traf[i].on; lx[i] = traf[i].x; ly[i] = traf[i].y; la[i] = traf[i].a;
                 if (!traf[i].on) continue;
                 on++; samples++; if (traf[i].spd > OP(0.2f)) moving++;
-                for (int j = i + 1; j < NTRAF; j++) if (traf[j].on && dist(traf[i].x, traf[i].y, traf[j].x, traf[j].y) < TM(5) &&
+                for (int j = i + 1; j < NTRAF; j++) if (traf[j].on && !other_lvl(br_lvl(traf[i].x, traf[i].y, traf[i].a), br_lvl(traf[j].x, traf[j].y, traf[j].a)) && dist(traf[i].x, traf[i].y, traf[j].x, traf[j].y) < TM(5) &&
                     fabsf(((traf[j].x - traf[i].x) * cosf(traf[i].a) + (traf[j].y - traf[i].y) * sinf(traf[i].a))) < TM(4.2f) &&
                     fabsf((-(traf[j].x - traf[i].x) * sinf(traf[i].a) + (traf[j].y - traf[i].y) * cosf(traf[i].a))) < TM(1.7f)) {
                     overl++;
-                    if (printed < 8 && f % 30 == 0) { printed++; { float lv1, lv2; tr_samples(i); float g1 = tr_leader(i, -1, &lv1); { int c_ = i; for (int st_ = 0; st_ < 6 && c_ >= 0; st_++) { float lq_; tr_samples(c_); tr_leader(c_, -1, &lq_); int nj_ = tr_lead_j;
+                    if (printed < 8 && f % 30 == 0) { printed++; { float lv1, lv2; tr_samples(i); float g1 = tr_leader(i, -1, &lv1); { int c_ = i, last_ = i; for (int st_ = 0; st_ < 14 && c_ >= 0; st_++) { last_ = c_; float lq_; tr_samples(c_); tr_leader(c_, -1, &lq_); int nj_ = tr_lead_j;
   printf("      chain %d: pos %.0f,%.0f a %.2f e %d s %.0f/%d spd %.2f wait %d held %d lead %d\n", c_, traf[c_].x, traf[c_].y, traf[c_].a, traf[c_].e, traf[c_].s, RG_EDGE[traf[c_].e].len, traf[c_].spd, traf[c_].wait, traf[c_].held, nj_);
-  if (nj_ == c_) break; c_ = nj_; } printf("      player %.0f,%.0f\n", px_, py_); } tr_samples(j); float g2 = tr_leader(j, -1, &lv2); float q1x, q1y, q2x, q2y, tt1, tt2; tr_path(i, 0, &q1x, &q1y, &tt1, &tt2); tr_path(j, 0, &q2x, &q2y, &tt1, &tt2); printf("      path pts %.0f,%.0f / %.0f,%.0f  pos %.0f,%.0f / %.0f,%.0f\n", q1x, q1y, q2x, q2y, traf[i].x, traf[i].y, traf[j].x, traf[j].y);
+  if (nj_ == c_) break; c_ = nj_; } printf("      player %.0f,%.0f\n", px_, py_);
+  c_ = last_; if (c_ >= 0) { int nd_ = rg_end_node(traf[c_].e, traf[c_].dir); printf("      head %d end node %d hold %x light %d\n", c_, nd_, node_hold[nd_], rg_light_green(traf[c_].e, traf[c_].dir));
+    for (int q = 0; q < NTRAF; q++) if (node_hold[nd_] & (1u << q)) printf("        holder %d pos %.0f,%.0f e %d s %.0f/%d spd %.2f wait %d hold_t %d nx %d\n", q, traf[q].x, traf[q].y, traf[q].e, traf[q].s, RG_EDGE[traf[q].e].len, traf[q].spd, traf[q].wait, traf[q].hold_t, traf[q].nx); } } tr_samples(j); float g2 = tr_leader(j, -1, &lv2); float q1x, q1y, q2x, q2y, tt1, tt2; tr_path(i, 0, &q1x, &q1y, &tt1, &tt2); tr_path(j, 0, &q2x, &q2y, &tt1, &tt2); printf("      path pts %.0f,%.0f / %.0f,%.0f  pos %.0f,%.0f / %.0f,%.0f\n", q1x, q1y, q2x, q2y, traf[i].x, traf[i].y, traf[j].x, traf[j].y);
                       printf("    overlap %d/%d at %d %d: e %d/%d dir %d/%d len %d/%d s %.0f/%.0f nx %d/%d held %d/%d end %d/%d a %.2f/%.2f spd %.2f/%.2f wait %d/%d gap %.0f/%.0f\n", i, j, (int)traf[i].x, (int)traf[i].y, traf[i].e, traf[j].e, traf[i].dir, traf[j].dir, RG_EDGE[traf[i].e].len, RG_EDGE[traf[j].e].len, traf[i].s, traf[j].s, traf[i].nx, traf[j].nx, traf[i].held, traf[j].held, rg_end_node(traf[i].e, traf[i].dir), rg_end_node(traf[j].e, traf[j].dir), traf[i].a, traf[j].a, traf[i].spd, traf[j].spd, traf[i].wait, traf[j].wait, g1, g2); } }
                 }
             }
