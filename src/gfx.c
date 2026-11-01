@@ -8,6 +8,7 @@ static uint32_t __attribute__((aligned(16))) clut[256];
 /* ================= PSP: графічний чип ================= */
 #include <pspkernel.h>
 #include <pspgu.h>
+#include <pspge.h>
 
 static unsigned int __attribute__((aligned(16))) dlists[2][512 * 1024 / 4];
 static int dl_cur;
@@ -192,12 +193,36 @@ void gfx_tris_flat(const float *xy, int nv, uint32_t col) {
     sceGuDrawArray(GU_TRIANGLES, GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, nv, 0, v);
 }
 
+#define LIGHT_OFF (2 * 512 * 272 * 4)          /* шар світла — у VRAM одразу за двома кадрами */
+void gfx_light_begin(uint32_t amb) {
+    sceGuDrawBufferList(GU_PSM_8888, (void *)LIGHT_OFF, 512);
+    sceGuClearColor(amb | 0xFF000000);
+    sceGuClear(GU_COLOR_BUFFER_BIT);
+    sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFFFF, 0xFFFFFFFF);   /* світло складається */
+}
+void gfx_light_end(void *target) {
+    sceGuDrawBufferList(GU_PSM_8888, target, 512);
+    sceGuEnable(GU_TEXTURE_2D);
+    sceGuEnable(GU_BLEND);
+    sceGuBlendFunc(GU_ADD, GU_FIX, GU_SRC_COLOR, 0, 0);               /* кадр * світло */
+    sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+    sceGuTexImage(0, 512, 512, 512, (void *)((uintptr_t)sceGeEdramGetAddr() + LIGHT_OFF));
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+    sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+    sceGuTexFlush();
+    VT *v = (VT *)sceGuGetMemory(2 * sizeof(VT));
+    v[0].u = 0; v[0].v = 0; v[0].x = 0; v[0].y = 0; v[0].z = 0;
+    v[1].u = 480; v[1].v = 272; v[1].x = 480; v[1].y = 272; v[1].z = 0;
+    sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, 0, v);
+    sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
+}
 void gfx_end(void) { sceGuFinish(); }
 void gfx_sync(void) { sceGuSync(0, 0); }
 
 #else
 /* ================= ПК: програмна копія ================= */
 static uint32_t *dst;
+static uint32_t lbuf[512 * 272]; static int lmode;
 
 void gfx_init(const uint32_t *pal) { memcpy(clut, pal, sizeof clut); clut[0] = 0; }
 void gfx_begin(void *target) { dst = (uint32_t *)target; for (int i = 0; i < 512 * 272; i++) dst[i] = 0xFF000000; }
@@ -279,7 +304,21 @@ void gfx_quad(const uint32_t *tex, int tw, int th, float cx, float cy, float ang
             unpack(tex[tv * tw + tu], p);
             for (int j = 0; j < 4; j++) acc[j] += p[j] * wgt;
         }
+        if (lmode) {                                                    /* шар світла: додати */
+            uint32_t o = lbuf[y * 512 + x]; float r = (o & 255) + acc[0] * m[0] / 255, g = ((o >> 8) & 255) + acc[1] * m[1] / 255, b = ((o >> 16) & 255) + acc[2] * m[2] / 255;
+            if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+            lbuf[y * 512 + x] = 0xFF000000u | ((uint32_t)b << 16) | ((uint32_t)g << 8) | (uint32_t)r; continue;
+        }
         blend(dst + y * 512 + x, acc[0] * m[0] / 255, acc[1] * m[1] / 255, acc[2] * m[2] / 255, acc[3] * m[3] / 255 / 255);
+    }
+}
+void gfx_light_begin(uint32_t amb) { for (int i = 0; i < 512 * 272; i++) lbuf[i] = amb | 0xFF000000u; lmode = 1; }
+void gfx_light_end(void *target) {
+    (void)target; lmode = 0;
+    for (int i = 0; i < 512 * 272; i++) {
+        uint32_t d = dst[i], l = lbuf[i];
+        uint32_t r = ((d & 255) * (l & 255)) / 255, g = (((d >> 8) & 255) * ((l >> 8) & 255)) / 255, b = (((d >> 16) & 255) * ((l >> 16) & 255)) / 255;
+        dst[i] = 0xFF000000u | (b << 16) | (g << 8) | r;
     }
 }
 

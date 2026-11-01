@@ -19,6 +19,10 @@ void gfx_rect(float x, float y, float w, float h, uint32_t col);
    uvxy — по 4 числа на вершину (u, v у текселях; x, y на екрані), nv кратне 3 */
 void gfx_tris_flat(const float *xy, int nv, uint32_t col);   /* одноколірні трикутники (0xAABBGGRR), xy — по 2 числа */
 void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const float *uvxy, int nv);   /* напівпрозорий прямокутник */
+/* освітлення (01.11.2026): окремий шар світла (поза кадром у VRAM), спершу заливка «темрявою» amb (0xAABBGGRR),
+   далі gfx_quad додає світло (адитивно), gfx_light_end множить кадр на шар світла */
+void gfx_light_begin(uint32_t amb);
+void gfx_light_end(void *target);
 void gfx_end(void);                     /* PSP: кадр відданий чипу, не чекаємо */
 void gfx_sync(void);                    /* дочекатися, поки чип домалює попередній кадр */
 

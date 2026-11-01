@@ -1815,6 +1815,48 @@ static void note_paper(int x, int y, int w, int h) {
 static void km_str(char *b, int n, float dm) {
     if (dm >= 1000) snprintf(b, n, "%d,%d КМ", (int)(dm / 1000), (int)(dm / 100) % 10); else snprintf(b, n, "%d М", (int)dm);
 }
+/* ---- день і ніч (01.11.2026): коло 10 хв — день 0..0,58, вечір, ніч 0,70..0,88, ранок; у паузі можна поставити вручну */
+#define DAY_FRAMES (60 * 600)
+static float tod = 0.12f; static int tod_mode, day_n;            /* tod_mode: 0 авто, 1 день, 2 вечір, 3 ніч, 4 ранок */
+static const char *TOD_NAME[5] = { "АВТО", "ДЕНЬ", "ВЕЧІР", "НІЧ", "РАНОК" };
+static const float TOD_FIX[5] = { 0, 0.30f, 0.645f, 0.80f, 0.935f };
+static float amb_r = 255, amb_g = 255, amb_b = 255, night_k;       /* колір «темряви» й сила ночі 0..1 */
+static void tod_update(void) {
+    if (tod_mode == 0 && state == S_PLAY) { tod += 1.0f / DAY_FRAMES; if (tod >= 1) { tod -= 1; day_n++; } }
+    else tod = TOD_FIX[tod_mode];
+    static const float KF[][4] = { { 0.00f, 255, 255, 255 }, { 0.56f, 255, 255, 255 }, { 0.63f, 250, 178, 132 }, { 0.70f, 58, 68, 112 },
+                                   { 0.88f, 58, 68, 112 }, { 0.94f, 205, 172, 192 }, { 1.00f, 255, 255, 255 } };
+    for (int k = 0; k < 6; k++) if (tod >= KF[k][0] && tod <= KF[k + 1][0]) {
+        float t = (tod - KF[k][0]) / (KF[k + 1][0] - KF[k][0]); t = t * t * (3 - 2 * t);
+        amb_r = KF[k][1] + (KF[k + 1][1] - KF[k][1]) * t; amb_g = KF[k][2] + (KF[k + 1][2] - KF[k][2]) * t; amb_b = KF[k][3] + (KF[k + 1][3] - KF[k][3]) * t;
+        break;
+    }
+    night_k = (255.0f - (amb_r + amb_g + amb_b) / 3) / (255.0f - 79.0f); if (night_k < 0) night_k = 0; if (night_k > 1) night_k = 1;
+}
+static int tod_clock(void) { int m = (int)(tod * 24 * 60 + 7 * 60) % (24 * 60); return m; }   /* хвилини доби: 0 — 07:00 */
+static uint32_t __attribute__((aligned(16))) glow_tex[32 * 32];      /* світло: RGB — спад від центру */
+static uint32_t __attribute__((aligned(16))) cone_tex[64 * 32];      /* фара: конус від лівого краю вправо */
+static void light_tex_init(void) {
+    for (int y = 0; y < 32; y++) for (int x = 0; x < 32; x++) {
+        float dx = (x + 0.5f - 16) / 16, dy = (y + 0.5f - 16) / 16, d = 1 - sqrtf(dx * dx + dy * dy); if (d < 0) d = 0;
+        uint32_t v = (uint32_t)(powf(d, 1.5f) * 255); glow_tex[y * 32 + x] = 0xFF000000u | v << 16 | v << 8 | v;
+    }
+    for (int y = 0; y < 32; y++) for (int x = 0; x < 64; x++) {
+        float fx = (x + 0.5f) / 64, fy = fabsf((y + 0.5f - 16) / 16), w = 0.18f + 0.62f * fx;   /* розкриття конуса */
+        float d = fy < w ? (1 - fy / w) : 0; d = powf(d, 0.8f) * powf(1 - fx, 1.2f) * fminf(1, fx * 8);
+        uint32_t v = (uint32_t)(fminf(1, d * 1.15f) * 255); cone_tex[y * 64 + x] = 0xFF000000u | v << 16 | v << 8 | v;
+    }
+}
+static uint32_t lcol(float r, float g, float b, float k) {
+    int R = (int)(r * k), G = (int)(g * k), B = (int)(b * k); if (R > 255) R = 255; if (G > 255) G = 255; if (B > 255) B = 255;
+    return 0xFF000000u | (uint32_t)B << 16 | (uint32_t)G << 8 | (uint32_t)R;
+}
+/* світло фар машини: конус уперед, червоні задні (яскравіші при гальмуванні) */
+static void car_lights(float x, float y, float a, float k, int brake) {
+    float c = cosf(a), s = sinf(a), L = CP(30) * ZOOM, hw = CP(8.5f) * ZOOM, f = CAR_LPX * 0.45f * ZOOM;
+    gfx_quad(cone_tex, 64, 32, x + c * (f + L / 2), y + s * (f + L / 2), a, L / 2, hw, lcol(255, 240, 210, k));
+    gfx_quad(glow_tex, 32, 32, x - c * f, y - s * f, a, CP(4) * ZOOM, CP(5) * ZOOM, lcol(255, 40, 30, k * (brake ? 0.9f : 0.45f)));
+}
 static void draw_hud(void) {
     char b[200], w[32];
     const int y0 = SH - DASH_H, NW = 298;
@@ -1830,6 +1872,10 @@ static void draw_hud(void) {
       otext8(4, y0 - 24, 1, C_white_2, C_ink_0, f_); }
     snprintf(w, sizeof w, "%d ГРН", money);
     /* вгорі: таймер ліворуч, вулиця по центру, радар праворуч, відстань під ним */
+    if (ostate != O_DROP && !freecam) {                                 /* годинник доби */
+        int m_ = tod_clock(); snprintf(b, sizeof b, "%02d:%02d", m_ / 60, (m_ % 60) / 10 * 10);
+        otext8(8, 9, 1, night_k > 0.5f ? C_yellow_3 : C_white_2, C_ink_0, b);
+    }
     if (ostate == O_DROP) {
         int s_ = otimer / 60; snprintf(b, sizeof b, "%d:%02d", s_ / 60, s_ % 60);
         otext8(8, 9, 2, s_ < 15 && (tick / 8) % 2 ? C_red_3 : C_white_2, C_ink_0, b);
@@ -2183,13 +2229,14 @@ static void draw_frame(void) {
         snprintf(b, sizeof b, "ЗАРОБЛЕНО: %d ГРН", money); otext8_c(SW / 2, 100, 1, C_yellow_3, C_ink_0, b);
         snprintf(b, sizeof b, "ДОСТАВОК: %d   ЗАПІЗНЕНЬ: %d", deliveries, late); otext8_c(SW / 2, 114, 1, C_white_2, C_ink_0, b);
         snprintf(b, sizeof b, "ПАМ'ЯТКИ МІСТА: %d/%d", lm_count, NLM); otext8_c(SW / 2, 128, 1, C_yellow_3, C_ink_0, b);
-        const char *items[3] = { "ГРАТИ ДАЛІ", "ПОВЕРНУТИ НА ДОРОГУ", lane_assist ? "ПОМІЧНИК СМУГИ: УВІМК" : "ПОМІЧНИК СМУГИ: ВИМК" };
-        for (int i = 0; i < 3; i++) {
-            int y = 156 + i * 18;
+        char todb[48]; snprintf(todb, sizeof todb, "ЧАС ДОБИ: %s", TOD_NAME[tod_mode]);
+        const char *items[4] = { "ГРАТИ ДАЛІ", "ПОВЕРНУТИ НА ДОРОГУ", lane_assist ? "ПОМІЧНИК СМУГИ: УВІМК" : "ПОМІЧНИК СМУГИ: ВИМК", todb };
+        for (int i = 0; i < 4; i++) {
+            int y = 150 + i * 16;
             if (i == menu_i) { snprintf(b, sizeof b, "> %s <", items[i]); otext8_c(SW / 2, y, 1, C_yellow_3, C_ink_0, b); }
             else otext8_c(SW / 2, y, 1, C_white_1, C_ink_0, items[i]);
         }
-        otext8_c(SW / 2, 214, 1, C_white_0, C_ink_0, "ВГОРУ/ВНИЗ,  " BT_X " ВИБРАТИ");
+        otext8_c(SW / 2, 224, 1, C_white_0, C_ink_0, "ВГОРУ/ВНИЗ,  " BT_X " ВИБРАТИ");
     }
 }
 
@@ -2220,6 +2267,7 @@ static void game_init(void) {
 static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
     tick++;
     loads_frame = 0;
+    tod_update();
     if (toast_t > 0) toast_t--;
     if (bump > 0) bump--;
     if (map_err) return;
@@ -2229,8 +2277,8 @@ static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
     }
     if (state == S_BIGMAP) { if (pressed & (PSP_CTRL_SELECT | PSP_CTRL_START | PSP_CTRL_CIRCLE)) state = S_PLAY; return; }
     if (state == S_PAUSE) {
-        if (pressed & PSP_CTRL_UP) menu_i = (menu_i + 2) % 3;
-        if (pressed & PSP_CTRL_DOWN) menu_i = (menu_i + 1) % 3;
+        if (pressed & PSP_CTRL_UP) menu_i = (menu_i + 3) % 4;
+        if (pressed & PSP_CTRL_DOWN) menu_i = (menu_i + 1) % 4;
         if (pressed & PSP_CTRL_START) state = S_PLAY;
         if (pressed & PSP_CTRL_CROSS) {
             if (menu_i == 0) state = S_PLAY;
@@ -2238,7 +2286,8 @@ static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
                 state = S_PLAY;
                 if (evac || freecam) {} else if (return_to_road()) say("НА ДОРОЗІ", C_yellow_3, 90); else say("ДОРОГИ ПОРУЧ НЕМАЄ", C_white_2, 90);
             }
-            else { lane_assist = !lane_assist; write_save(); }
+            else if (menu_i == 2) { lane_assist = !lane_assist; write_save(); }
+            else { tod_mode = (tod_mode + 1) % 5; if (tod_mode == 0) tod = TOD_FIX[4] + 0.05f; }
         }
         return;
     }
@@ -2271,6 +2320,7 @@ static void assets_init(void) {
 }
 
 /* ================= platform ================= */
+static void *cur_target;
 static void render(void *target_buf) {
     if (!world_mode) {
         gfx_begin(target_buf);
@@ -2278,7 +2328,7 @@ static void render(void *target_buf) {
         gfx_end();
         return;
     }
-    gfx_begin(target_buf);
+    gfx_begin(target_buf); cur_target = target_buf;
     float sx = (wox - viewx) * ZOOM, sy = (woy - viewy) * ZOOM;
     gfx_layer16(wbuf, WW, WW, WH, sx, sy, ZOOM, 1, 0, ZOOM != 1.0f);       /* 5551 без змішування: біт даху не заважає */
     if (ndarkv) {                                                   /* темна пляма під дахами з паралаксом */
@@ -2340,6 +2390,36 @@ static void render(void *target_buf) {
     if (arch_used) gfx_layer16(warch, WW, WW, WH, sx, sy, ZOOM, 1, 1, ZOOM != 1.0f);
     if (over_used) gfx_layer8(wover, WW, WW, WH, sx, sy, ZOOM, 1, ZOOM != 1.0f);
     render_particles();
+    if (amb_r < 254 || amb_g < 254 || amb_b < 254) {                 /* вечір і ніч: шар світла */
+        gfx_light_begin(lcol(amb_r, amb_g, amb_b, 1));
+        float on = night_k < 0.25f ? 0 : fminf(1, (night_k - 0.25f) / 0.35f);    /* ліхтарі й вікна вмикаються в сутінках */
+        if (on > 0) {
+            int gx0 = (int)(viewx - OP(30)) / PK_G, gy0 = (int)(viewy - OP(30)) / PK_G, gx1 = (int)(viewx + VW + OP(30)) / PK_G, gy1 = (int)(viewy + VH + OP(30)) / PK_G;
+            for (int cy = gy0; cy <= gy1; cy++) for (int cx = gx0; cx <= gx1; cx++) {
+                if (cx < 0 || cy < 0 || cx >= PK_GW || cy >= PK_GH) continue;
+                int c = cy * PK_GW + cx;
+                for (int q = LT_CELL[c]; q < LT_CELL[c + 1]; q++) {
+                    const Lite *L = &LITES[q];
+                    float x = (L->x - viewx) * ZOOM, y = (L->y - viewy) * ZOOM, r = L->r * ZOOM;
+                    if (x < -r || x > SW + r || y < -r || y > SH + r) continue;
+                    if (L->k) {                                             /* вікна: щоночі світяться не всі */
+                        uint32_t h = (uint32_t)q * 2654435761u ^ (uint32_t)day_n * 40503u; if ((h >> 7) % 100 > 62) continue;
+                        gfx_quad(glow_tex, 32, 32, x, y, 0, r, r, L->k == 1 ? lcol(255, 186, 104, on * 0.75f) : lcol(160, 182, 255, on * 0.6f));
+                    } else gfx_quad(glow_tex, 32, 32, x, y, 0, r, r, lcol(255, 226, 170, on * 0.95f));
+                }
+            }
+        }
+        float hk = night_k < 0.2f ? 0 : fminf(1, (night_k - 0.2f) / 0.3f);   /* фари вмикаються самі */
+        if (hk > 0) {
+            if (carv.on && !freecam) car_lights(carv.x, carv.y, carv.a, hk, carv.lit);
+            for (int i = 0; i < NTRAF && !freecam; i++) if (traf[i].on) {
+                float x = (traf[i].x - viewx) * ZOOM, y = (traf[i].y - viewy) * ZOOM;
+                if (x < -60 || x > SW + 60 || y < -60 || y > SH + 60) continue;
+                car_lights(x, y, traf[i].a, hk * 0.8f * traf[i].fade, traf[i].brake);
+            }
+        }
+        gfx_light_end(cur_target);
+    }
     for (int i = 0; i < ndim; i++) gfx_rect(dimr[i][0], dimr[i][1], dimr[i][2], dimr[i][3], dimc[i]);
     gfx_layer8(fb, SW, SW, SH, 0, 0, 1, 1, 0);
     gfx_end();
@@ -2386,7 +2466,7 @@ int main(int argc, char **argv) {
     }
     load_save();
     assets_init();
-    gfx_init(PALETTE); puff_tex_init(); pal16_init(); drt_init();
+    gfx_init(PALETTE); puff_tex_init(); light_tex_init(); pal16_init(); drt_init();
     { int lt = sceKernelCreateThread("loader", loader_thread, 0x30, 0x4000, 0, NULL); if (lt >= 0) sceKernelStartThread(lt, 0, NULL); }
     sceCtrlSetSamplingCycle(0);
     sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
@@ -2444,7 +2524,7 @@ int main(int argc, char **argv) {
     remove(save_path);
     snprintf(map_path, sizeof map_path, "%s", argc > 2 ? argv[2] : "build/MAP.BIN");
     assets_init();
-    gfx_init(PALETTE); puff_tex_init(); pal16_init(); drt_init();
+    gfx_init(PALETTE); puff_tex_init(); light_tex_init(); pal16_init(); drt_init();
     if (map_err) { printf("MAP.BIN error %d\n", map_err); return 1; }
     /* title */
     for (int i = 0; i < 40; i++) { game_update(0, 0, 128, 128); }
@@ -2452,6 +2532,7 @@ int main(int argc, char **argv) {
     game_update(0, PSP_CTRL_START, 128, 128);
     if (getenv("SHOTAT")) {                                            /* кадр у заданій точці (налагодження) */
         float x_, y_; sscanf(getenv("SHOTAT"), "%f,%f", &x_, &y_); px_ = x_; py_ = y_; ang = 0; stop_car(); update_camera(1);
+        if (getenv("TODM")) tod_mode = atoi(getenv("TODM"));
         for (int i = 0; i < 30; i++) game_update(0, 0, 128, 128);
         px_ = x_; py_ = y_; update_camera(1); draw_frame(); draw_frame(); snprintf(nm, sizeof nm, "%s/f_shot.ppm", dir); dump(nm); return 0;
     }

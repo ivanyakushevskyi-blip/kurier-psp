@@ -293,6 +293,18 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('typedef struct { int16_t x, y; uint8_t a, m; } Parked;\n')
     f.write('static const Parked PARKED[] = {%s};\n' % (','.join('{%d,%d,%d,%d}' % c for c in _pk) or '{0}'))
     f.write('static const uint16_t PK_CELL[] = {%s};\n' % ','.join(map(str, _pst)))
+    # нічне світло: ліхтарі (з карти) й вікна; сітка 256 пікс
+    import lights
+    _pois = [(q, 4) for q in md['shops']] + [(q, 1) for q in md['addrs']]
+    _lt = lights.build(rgbm, _g, _bl, parked.district(_pois, W, H), W, H, _pl)
+    _lt.sort(key=lambda c: (c[1] // PG) * pgw + c[0] // PG)
+    _lst = [0] * (pgw * pgh + 1)
+    for c in _lt: _lst[(c[1] // PG) * pgw + c[0] // PG + 1] += 1
+    for i in range(1, len(_lst)): _lst[i] += _lst[i - 1]
+    assert len(_lt) < 65536
+    f.write('#define NLITE %d\ntypedef struct { int16_t x, y; uint8_t r, k; } Lite;\n' % len(_lt))
+    f.write('static const Lite LITES[] = {%s};\n' % (','.join('{%d,%d,%d,%d}' % (x, y, min(255, r), k) for x, y, r, k in _lt) or '{0}'))
+    f.write('static const uint16_t LT_CELL[] = {%s};\n' % ','.join(map(str, _lst)))
     _in = lambda x, y: 0 <= x < W and 0 <= y < H and bool(_pl[int(y), int(x)])
     lanes = [l for l in md.get('lanes', []) if _in(l[0], l[1]) or _in(l[2], l[3]) or _in((l[0] + l[2]) / 2, (l[1] + l[3]) / 2)]
     LG = 128; gw, gh = (W + LG - 1) // LG, (H + LG - 1) // LG
