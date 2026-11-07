@@ -132,6 +132,7 @@ SPR_OFF = put(b''.join(f.tobytes() for f in fr))
 SPR_LIT = put(b''.join(f.tobytes() for f in sprites.car_frames(lit=True)))
 CARTEX_OFF, CARTEX_LIT, CARTEX_SHD = (put(t) for t in sprites.car_textures())
 _tt = sprites.traffic_textures(); TRAFTEX_OFF = put(b''.join(_tt)); NTRAFMODEL = len(_tt) // 2
+LONGTEX_OFF = put(b''.join(sprites.long_textures()))                # довгі машини (07.11.2026)
 import sounds as SNDS                                             # звуки, синтезовані кодом (01.11.2026)
 _snd = SNDS.sounds(); _snd_tab = []
 for _k, (_a, _lp) in _snd.items(): _snd_tab.append((_k, put(_a.astype('<i2').tobytes()), len(_a), _lp))
@@ -263,6 +264,10 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('#define SPAWN_X %d\n#define SPAWN_Y %d\n' % tuple(md['spawn']))
     f.write('#define SPR_LIT %d\n#define ICON_STO %d\n#define ICON_FUEL %d\n' % (SPR_LIT, ICON_STO, ICON_FUEL))
     f.write('#define TRAFTEX_OFF %d\n#define NTRAFMODEL %d\n' % (TRAFTEX_OFF, NTRAFMODEL))
+    f.write('#define LONGTEX_OFF %d\n#define LONGTEX_W %d\n#define LONGTEX_H %d\n#define LONG_TX_M %.4ff\n#define NLONG %d\n' % (LONGTEX_OFF, sprites.LONGTEX_W, sprites.LONGTEX_H, sprites.LONG_TX_M, len(sprites.LONG)))
+    f.write('static const float LONG_LEN[] = {%s};\nstatic const float LONG_WID[] = {%s};\n' % (','.join('%.2ff' % l[2] for l in sprites.LONG), ','.join('%.2ff' % l[3] for l in sprites.LONG)))
+    _w = list(sprites.TRAFFIC_W) + list(sprites.LONG_W)
+    f.write('static const uint8_t TR_W[] = {%s};\n#define TR_WSUM %d\n#define TROLLEY_MODEL (NTRAFMODEL + %d)\n' % (','.join(map(str, _w)), sum(_w), [l[0] for l in sprites.LONG].index('trolley')))
     f.write('#define SND_RATE %d\n' % SNDS.SR)
     for _i, (_k, _o, _n, _lp) in enumerate(_snd_tab): f.write('#define SND_%s %d\n' % (_k.upper(), _i))
     f.write('#define NSND %d\ntypedef struct { uint32_t off, len; uint8_t loop; } SndDef;\nstatic const SndDef SNDS[] = {%s};\n' % (

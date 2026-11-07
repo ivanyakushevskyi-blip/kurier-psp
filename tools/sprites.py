@@ -190,7 +190,10 @@ def car_textures():
 
 
 TRAFFIC = [('sedan', (232, 232, 228)), ('sedan', (36, 38, 44)), ('hatch', (176, 40, 40)), ('sedan', (52, 86, 156)),
-           ('hatch', (112, 116, 124)), ('van', (238, 238, 234)), ('taxi', (240, 196, 40)), ('hatch', (60, 120, 80))]
+           ('hatch', (112, 116, 124)), ('van', (238, 238, 234)), ('taxi', (240, 196, 40)), ('hatch', (60, 120, 80)),
+           ('suv', (70, 78, 92)), ('suv', (214, 214, 210)), ('pickup', (150, 40, 34)), ('police', (244, 244, 244)),   # 07.11.2026
+           ('sedan', (120, 30, 40)), ('suv', (34, 54, 40))]
+TRAFFIC_W = [10, 10, 9, 9, 9, 5, 5, 8, 8, 8, 4, 2, 6, 6]           # частота моделей (вантажні/довгі — у LONG)
 
 
 def draw_traffic(kind, body, lit=False):
@@ -204,8 +207,8 @@ def draw_traffic(kind, body, lit=False):
     b = np.array(body, np.float32)
     dark, lite = b * 0.62, np.minimum(255, b * 1.12 + 12)
     glass, glass2 = (40, 52, 64), (96, 120, 140)
-    L = {'sedan': 10.4, 'hatch': 9.6, 'van': 11.0, 'taxi': 10.4}[kind]
-    Wd = {'sedan': 4.5, 'hatch': 4.4, 'van': 4.8, 'taxi': 4.5}[kind]
+    L = {'sedan': 10.4, 'hatch': 9.6, 'van': 11.0, 'taxi': 10.4, 'suv': 10.8, 'pickup': 11.4, 'police': 10.4}[kind]
+    Wd = {'sedan': 4.5, 'hatch': 4.4, 'van': 4.8, 'taxi': 4.5, 'suv': 4.8, 'pickup': 4.7, 'police': 4.5}[kind]
     for x0 in (-L * 0.62, L * 0.38):
         rr(x0, -Wd - 0.3, x0 + 3.4, Wd + 0.3, (24, 24, 26), 0.9)
     rr(-L - 0.3, -Wd - 0.3, L + 0.3, Wd + 0.3, (20, 20, 24), 2.2)
@@ -213,6 +216,14 @@ def draw_traffic(kind, body, lit=False):
     if kind == 'van':
         rr(-L + 0.6, -Wd + 0.6, L - 3.6, Wd - 0.6, lite, 0.8)                                  # дах буса
         poly([(L - 3.4, -Wd + 0.5), (L - 1.2, -Wd + 1.0), (L - 1.2, Wd - 1.0), (L - 3.4, Wd - 0.5)], glass)
+    elif kind == 'pickup':
+        nose = L * 0.45
+        poly([(nose - 3.0, -Wd + 0.8), (nose, -Wd + 1.1), (nose, Wd - 1.1), (nose - 3.0, Wd - 0.8)], glass)
+        rr(-1.6, -Wd + 0.9, nose - 3.0, Wd - 0.9, lite, 0.8)                                  # дах кабіни
+        poly([(-2.4, -Wd + 1.0), (-1.6, -Wd + 0.9), (-1.6, Wd - 0.9), (-2.4, Wd - 1.0)], glass)
+        rr(-L + 0.5, -Wd + 0.6, -2.9, Wd - 0.6, (52, 50, 48), 0.4)                             # відкритий кузов
+        for k_ in range(4): rr(-L + 1.4 + k_ * 1.9, -Wd + 0.8, -L + 1.7 + k_ * 1.9, Wd - 0.8, (70, 68, 64), 0)
+        rr(nose + 0.4, -Wd + 1.0, L - 0.4, Wd - 1.0, b * 1.04, 1.0)
     else:
         nose = L * (0.42 if kind != 'hatch' else 0.48)
         poly([(nose - 3.0, -Wd + 0.8), (nose, -Wd + 1.1), (nose, Wd - 1.1), (nose - 3.0, Wd - 0.8)], glass)     # лобове
@@ -225,6 +236,11 @@ def draw_traffic(kind, body, lit=False):
         rr(nose + 0.4, -Wd + 1.0, L - 0.4, Wd - 1.0, b * 1.04, 1.0)                          # капот
     if kind == 'taxi':
         rr(-1.6, -1.2, 0.6, 1.2, (250, 240, 200), 0.3); rr(-1.4, -0.9, 0.4, 0.9, (40, 40, 40), 0.2)
+    if kind == 'suv':                                                                           # рейлінги на даху
+        for sg in (-1, 1): rr(-L * 0.55, sg * (Wd - 1.25) - 0.25, L * 0.12, sg * (Wd - 1.25) + 0.25, (40, 40, 44), 0.2)
+    if kind == 'police':                                                                        # синя смуга й «люстра»
+        for sg in (-1, 1): rr(-L + 0.6, sg * (Wd - 0.35) - 0.3, L - 0.6, sg * (Wd - 0.35) + 0.3, (30, 70, 200), 0.1)
+        rr(-1.4, -Wd + 1.1, -0.2, -0.1, (40, 90, 240), 0.2); rr(-1.4, 0.1, -0.2, Wd - 1.1, (230, 40, 40) if lit else (40, 90, 240), 0.2)
     for sg in (-1, 1):
         rr(L - 1.1, sg * (Wd - 1.4) - 0.6, L - 0.1, sg * (Wd - 1.4) + 0.6, (250, 240, 190), 0.3)   # фари
         rr(-L + 0.1, sg * (Wd - 1.3) - 0.6, -L + 1.0, sg * (Wd - 1.3) + 0.6, (255, 60, 50) if lit else (150, 30, 30), 0.3)
@@ -243,6 +259,72 @@ def traffic_textures():
         for lit in (False, True):
             im = draw_traffic(kind, col_, lit).transform((CARTEX_W * 4, CARTEX_H * 4), Image.EXTENT, box, resample=Image.BICUBIC)
             out.append(_bleed(np.asarray(im.resize((CARTEX_W, CARTEX_H), Image.LANCZOS)).copy()).tobytes())
+    return out
+
+
+# ---- довгі машини (07.11.2026): власна текстура 128 x 32, тексель = 0,125 м ігрових (16 x 4 м); довжини — ігрові
+# (справжні x 1,12, як Golf 4,2 -> 4,7 м). Ніс на схід, центр кузова — центр текстури.
+LONGTEX_W, LONGTEX_H, LONG_TX_M = 128, 32, 0.125
+LONG = [('minibus', (246, 246, 244), 7.8, 2.25), ('boxtruck', (40, 90, 160), 7.3, 2.4), ('bus', (250, 196, 40), 11.8, 2.8),
+        ('minibus', (250, 214, 60), 7.8, 2.25), ('trolley', (242, 242, 240), 13.4, 2.85)]
+LONG_W = [5, 3, 2, 3, 0]                                             # тролейбуси — лише на маршрутах
+
+
+def draw_long(kind, body, Lm, Wm, lit=False):
+    R_ = 24                                                          # пікс/м при малюванні
+    im = Image.new('RGBA', (LONGTEX_W * 6, LONGTEX_H * 6), (0, 0, 0, 0)); d = ImageDraw.Draw(im)
+    k = LONGTEX_W * 6 / (LONGTEX_W * LONG_TX_M)                      # пікс/м цього полотна
+    cx, cy = im.size[0] / 2, im.size[1] / 2
+    def P(x, y): return (cx + x * k, cy + y * k)
+    def rr(x0, y0, x1, y1, c_, r=0.2): d.rounded_rectangle([P(x0, y0), P(x1, y1)], radius=r * k, fill=tuple(int(v) for v in c_))
+    b = np.array(body, np.float32); dark = b * 0.6; lite = np.minimum(255, b * 1.06 + 8)
+    glass = (38, 50, 62); L2, W2 = Lm / 2, Wm / 2
+    rr(-L2 - 0.06, -W2 - 0.06, L2 + 0.06, W2 + 0.06, (22, 22, 26), 0.35)
+    rr(-L2, -W2, L2, W2, b, 0.3)
+    if kind in ('bus', 'trolley', 'minibus'):
+        rr(L2 - 0.45, -W2 + 0.12, L2 - 0.08, W2 - 0.12, glass, 0.12)                         # лобове
+        rr(-L2 + 0.08, -W2 + 0.25, -L2 + 0.3, W2 - 0.25, glass, 0.05)                        # заднє
+        rr(-L2 + 0.35, -W2 + 0.18, L2 - 0.55, W2 - 0.18, lite, 0.2)                          # дах
+        if kind == 'trolley':
+            for sg in (-1, 1): rr(-L2 + 0.35, sg * (W2 - 0.3) - 0.12, L2 - 0.55, sg * (W2 - 0.3) + 0.12, (34, 84, 196), 0.05)   # синя смуга
+        if kind == 'bus':
+            for sg in (-1, 1): rr(-L2 + 0.35, sg * (W2 - 0.28) - 0.1, L2 - 0.55, sg * (W2 - 0.28) + 0.1, dark, 0.05)
+        if kind == 'minibus':
+            rr(L2 - 1.3, -W2 + 0.25, L2 - 0.6, W2 - 0.25, (250, 200, 30) if body[0] > 240 and body[2] > 200 else (246, 246, 244), 0.05)   # табличка маршруту
+            rr(L2 - 0.6, -W2 + 0.2, L2 - 0.1, W2 - 0.2, b * 0.98, 0.25)                       # капот
+            rr(L2 - 0.95, -W2 + 0.18, L2 - 0.6, W2 - 0.18, glass, 0.08)
+        n = 3 if kind != 'minibus' else 1
+        for j in range(n):                                                                   # обладнання на даху
+            x0 = -L2 + 1.2 + j * (Lm - 2.4) / max(1, n) + (0 if kind != 'minibus' else Lm * 0.25)
+            rr(x0, -0.55, x0 + 1.5, 0.55, (196, 200, 204), 0.15); rr(x0 + 0.15, -0.4, x0 + 1.35, 0.4, (170, 174, 180), 0.1)
+        if kind == 'trolley':
+            rr(L2 * 0.1, -0.7, L2 * 0.35, 0.7, (72, 72, 76), 0.1)                               # основа штанг
+            for sg in (-1, 1):                                                               # вуса: від даху назад, за корму
+                d.line([P(L2 * 0.22, sg * 0.35), P(-L2 - 1.1, sg * 0.62)], fill=(24, 24, 24), width=max(1, int(0.13 * k)))
+                d.ellipse([P(-L2 - 1.25, sg * 0.62 - 0.13), P(-L2 - 0.95, sg * 0.62 + 0.13)], fill=(24, 24, 24))
+    else:                                                                                    # вантажівка-будка
+        rr(-L2 + 0.05, -W2 + 0.02, L2 - 1.9, W2 - 0.02, (236, 236, 232), 0.12)
+        for j in range(5): rr(-L2 + 0.4 + j * (Lm - 2.4) / 5, -W2 + 0.15, -L2 + 0.48 + j * (Lm - 2.4) / 5, W2 - 0.15, (210, 210, 206), 0)
+        rr(L2 - 1.75, -W2 + 0.1, L2 - 0.1, W2 - 0.1, b, 0.25)
+        rr(L2 - 0.6, -W2 + 0.2, L2 - 0.2, W2 - 0.2, glass, 0.1); rr(L2 - 1.55, -W2 + 0.25, L2 - 0.7, W2 - 0.25, lite, 0.1)
+    for sg in (-1, 1):
+        rr(L2 - 0.18, sg * (W2 - 0.35) - 0.16, L2 - 0.02, sg * (W2 - 0.35) + 0.16, (250, 240, 190), 0.05)
+        rr(-L2 + 0.02, sg * (W2 - 0.3) - 0.16, -L2 + 0.16, sg * (W2 - 0.3) + 0.16, (255, 60, 50) if lit else (150, 30, 30), 0.05)
+        rr(L2 - 0.5, sg * (W2 + 0.12) - 0.1, L2 - 0.3, sg * (W2 + 0.12) + 0.1, (30, 30, 30), 0.05)        # дзеркала
+    return im
+
+
+def long_textures():
+    """для кожної довгої моделі: звичайна, зі стоп-сигналами, тінь (RGBA 128 x 32)"""
+    from PIL import ImageFilter
+    out = []
+    for kind, c_, Lm, Wm in LONG:
+        for lit in (False, True):
+            im = draw_long(kind, c_, Lm, Wm, lit).resize((LONGTEX_W, LONGTEX_H), Image.LANCZOS)
+            out.append(_bleed(np.asarray(im).copy()).tobytes())
+        sil = draw_long(kind, c_, Lm, Wm).split()[3].resize((LONGTEX_W, LONGTEX_H), Image.LANCZOS).filter(ImageFilter.GaussianBlur(0.9))
+        shd = np.zeros((LONGTEX_H, LONGTEX_W, 4), np.uint8); shd[..., 3] = (np.asarray(sil, np.float32) * 0.42).astype(np.uint8)
+        out.append(shd.tobytes())
     return out
 
 
