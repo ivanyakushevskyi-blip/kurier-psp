@@ -585,7 +585,7 @@ def carve_roads(D, solid):
         if x1 <= x0 or y1 <= y0: continue
         sub = np.asarray(solid[y0:y1, x0:x1]).copy()
         mk = np.zeros(sub.shape, np.uint8)
-        cv2.polylines(mk, [P - [x0, y0]], False, 1, max(3, int(CD.ROAD_W[t['highway']] / MPP * 0.7)))
+        cv2.polylines(mk, [P - [x0, y0]], False, 1, max(3, int((CD.ROAD_W[t['highway']] - 0.6) / MPP)))   # уся проїжджа частина (дахи над дорогою — проїзні)
         mk = mk.astype(bool) & np.asarray(play[y0:y1, x0:x1])       # за межею ігрової зони — лишається твердим
         hit = sub & mk
         if hit.any():

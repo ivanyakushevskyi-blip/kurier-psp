@@ -117,11 +117,12 @@ def _drop_on_roads(C, GW, GH):
     """Будинки, що стоять на проїжджій частині (похибки контурів MS/OSM, кіоски на дорозі) — прибираємо, щоб не врізатися."""
     S = 1.0 / SRC                                          # растр 1 м
     w, h = int(GW / S) + 1, int(GH / S) + 1
-    road = np.zeros((h, w), np.uint8)
+    road = np.zeros((h, w), np.uint8); cl = np.zeros((h, w), np.uint8)
     for wy in C['w']:
         if not drivable(wy['t']): continue
         P = np.round(np.array(wy['pts']) / S).astype(np.int32)
         cv2.polylines(road, [P], False, 1, max(1, int(ROAD_W[wy['t']['highway']] - 1.5)))
+        cv2.polylines(cl, [P], False, 1, max(1, int(ROAD_W[wy['t']['highway']] * 0.4)))
     kept = {'B': [], 'SAT': []}; n = 0
     for key in ('B', 'SAT'):
         for b in C[key]:
@@ -135,8 +136,13 @@ def _drop_on_roads(C, GW, GH):
             tot = m.sum()
             frac = (road[ya:ya + m.shape[0], xa:xa + m.shape[1]][m > 0]).mean() if tot else 0
             osm = key == 'B' and b['t'].get('src') not in ('ms', 'sat', 'manual')
-            if (not osm and frac > 0.12) or (osm and b['area'] < 80 and frac > 0.25) or frac > 0.6:
+            # 07.11.2026: дахи, що лише краєм накривають дорогу, лишаються (машина проїжджає під ними, як під аркою);
+            # прибираємо лише ті, що заходять у середину проїжджої частини (центральні 40% ширини, >= 6 м2), дрібні й «на дорозі»
+            if frac > 0.6 or (frac > 0 and tot < 12):
                 n += 1; continue
+            if frac > 0:
+                c_ = (cl[ya:ya + m.shape[0], xa:xa + m.shape[1]][m > 0]).sum()
+                if c_ >= 6: n += 1; continue
             kept[key].append(b)
     C['B'], C['SAT'] = kept['B'], kept['SAT']
     C['dropped'] = n
@@ -593,12 +599,7 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
     img_ground = img.copy()
     for i, b, pts, ptf in sorted(blds, key=lambda z: z[1]['h']):
         draw_roof(img, b, ptf, random.Random(i * 31 + 7), S)
-    # проїжджа частина завжди видна: дах, що трохи наліз на дорогу, обрізається (крім арок)
-    rm = Image.new('L', (WF, HF), 0); drm = ImageDraw.Draw(rm)
-    for w, pts, ptf in ways:
-        if drivable(w['t']): drm.line(ptf, fill=1, width=max(1, int(ROAD_W[w['t']['highway']] / MF)))      # уся ширина проїжджої частини
-    rmask = (np.array(rm) > 0) & (cls == G_ROAD)
-    img[rmask] = img_ground[rmask]
+    # 07.11.2026: дах, що краєм накрив дорогу, НЕ обрізається — машина проїжджає під ним (mappatch.carve_roads звільняє проїзд)
     if S > 1:
         ctx.img = img
         CDt.awnings(ctx, blds); CDt.lamps(ctx); CDt.bus_stops(ctx); CDt.street_litter(ctx, trees)
@@ -661,7 +662,13 @@ def draw_roof(img, b, pts, rs, ss=1):
         dd = cv2.GaussianBlur(d, (0, 0), 0.8 * S_)
         gy, gx = np.gradient(dd)
         nrm = (np.hypot(gx, gy) + 1e-6) * S_
-        lit = (-gx - gy) * S_ / nrm / 1.414
+        # світло з північного заходу; якщо воно падає рівно між двома сусідніми скатами (будинок «прямо» або під ~90°),
+        # скати однаково освітлені й дах виглядає розрізаним по діагоналі — тоді світло трохи повертаємо (07.11.2026)
+        th = -135.0; a_ = cv2.minAreaRect(P)[2] % 90.0
+        dl = (th - a_) % 90.0
+        if 22 < dl < 68: th += (22 - dl) if dl < 45 else (68 - dl)
+        Lx, Ly = math.cos(math.radians(th)), math.sin(math.radians(th))
+        lit = (gx * Lx + gy * Ly) * S_ / nrm
         ridge = (nrm < 0.25) & (d > 1.5)
         typ, gxy = 'house', (gx, gy, ridge)
         if S_ == 1:
