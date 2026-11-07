@@ -10,7 +10,7 @@ static uint32_t __attribute__((aligned(16))) clut[256];
 #include <pspgu.h>
 #include <pspge.h>
 
-static unsigned int __attribute__((aligned(16))) dlists[2][512 * 1024 / 4];
+static unsigned int __attribute__((aligned(16))) dlists[2][1024 * 1024 / 4];     /* 07.11.2026: 1 МБ (тіні, вода, погода) */
 static int dl_cur;
 
 typedef struct { float u, v; float x, y, z; } VT;
@@ -109,6 +109,26 @@ void gfx_quad(const uint32_t *tex, int tw, int th, float cx, float cy, float ang
     sceGuDrawArray(GU_TRIANGLE_STRIP, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 4, 0, v);
 }
 
+void gfx_tiles(const uint32_t *tex, int tw, int th, const float *r, int n, uint32_t col) {   /* смуги з текстурою, що повторюється */
+    if (n <= 0) return;
+    sceGuEnable(GU_TEXTURE_2D);
+    sceGuEnable(GU_BLEND);
+    sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+    sceGuTexImage(0, tw, th, tw, tex);
+    sceGuTexWrap(GU_REPEAT, GU_REPEAT);
+    sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+    sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+    sceGuTexFlush();
+    VCT *v = (VCT *)sceGuGetMemory(2 * n * sizeof(VCT));
+    for (int i = 0; i < n; i++) {
+        const float *q = r + 8 * i;                                   /* x0, y0, x1, y1, u0, v0, u1, v1 */
+        v[2 * i].u = q[4]; v[2 * i].v = q[5]; v[2 * i].c = col; v[2 * i].x = q[0]; v[2 * i].y = q[1]; v[2 * i].z = 0;
+        v[2 * i + 1].u = q[6]; v[2 * i + 1].v = q[7]; v[2 * i + 1].c = col; v[2 * i + 1].x = q[2]; v[2 * i + 1].y = q[3]; v[2 * i + 1].z = 0;
+    }
+    sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2 * n, 0, v);
+    sceGuTexWrap(GU_CLAMP, GU_CLAMP);
+}
+
 void gfx_rect(float x, float y, float w, float h, uint32_t col) {
     sceGuDisable(GU_TEXTURE_2D);
     sceGuEnable(GU_BLEND);
@@ -195,6 +215,16 @@ void gfx_tris_flat(const float *xy, int nv, uint32_t col) {
 }
 
 #define LIGHT_OFF (2 * 512 * 272 * 4)          /* шар світла — у VRAM одразу за двома кадрами */
+void gfx_light_shade(const float *xy, int nv, uint32_t col) {          /* тінь у шарі світла: заміна кольору (без накопичення) */
+    if (nv < 3) return;
+    sceGuDisable(GU_TEXTURE_2D);
+    sceGuDisable(GU_BLEND);
+    VC *v = (VC *)sceGuGetMemory(nv * sizeof(VC));
+    for (int i = 0; i < nv; i++) { v[i].c = col | 0xFF000000u; v[i].x = xy[2 * i]; v[i].y = xy[2 * i + 1]; v[i].z = 0; }
+    sceGuDrawArray(GU_TRIANGLES, GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, nv, 0, v);
+    sceGuEnable(GU_BLEND);
+    sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFFFF, 0xFFFFFFFF);
+}
 void gfx_light_begin(uint32_t amb) {
     sceGuDrawBufferList(GU_PSM_8888, (void *)LIGHT_OFF, 512);
     sceGuClearColor(amb | 0xFF000000);
@@ -313,6 +343,21 @@ void gfx_quad(const uint32_t *tex, int tw, int th, float cx, float cy, float ang
         blend(dst + y * 512 + x, acc[0] * m[0] / 255, acc[1] * m[1] / 255, acc[2] * m[2] / 255, acc[3] * m[3] / 255 / 255);
     }
 }
+void gfx_tiles(const uint32_t *tex, int tw, int th, const float *r, int n, uint32_t col) {
+    float m[4]; unpack(col, m);
+    for (int i = 0; i < n; i++) {
+        const float *q = r + 8 * i;
+        int x0 = (int)floorf(q[0] + 0.5f), x1 = (int)floorf(q[2] + 0.5f), y0 = (int)floorf(q[1] + 0.5f), y1 = (int)floorf(q[3] + 0.5f);
+        float du = (q[6] - q[4]) / fmaxf(1e-3f, q[2] - q[0]), dv = (q[7] - q[5]) / fmaxf(1e-3f, q[3] - q[1]);
+        for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
+            if ((unsigned)x >= 480 || (unsigned)y >= 272) continue;
+            float u = q[4] + (x + 0.5f - q[0]) * du, v = q[5] + (y + 0.5f - q[1]) * dv;
+            int tu = ((int)floorf(u) % tw + tw) % tw, tv = ((int)floorf(v) % th + th) % th; float p[4];
+            unpack(tex[tv * tw + tu], p);
+            blend(dst + y * 512 + x, p[0] * m[0] / 255, p[1] * m[1] / 255, p[2] * m[2] / 255, p[3] * m[3] / 255 / 255);
+        }
+    }
+}
 void gfx_light_begin(uint32_t amb) { for (int i = 0; i < 512 * 272; i++) lbuf[i] = amb | 0xFF000000u; lmode = 1; }
 void gfx_light_end(void *target) {
     (void)target; lmode = 0;
@@ -373,6 +418,23 @@ void gfx_tris_flat(const float *xy, int nv, uint32_t col) {
             float w1 = ((A[0] - C[0]) * (py - C[1]) - (A[1] - C[1]) * (px - C[0])) / area;
             if (w0 < 0 || w1 < 0 || 1 - w0 - w1 < 0) continue;
             blend(dst + y * 512 + x, c[0], c[1], c[2], c[3] / 255.0f);
+        }
+    }
+}
+void gfx_light_shade(const float *xy, int nv, uint32_t col) {
+    for (int t = 0; t + 2 < nv; t += 3) {
+        const float *A = xy + 2 * t, *B = A + 2, *C = A + 4;
+        float area = (B[0] - A[0]) * (C[1] - A[1]) - (B[1] - A[1]) * (C[0] - A[0]);
+        if (fabsf(area) < 1e-6f) continue;
+        int x0 = (int)floorf(fminf(A[0], fminf(B[0], C[0]))), x1 = (int)ceilf(fmaxf(A[0], fmaxf(B[0], C[0])));
+        int y0 = (int)floorf(fminf(A[1], fminf(B[1], C[1]))), y1 = (int)ceilf(fmaxf(A[1], fmaxf(B[1], C[1])));
+        if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0; if (x1 > 480) x1 = 480; if (y1 > 272) y1 = 272;
+        for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
+            float px = x + 0.5f, py = y + 0.5f;
+            float w0 = ((C[0] - B[0]) * (py - B[1]) - (C[1] - B[1]) * (px - B[0])) / area;
+            float w1 = ((A[0] - C[0]) * (py - C[1]) - (A[1] - C[1]) * (px - C[0])) / area;
+            if (w0 < 0 || w1 < 0 || 1 - w0 - w1 < 0) continue;
+            lbuf[y * 512 + x] = col | 0xFF000000u;
         }
     }
 }

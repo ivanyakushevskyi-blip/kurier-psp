@@ -106,6 +106,7 @@ static void drt_clear(u8 *b, u8 col) {                               /* очис
     }
 }
 static int world_mode, over_used, wox, woy, ndim;
+static float wx_cloud, wx_rain, wx_fog, wx_snow;                    /* погода: плавні сили 0..1 */
 static float viewx, viewy;                /* лівий верхній кут огляду у світі (з урахуванням струсу) */
 static struct { int on, lit, shadow; float x, y, a; uint32_t col; } carv;
 static float dimr[4][4]; static uint32_t dimc[4];
@@ -160,10 +161,35 @@ static void read_chunk(FILE *f, u8 *zb, int k, u8 *dst) {
     if (!f || n > sizeof zbuf || fseek(f, (long)moff[k], SEEK_SET) || fread(zb, 1, n, f) != n || uncompress(dst, &len, zb, n) != Z_OK)
         memset(dst, 0, CHB);
 }
+/* ---- вода (07.11.2026): для кожного блоку в кеші — відрізки рядків з водою й точки берега (рахуються при завантаженні) */
+#define WSPAN_MAX 160
+#define WSHORE_MAX 96
+static u8 wsp_n[NCACHE], wsh_n[NCACHE];
+static u8 wsp[NCACHE][WSPAN_MAX][4];                 /* прямокутники води: x0, x1, y0, y1 (включно), сусідні однакові рядки злиті */
+static u8 wsh[NCACHE][WSHORE_MAX][2];                /* точки берега для піни */
+static void water_scan(int slot) {
+    const u8 *c = cache[slot] + CPX + CSB; int ns = 0, nh = 0, prev0 = 0, prev1 = 0;
+    #define WAT(x, y) ((((c[(y) * (CS / 2) + ((x) >> 1)] >> (((x) & 1) * 4)) & 15)) == 2)   /* вода без крони над нею */
+    for (int y = 0; y < CS; y++) {
+        int x = 0, row0 = ns;
+        while (x < CS) {
+            if (!WAT(x, y)) { x++; continue; }
+            int x0 = x; while (x < CS && WAT(x, y)) x++;
+            int j, done = 0;
+            for (j = prev0; j < prev1; j++) if (wsp[slot][j][0] == x0 && wsp[slot][j][1] == x - 1 && wsp[slot][j][3] == y - 1) { wsp[slot][j][3] = y; done = 1; break; }
+            if (!done && ns < WSPAN_MAX) { wsp[slot][ns][0] = x0; wsp[slot][ns][1] = x - 1; wsp[slot][ns][2] = y; wsp[slot][ns][3] = y; ns++; }
+        }
+        prev0 = 0; prev1 = ns; (void)row0;                             /* шукати злиття серед усіх (їх небагато) */
+    }
+    for (int y = 1; y < CS - 1 && nh < WSHORE_MAX; y += 2) for (int x = 1; x < CS - 1 && nh < WSHORE_MAX; x += 2)
+        if (WAT(x, y) && (!WAT(x - 1, y) || !WAT(x + 1, y) || !WAT(x, y - 1) || !WAT(x, y + 1))) { wsh[slot][nh][0] = x; wsh[slot][nh][1] = y; nh++; }
+    #undef WAT
+    wsp_n[slot] = ns; wsh_n[slot] = nh;
+}
 static int sync_loads;
 static int chunk_load(int k) {                 /* синхронно — лише якщо видимий блок ще не підвантажився */
     int best = pick_slot(); sync_loads++;
-    read_chunk(mapf, zbuf, k, cache[best]);
+    read_chunk(mapf, zbuf, k, cache[best]); water_scan(best);
     cache_key[best] = k; slot_of[k] = (int16_t)best; cache_used[best] = ++ctick;
     loads_frame++;
     return best;
@@ -197,7 +223,7 @@ static void install_ready(void) {              /* основний потік: �
         int i = st_r % NSTAGE, k = stage_k[i];
         if (slot_of[k] < 0) {
             int b = pick_slot();
-            memcpy(cache[b], stage[i], CHB);
+            memcpy(cache[b], stage[i], CHB); water_scan(b);
             cache_key[b] = k; slot_of[k] = (int16_t)b; cache_used[b] = ++ctick;
         }
         pending[k] = 0;
@@ -1709,7 +1735,7 @@ static void update_player(unsigned btn, int lx) {
     if (vf > vmax) vf -= (vf - vmax) * 0.12f;                 /* обмежувач 90 км/год */
     if (vf < -OP(0.34f)) vf = -OP(0.34f);
     /* зчеплення: гасить боковий рух; ручник — занос */
-    float grip = off ? 0.10f : 0.24f;
+    float grip = (off ? 0.10f : 0.24f) * (1 - 0.18f * wx_rain - 0.35f * wx_snow);   /* мокро/сніг — слизько */
     if (hand) { grip = 0.035f; vf -= vf * 0.006f + (vf > 0 ? OP(0.004f) : -OP(0.004f)); braking = 1; }
     vr *= 1.0f - grip;
     /* кермо як у справжньої машини: повертають передні колеса, кузов обертається навколо задньої осі.
@@ -1723,7 +1749,7 @@ static void update_player(unsigned btn, int lx) {
     if (yaw > 0.07f) yaw = 0.07f; if (yaw < -0.07f) yaw = -0.07f;
     if (!hand) {                                                    /* зчеплення шин: бічне прискорення не більше ~0,85 g (на траві 0,5 g) —
                                                                        на швидкості крутий поворот неможливий, треба гальмувати перед ним */
-        float ym = (off ? 9.0f : 16.0f) / fmaxf(fabsf(vf) * MPP * 60.0f, 1.0f) / 60.0f;      /* аркадне зчеплення ~1,6 g (31.10.2026: 0,85 g не вписувалось у міські повороти) */
+        float ym = (off ? 9.0f : 16.0f) * (1 - 0.15f * wx_rain - 0.3f * wx_snow) / fmaxf(fabsf(vf) * MPP * 60.0f, 1.0f) / 60.0f;      /* аркадне зчеплення ~1,6 g (31.10.2026: 0,85 g не вписувалось у міські повороти) */
         if (yaw > ym) yaw = ym; if (yaw < -ym) yaw = -ym;
     }
     float na = ang + yaw;
@@ -2076,6 +2102,86 @@ static uint32_t lcol(float r, float g, float b, float k) {
     int R = (int)(r * k), G = (int)(g * k), B = (int)(b * k); if (R > 255) R = 255; if (G > 255) G = 255; if (B > 255) B = 255;
     return 0xFF000000u | (uint32_t)B << 16 | (uint32_t)G << 8 | (uint32_t)R;
 }
+/* ---- погода (07.11.2026): ясно, хмарно, дощ, туман, сніг; «авто» — змінюється сама раз на кілька ігрових годин */
+enum { WX_CLEAR, WX_CLOUD, WX_RAIN, WX_FOG, WX_SNOW, WX_N };
+static const char *WX_NAME[WX_N + 1] = { "ЯСНО", "ХМАРНО", "ДОЩ", "ТУМАН", "СНІГ", "АВТО" };
+static int wx_mode = WX_N, wx_cur = WX_CLEAR, wx_t = 60 * 240;     /* wx_mode == WX_N — авто */
+static void weather_update(void) {
+    if (wx_mode == WX_N) {
+        if (state == S_PLAY && --wx_t <= 0) {
+            int r = rand() % 100; wx_cur = r < 45 ? WX_CLEAR : r < 70 ? WX_CLOUD : r < 88 ? WX_RAIN : r < 95 ? WX_FOG : WX_SNOW;
+            wx_t = 60 * (150 + rand() % 210);                              /* 2,5–6 хв (6–15 ігрових годин) */
+        }
+    } else wx_cur = wx_mode;
+    float tc = (wx_cur == WX_CLOUD || wx_cur == WX_RAIN || wx_cur == WX_SNOW) ? 1 : (wx_cur == WX_FOG ? 0.6f : 0);
+    float k = 1.0f / 600;                                                  /* перехід ~10 с */
+    #define WXA(v, t) v += ((t) > v ? k : -k) * (fabsf((t) - v) > k); if (fabsf((t) - v) <= k) v = (t);
+    WXA(wx_cloud, tc); WXA(wx_rain, wx_cur == WX_RAIN ? 1.0f : 0.0f); WXA(wx_fog, wx_cur == WX_FOG ? 1.0f : 0.0f); WXA(wx_snow, wx_cur == WX_SNOW ? 1.0f : 0.0f);
+    #undef WXA
+}
+/* ---- тіні від сонця (07.11.2026): опівдні немає, вранці на північний захід, увечері на північний схід; довжина <= пів висоти */
+#define MAXSV 12000
+static float shv[MAXSV * 2]; static int nshv;
+static float sun_shadow(float *dx, float *dy) {                      /* зсув тіні на 1 м висоти (пікс) і сила 0..1 */
+    float h = tod_clock() / 60.0f, f = (h - 12.0f) / 6.0f;
+    if (f < -1) f = -1; if (f > 1) f = 1;
+    float az = (180.0f + f * 90.0f) * PI_F / 180;                       /* сонце: 9:00 — південний схід, 15:00 — південний захід */
+    float len = 0.5f * fabsf(f);
+    *dx = -sinf(az) * TM(len); *dy = cosf(az) * TM(len);
+    float k = (1 - night_k) * (1 - wx_cloud) * fminf(1, fabsf(f) * 4);   /* опівдні й у хмари — немає */
+    if (h < 7.5f || h > 19.5f) k = 0;
+    return k;
+}
+static void build_shadows(float vx, float vy, float sdx, float sdy) {
+    nshv = 0;
+    int m = (int)(TM(16)), cx0 = ((int)vx - m) / CS - 1, cx1 = ((int)(vx + VW) + m) / CS + 1, cy0 = ((int)vy - m) / CS - 1, cy1 = ((int)(vy + VH) + m) / CS + 1;
+    if (cx0 < 0) cx0 = 0; if (cy0 < 0) cy0 = 0; if (cx1 >= NCX) cx1 = NCX - 1; if (cy1 >= NCY) cy1 = NCY - 1;
+    #define SV(px, py) { shv[2 * nshv] = ((px) - vx) * ZOOM; shv[2 * nshv + 1] = ((py) - vy) * ZOOM; nshv++; }
+    for (int gy = cy0; gy <= cy1; gy++) for (int gx = cx0; gx <= cx1; gx++) {                       /* будинки: контур, зсунутий контур і бічні стінки */
+        uint32_t k0 = BLD_CELL(gy * NCX + gx), k1 = BLD_CELL(gy * NCX + gx + 1);
+        for (uint32_t k = k0; k < k1; k++) {
+            const int16_t *B = BLD(k); float ox = sdx * B[2], oy = sdy * B[2];
+            uint32_t p0 = BLD_PO(k), p1 = BLD_PO(k + 1), o0 = BLD_OO(k), o1 = BLD_OO(k + 1);
+            int np = p1 - p0; if (np < 3) continue;
+            if (nshv + (int)(o1 - o0) * 3 + np * 6 > MAXSV) return;
+            for (uint32_t t = o0; t < o1; t++) { const uint8_t *T = BLD_OT(t);
+                for (int q = 0; q < 3; q++) { const int16_t *P = BLD_PT(p0 + T[q]); SV(P[0] + ox, P[1] + oy); } }
+            for (int a = 0; a < np; a++) {
+                const int16_t *A = BLD_PT(p0 + a), *C = BLD_PT(p0 + (a + 1) % np);
+                SV(A[0], A[1]); SV(C[0], C[1]); SV(C[0] + ox, C[1] + oy);
+                SV(A[0], A[1]); SV(C[0] + ox, C[1] + oy); SV(A[0] + ox, A[1] + oy);
+            }
+        }
+    }
+    for (int gy = cy0; gy <= cy1; gy++) for (int gx = cx0; gx <= cx1; gx++) {                       /* дерева: м'який круг, зсунутий за сонцем */
+        int k0 = TREE_CELL(gy * NCX + gx), k1 = TREE_CELL(gy * NCX + gx + 1);
+        for (int k = k0; k < k1; k++) {
+            if (nshv + 18 > MAXSV) return;
+            const int16_t *T = TREE(k); if (T[2] < 0) continue;                 /* у гаях — лише дерева-стовбури (решта — крони поруч) */
+            float r = abs(T[2]) * 0.8f, hh = r * MPP * 1.6f + 3, cx = T[0] + sdx * hh * 0.7f, cy = T[1] + sdy * hh * 0.7f;
+            for (int q = 0; q < 6; q++) {
+                float a0 = q * PI_F / 3, a1 = (q + 1) * PI_F / 3;
+                SV(cx, cy); SV(cx + cosf(a0) * r, cy + sinf(a0) * r); SV(cx + cosf(a1) * r, cy + sinf(a1) * r);
+            }
+        }
+    }
+    #undef SV
+}
+static int nfoot; static float footv[MAXSV * 2];
+static void build_footprints(float vx, float vy) {                   /* дахи — без тіні: контури будинків кольором «світла» */
+    nfoot = 0;
+    int cx0 = (int)vx / CS - 1, cx1 = (int)(vx + VW) / CS + 1, cy0 = (int)vy / CS - 1, cy1 = (int)(vy + VH) / CS + 1;
+    if (cx0 < 0) cx0 = 0; if (cy0 < 0) cy0 = 0; if (cx1 >= NCX) cx1 = NCX - 1; if (cy1 >= NCY) cy1 = NCY - 1;
+    for (int gy = cy0; gy <= cy1; gy++) for (int gx = cx0; gx <= cx1; gx++) {
+        uint32_t k0 = BLD_CELL(gy * NCX + gx), k1 = BLD_CELL(gy * NCX + gx + 1);
+        for (uint32_t k = k0; k < k1; k++) {
+            uint32_t p0 = BLD_PO(k), o0 = BLD_OO(k), o1 = BLD_OO(k + 1);
+            if (nfoot + (int)(o1 - o0) * 3 > MAXSV) return;
+            for (uint32_t t = o0; t < o1; t++) { const uint8_t *T = BLD_OT(t);
+                for (int q = 0; q < 3; q++) { const int16_t *P = BLD_PT(p0 + T[q]); footv[2 * nfoot] = (P[0] - vx) * ZOOM; footv[2 * nfoot + 1] = (P[1] - vy) * ZOOM; nfoot++; } }
+        }
+    }
+}
 /* світло фар машини: конус уперед, червоні задні (яскравіші при гальмуванні) */
 static void car_lights(float x, float y, float a, float k, int brake) {
     float c = cosf(a), s = sinf(a), L = CP(58) * ZOOM, hw = CP(19.0f) * ZOOM, f = CAR_LPX * 0.42f * ZOOM;   /* ширший і довший пучок (01.11.2026) */
@@ -2213,6 +2319,88 @@ static void puff_tex_init(void) {
         if (d < 0) d = 0;
         puff_tex[y * 16 + x] = ((uint32_t)(fminf(1, d * 1.6f) * 255) << 24) | 0xFFFFFF;
     }
+}
+#define NRAIN 220
+static float rdrop[NRAIN][3];                                        /* x, y на екрані, фаза */
+static void weather_draw(void) {
+    static float wt; wt += 1;
+    float cvx = camx, cvy = camy;                                     /* краплі «прив'язані» до світу: камера рухається — і вони */
+    static float pcx, pcy; float mdx = (cvx - pcx) * ZOOM, mdy = (cvy - pcy) * ZOOM; pcx = cvx; pcy = cvy;
+    if (fabsf(mdx) > 60 || fabsf(mdy) > 60) mdx = mdy = 0;
+    float lum = 0.35f + 0.65f * (1 - night_k);
+    if (wx_rain > 0.02f || wx_snow > 0.02f) {
+        int n = (int)(NRAIN * fmaxf(wx_rain, wx_snow * 0.6f));
+        for (int i = 0; i < n; i++) {
+            float *d = rdrop[i];
+            if (d[2] == 0) { d[0] = rand() % SW; d[1] = rand() % SH; d[2] = 1 + rand() % 100; }
+            d[0] -= mdx; d[1] -= mdy;
+            if (wx_snow > wx_rain) { d[0] += 0.35f * sinf(wt * 0.03f + d[2]) + 0.25f; d[1] += 0.55f + (int)d[2] % 3 * 0.15f; }
+            else { d[0] += 2.6f; d[1] += 7.5f; }
+            if (d[0] < -10) d[0] += SW + 20; if (d[0] > SW + 10) d[0] -= SW + 20; if (d[1] < -10) d[1] += SH + 20; if (d[1] > SH + 10) d[1] -= SH + 20;
+            if (wx_snow > wx_rain) gfx_quad(puff_tex, 16, 16, d[0], d[1], 0, 1.4f, 1.4f, lcol(255 * lum, 255 * lum, 255 * lum, 0.85f * wx_snow));
+            else gfx_quad(puff_tex, 16, 16, d[0], d[1], 0.33f, 0.75f, 8.0f, lcol(210 * lum, 222 * lum, 236 * lum, 0.8f * wx_rain));
+        }
+        if (wx_rain > 0.3f) for (int k = 0; k < 6; k++) {                 /* бризки на асфальті */
+            uint32_t h = (uint32_t)(wt * 7 + k * 977) * 2654435761u; float x = (h >> 8) % SW, y = (h >> 18) % SH, t = (int)wt % 12 / 12.0f;
+            gfx_quad(puff_tex, 16, 16, x, y, 0, 1 + t * 3, 0.7f + t * 2, lcol(220 * lum, 230 * lum, 240 * lum, 0.35f * (1 - t) * wx_rain));
+        }
+    }
+    if (wx_fog > 0.02f) {                                              /* туман: світла пелена + повільні клуби */
+        uint32_t fc = lcol(200 * lum + 20, 205 * lum + 20, 210 * lum + 22, 0);
+        gfx_rect(0, 0, SW, SH, (fc & 0xFFFFFF) | ((uint32_t)(wx_fog * 0.42f * 255) << 24));
+        for (int k = 0; k < 7; k++) {
+            float x = fmodf(k * 97.0f + wt * 0.15f - camx * ZOOM * 0.6f, SW + 240) - 120, y = fmodf(k * 61.0f + wt * 0.05f - camy * ZOOM * 0.6f, SH + 200) - 100;
+            if (x < -120) x += SW + 240; if (y < -100) y += SH + 200;
+            gfx_quad(puff_tex, 16, 16, x, y, 0, 110, 80, (fc & 0xFFFFFF) | ((uint32_t)(wx_fog * 0.22f * 255) << 24));
+        }
+    }
+}
+static uint32_t __attribute__((aligned(16))) wat_tex[64 * 64], glint_tex[64 * 64];
+static void water_tex_init(void) {
+    for (int y = 0; y < 64; y++) for (int x = 0; x < 64; x++) {          /* бриж: бшовні синусоїди (цілі періоди на 64) */
+        float u = x * 2 * PI_F / 64, v = y * 2 * PI_F / 64;
+        float w = (sinf(u * 2 + v * 1) + sinf(u * 1 - v * 3 + 1.3f) * 0.8f + sinf(u * 5 + v * 2 + 2.1f) * 0.35f) / 2.15f;
+        uint32_t a = w > 0 ? (uint32_t)(powf(w, 2.2f) * 110) : (uint32_t)(-w * 46);
+        glint_tex[y * 64 + x] = 0;
+        wat_tex[y * 64 + x] = (a << 24) | (w > 0 ? 0xF4F0E8u : 0x402818u);
+    }
+    for (int k = 0; k < 18; k++) { int x = (k * 37 + 11) % 64, y = (k * 23 + 5) % 64;   /* рідкі іскри сонця */
+        glint_tex[y * 64 + x] = 0xFFFFFFFFu; glint_tex[y * 64 + (x + 1) % 64] = 0x90FFFFFFu; glint_tex[((y + 1) % 64) * 64 + x] = 0x90FFFFFFu; }
+}
+#define WR_MAX 1400
+static float wr_buf[WR_MAX * 8];
+static void water_draw(void) {
+    static float wt; wt += 1;
+    int cx0 = (int)viewx / CS - 1, cx1 = (int)(viewx + VW) / CS + 1, cy0 = (int)viewy / CS - 1, cy1 = (int)(viewy + VH) / CS + 1;
+    if (cx0 < 0) cx0 = 0; if (cy0 < 0) cy0 = 0; if (cx1 >= NCX) cx1 = NCX - 1; if (cy1 >= NCY) cy1 = NCY - 1;
+    float sun = (1 - night_k) * (1 - 0.8f * wx_cloud);
+    for (int layer = 0; layer < 3; layer++) {
+        int n = 0;
+        float su = layer == 0 ? 0.55f : 0.9f, ou = layer == 0 ? wt * 0.11f : -wt * 0.07f, ov = layer == 0 ? wt * 0.05f : wt * 0.09f;
+        if (layer == 2) { su = 0.7f; ou = wt * 0.13f; ov = -wt * 0.04f; if (sun < 0.05f) break; }
+        for (int cy = cy0; cy <= cy1; cy++) for (int cx = cx0; cx <= cx1; cx++) {
+            int sl = slot_of[cy * NCX + cx]; if (sl < 0) continue;
+            for (int i = 0; i < wsp_n[sl] && n < WR_MAX; i++) {
+                const u8 *q = wsp[sl][i]; float wx0 = cx * CS + q[0], wx1 = cx * CS + q[1] + 1, wy0 = cy * CS + q[2], wy1 = cy * CS + q[3] + 1;
+                float *o = wr_buf + 8 * n++;
+                o[0] = (wx0 - viewx) * ZOOM; o[1] = (wy0 - viewy) * ZOOM; o[2] = (wx1 - viewx) * ZOOM; o[3] = (wy1 - viewy) * ZOOM;
+                o[4] = wx0 * su + ou; o[5] = wy0 * su + ov; o[6] = wx1 * su + ou; o[7] = wy1 * su + ov;
+            }
+        }
+        if (layer < 2) gfx_tiles(wat_tex, 64, 64, wr_buf, n, layer == 0 ? 0xFFFFFFFF : 0xA0FFFFFF);
+        else gfx_tiles(glint_tex, 64, 64, wr_buf, n, ((uint32_t)(sun * (0.5f + 0.5f * sinf(wt * 0.2f)) * 255) << 24) | 0xFFFFFF);
+    }
+    int n = 0;                                                          /* піна біля берега: одним пакетом */
+    for (int cy = cy0; cy <= cy1; cy++) for (int cx = cx0; cx <= cx1; cx++) {
+        int sl = slot_of[cy * NCX + cx]; if (sl < 0) continue;
+        for (int i = 0; i < wsh_n[sl] && n < WR_MAX; i++) {
+            float wx = cx * CS + wsh[sl][i][0], wy = cy * CS + wsh[sl][i][1], ph = sinf(wt * 0.05f + wx * 0.21f + wy * 0.17f);
+            if (ph < 0.25f) continue;
+            float r = (1.4f + ph) * ZOOM, x = (wx - viewx) * ZOOM, y = (wy - viewy) * ZOOM, *o = wr_buf + 8 * n++;
+            o[0] = x - r; o[1] = y - r; o[2] = x + r; o[3] = y + r; o[4] = 0; o[5] = 0; o[6] = 16; o[7] = 16;
+        }
+    }
+    gfx_tiles(puff_tex, 16, 16, wr_buf, n, 0x70F4F4F0);
 }
 static void render_particles(void) {
     for (int i = 0; i < NPART; i++) {
@@ -2427,13 +2615,14 @@ static void draw_frame(void) {
         snprintf(b, sizeof b, "ДОСТАВОК: %d   ЗАПІЗНЕНЬ: %d", deliveries, late); otext8_c(SW / 2, 114, 1, C_white_2, C_ink_0, b);
         snprintf(b, sizeof b, "ПАМ'ЯТКИ МІСТА: %d/%d", lm_count, NLM); otext8_c(SW / 2, 128, 1, C_yellow_3, C_ink_0, b);
         char todb[48]; snprintf(todb, sizeof todb, "ЧАС ДОБИ: %s", TOD_NAME[tod_mode]);
-        const char *items[4] = { "ГРАТИ ДАЛІ", "ПОВЕРНУТИ НА ДОРОГУ", lane_assist ? "ПОМІЧНИК СМУГИ: УВІМК" : "ПОМІЧНИК СМУГИ: ВИМК", todb };
-        for (int i = 0; i < 4; i++) {
-            int y = 150 + i * 16;
+        char wxb[48]; snprintf(wxb, sizeof wxb, "ПОГОДА: %s", WX_NAME[wx_mode]);
+        const char *items[5] = { "ГРАТИ ДАЛІ", "ПОВЕРНУТИ НА ДОРОГУ", lane_assist ? "ПОМІЧНИК СМУГИ: УВІМК" : "ПОМІЧНИК СМУГИ: ВИМК", todb, wxb };
+        for (int i = 0; i < 5; i++) {
+            int y = 146 + i * 15;
             if (i == menu_i) { snprintf(b, sizeof b, "> %s <", items[i]); otext8_c(SW / 2, y, 1, C_yellow_3, C_ink_0, b); }
             else otext8_c(SW / 2, y, 1, C_white_1, C_ink_0, items[i]);
         }
-        otext8_c(SW / 2, 224, 1, C_white_0, C_ink_0, "ВГОРУ/ВНИЗ,  " BT_X " ВИБРАТИ,  " BT_CIR " ДО ГРИ");
+        otext8_c(SW / 2, 226, 1, C_white_0, C_ink_0, "ВГОРУ/ВНИЗ,  " BT_X " ВИБРАТИ,  " BT_CIR " ДО ГРИ");
     }
 }
 
@@ -2472,6 +2661,7 @@ static void sound_update(unsigned btn) {
       sk += (tg - sk) * (tg > sk ? 0.25f : 0.07f);
       audio_loop(V_SKID, SND_SKID, sk * 0.45f, 0.78f + 0.1f * sk, 0); }   /* нижче (07.11.2026) */
     audio_loop(V_HORN, SND_HORN, play && (btn & PSP_CTRL_UP) ? 0.6f : 0, 1, 0);
+    audio_loop(V_RAIN, SND_RAIN, (quiet || state == S_TITLE) ? 0 : 0.45f * wx_rain, 1, 0);
     audio_loop(V_CITY, SND_CITY, quiet ? 0 : state == S_TITLE ? 0.12f : 0.12f * (1 - 0.7f * night_k), 1, 0);   /* удень гучніше, вночі тихо */
     float best = 1e9f; int bi = -1;
     for (int i = 0; i < NTRAF; i++) if (traf[i].on) { float d = dist(traf[i].x, traf[i].y, px_, py_); if (d < best) { best = d; bi = i; } }
@@ -2506,7 +2696,7 @@ static void sound_update(unsigned btn) {
 static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
     tick++;
     loads_frame = 0;
-    tod_update();
+    tod_update(); weather_update();
     sound_update(btn);
     if (toast_t > 0) toast_t--;
     if (bump > 0) bump--;
@@ -2518,8 +2708,8 @@ static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
     if (state == S_BIGMAP) { if (pressed & (PSP_CTRL_SELECT | PSP_CTRL_START | PSP_CTRL_CIRCLE)) state = S_PLAY; return; }
     if (state == S_PAUSE) {
         if (pressed & (PSP_CTRL_UP | PSP_CTRL_DOWN)) audio_play(SND_TICK, 0.5f, 1, 0);
-        if (pressed & PSP_CTRL_UP) menu_i = (menu_i + 3) % 4;
-        if (pressed & PSP_CTRL_DOWN) menu_i = (menu_i + 1) % 4;
+        if (pressed & PSP_CTRL_UP) menu_i = (menu_i + 4) % 5;
+        if (pressed & PSP_CTRL_DOWN) menu_i = (menu_i + 1) % 5;
         if (pressed & (PSP_CTRL_START | PSP_CTRL_CIRCLE)) state = S_PLAY;
         if (pressed & PSP_CTRL_CROSS) {
             if (menu_i == 0) state = S_PLAY;
@@ -2528,7 +2718,8 @@ static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
                 if (evac || freecam) {} else if (return_to_road()) say("НА ДОРОЗІ", C_yellow_3, 90); else say("ДОРОГИ ПОРУЧ НЕМАЄ", C_white_2, 90);
             }
             else if (menu_i == 2) { lane_assist = !lane_assist; write_save(); }
-            else { tod_mode = (tod_mode + 1) % 5; if (tod_mode == 0) tod = TOD_FIX[4] + 0.05f; }
+            else if (menu_i == 3) { tod_mode = (tod_mode + 1) % 5; if (tod_mode == 0) tod = TOD_FIX[4] + 0.05f; }
+            else { wx_mode = (wx_mode + 1) % (WX_N + 1); if (wx_mode < WX_N) wx_cur = wx_mode; }   /* погода: АВТО -> ЯСНО -> ... */
         }
         return;
     }
@@ -2577,6 +2768,7 @@ static void render(void *target_buf) {
     gfx_begin(target_buf); cur_target = target_buf;
     float sx = (wox - viewx) * ZOOM, sy = (woy - viewy) * ZOOM;
     gfx_layer16(wbuf, WW, WW, WH, sx, sy, ZOOM, 1, 0, ZOOM != 1.0f);       /* 5551 без змішування: біт даху не заважає */
+    if (world_mode) water_draw();                                      /* вода: брижі, іскри, піна (07.11.2026) */
     if (ndarkv) {                                                   /* темна пляма під дахами з паралаксом */
         static float dv[MAXRV * 2];
         for (int i = 0; i < ndarkv; i++) { dv[2 * i] = sx + darkv[2 * i] * ZOOM; dv[2 * i + 1] = sy + darkv[2 * i + 1] * ZOOM; }
@@ -2683,8 +2875,18 @@ static void render(void *target_buf) {
     if (arch_used) gfx_layer16(warch, WW, WW, WH, sx, sy, ZOOM, 1, 1, ZOOM != 1.0f);
     if (over_used) gfx_layer8(wover, WW, WW, WH, sx, sy, ZOOM, 1, ZOOM != 1.0f);
     render_particles();
-    if (amb_r < 254 || amb_g < 254 || amb_b < 254) {                 /* вечір і ніч: шар світла */
-        gfx_light_begin(lcol(amb_r, amb_g, amb_b, 1));
+    float sdx, sdy, sk = (world_mode && !freecam) ? sun_shadow(&sdx, &sdy) : 0;
+    float wk = 1 - 0.13f * wx_cloud - 0.12f * wx_rain - 0.05f * wx_snow;   /* хмари й дощ — темніше */
+    float ar = amb_r * wk, ag = amb_g * wk, ab = amb_b * (wk + 0.04f * wx_rain);
+    if (ar < 254 || ag < 254 || ab < 254 || sk > 0.02f) {               /* вечір, ніч, хмари, тіні: шар світла */
+        gfx_light_begin(lcol(ar, ag, ab, 1));
+        if (sk > 0.02f) {                                               /* тіні від сонця; дахи — без тіні */
+            build_shadows(viewx, viewy, sdx, sdy);
+            float d = 1 - 0.26f * sk;
+            gfx_light_shade(shv, nshv, lcol(ar * d, ag * d, ab * (d + 0.04f * sk), 1));
+            build_footprints(viewx, viewy);
+            gfx_light_shade(footv, nfoot, lcol(ar, ag, ab, 1));
+        }
         float on = night_k < 0.25f ? 0 : fminf(1, (night_k - 0.25f) / 0.35f);    /* ліхтарі й вікна вмикаються в сутінках */
         if (on > 0) {
             int gx0 = (int)(viewx - OP(30)) / PK_G, gy0 = (int)(viewy - OP(30)) / PK_G, gx1 = (int)(viewx + VW + OP(30)) / PK_G, gy1 = (int)(viewy + VH + OP(30)) / PK_G;
@@ -2698,7 +2900,14 @@ static void render(void *target_buf) {
                     if (L->k) {                                             /* вікна: щоночі світяться не всі */
                         uint32_t h = (uint32_t)q * 2654435761u ^ (uint32_t)day_n * 40503u; if ((h >> 7) % 100 > 62) continue;
                         gfx_quad(glow_tex, 32, 32, x, y, 0, r, r, L->k == 1 ? lcol(255, 186, 104, on * 0.75f) : lcol(160, 182, 255, on * 0.6f));
-                    } else gfx_quad(glow_tex, 32, 32, x, y, 0, r, r, lcol(255, 226, 170, on * 0.95f));
+                    } else {
+                        gfx_quad(glow_tex, 32, 32, x, y, 0, r, r, lcol(255, 226, 170, on * 0.95f));
+                        if (wx_rain > 0.05f) gfx_quad(glow_tex, 32, 32, x, y + r * 0.9f, 0, r * 0.22f, r * 1.3f, lcol(255, 210, 150, on * 0.55f * wx_rain));   /* відблиск на мокрому асфальті */
+                        if (surf(L->x, L->y + L->r) == 2 || surf(L->x, L->y + L->r * 2) == 2) {             /* ліхтар біля води: тремтяча смуга відображення */
+                            float fl = 0.6f + 0.4f * sinf(tick * 0.09f + L->x);
+                            gfx_quad(glow_tex, 32, 32, x + sinf(tick * 0.05f + L->y) * 1.5f, y + r * 1.6f, 0, r * 0.2f, r * 1.5f, lcol(255, 200, 120, on * 0.9f * fl));
+                        }
+                    }
                 }
             }
         }
@@ -2712,8 +2921,9 @@ static void render(void *target_buf) {
             }
         }
         gfx_light_end(cur_target);
-        if (nroofv) gfx_tris16(wbuf, WW, WW, WH, 1, vv, nroofv, lcol(amb_r, amb_g, amb_b, 1));   /* дахи — лише темрява ночі: світло з вікон і ліхтарів падає на землю, не на дах */
+        if (nroofv) gfx_tris16(wbuf, WW, WW, WH, 1, vv, nroofv, lcol(ar, ag, ab, 1));   /* дахи — лише темрява ночі: світло з вікон і ліхтарів падає на землю, не на дах */
     }
+    if (world_mode) weather_draw();
     for (int i = 0; i < ndim; i++) gfx_rect(dimr[i][0], dimr[i][1], dimr[i][2], dimr[i][3], dimc[i]);
     gfx_layer8(fb, SW, SW, SH, 0, 0, 1, 1, 0);
     gfx_end();
@@ -2760,7 +2970,7 @@ int main(int argc, char **argv) {
     }
     load_save();
     assets_init();
-    gfx_init(PALETTE); puff_tex_init(); light_tex_init(); pal16_init(); drt_init(); snd_init();
+    gfx_init(PALETTE); puff_tex_init(); light_tex_init(); water_tex_init(); pal16_init(); drt_init(); snd_init();
     { int lt = sceKernelCreateThread("loader", loader_thread, 0x30, 0x4000, 0, NULL); if (lt >= 0) sceKernelStartThread(lt, 0, NULL); }
     sceCtrlSetSamplingCycle(0);
     sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
@@ -2818,7 +3028,7 @@ int main(int argc, char **argv) {
     remove(save_path);
     snprintf(map_path, sizeof map_path, "%s", argc > 2 ? argv[2] : "build/MAP.BIN");
     assets_init();
-    gfx_init(PALETTE); puff_tex_init(); light_tex_init(); pal16_init(); drt_init(); snd_init();
+    gfx_init(PALETTE); puff_tex_init(); light_tex_init(); water_tex_init(); pal16_init(); drt_init(); snd_init();
     if (map_err) { printf("MAP.BIN error %d\n", map_err); return 1; }
     /* title */
     for (int i = 0; i < 40; i++) { game_update(0, 0, 128, 128); }
@@ -2827,6 +3037,9 @@ int main(int argc, char **argv) {
     if (getenv("SHOTAT")) {                                            /* кадр у заданій точці (налагодження) */
         float x_, y_; sscanf(getenv("SHOTAT"), "%f,%f", &x_, &y_); px_ = x_; py_ = y_; ang = 0; stop_car(); update_camera(1);
         if (getenv("TODM")) tod_mode = atoi(getenv("TODM"));
+        if (getenv("TODF")) { tod_mode = 0; tod = atof(getenv("TODF")); }
+        if (getenv("WX")) { wx_mode = wx_cur = atoi(getenv("WX")); wx_cloud = (wx_cur == WX_CLOUD || wx_cur == WX_RAIN || wx_cur == WX_SNOW) ? 1 : wx_cur == WX_FOG ? 0.6f : 0;
+                            wx_rain = wx_cur == WX_RAIN; wx_fog = wx_cur == WX_FOG; wx_snow = wx_cur == WX_SNOW; }
         for (int i = 0; i < (getenv("WARM") ? atoi(getenv("WARM")) : 30); i++) game_update(0, 0, 128, 128);
         px_ = x_; py_ = y_;
         for (int t = 0; t < NTRN; t++) if (trn[t].on) { float hx, hy, ha; rail_at(trn[t].line, trn[t].head, &hx, &hy, &ha); printf("train %d line %d head %.0f,%.0f nc %d dist %.0f m\n", t, trn[t].line, hx, hy, trn[t].nc, trains_near(px_, py_) * MPP); }

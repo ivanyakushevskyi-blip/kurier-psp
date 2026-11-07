@@ -15,6 +15,8 @@ void gfx_layer16(const uint16_t *tex, int stride, int w, int h, float sx, float 
    колір-множник col (0xAABBGGRR): затемнення й прозорість. */
 void gfx_quad(const uint32_t *tex, int tw, int th, float cx, float cy, float ang, float hx, float hy, uint32_t col);
 void gfx_rect(float x, float y, float w, float h, uint32_t col);
+/* n прямокутників з текстурою, що повторюється: по 8 чисел (x0, y0, x1, y1 на екрані; u0, v0, u1, v1 у текселях) */
+void gfx_tiles(const uint32_t *tex, int tw, int th, const float *r, int n, uint32_t col);
 /* трикутники з 16-бітної текстури (fmt як у gfx_layer16), білінійно, зі змішуванням за альфою:
    uvxy — по 4 числа на вершину (u, v у текселях; x, y на екрані), nv кратне 3 */
 void gfx_tris_flat(const float *xy, int nv, uint32_t col);   /* одноколірні трикутники (0xAABBGGRR), xy — по 2 числа */
@@ -23,6 +25,7 @@ void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const fl
    далі gfx_quad додає світло (адитивно), gfx_light_end множить кадр на шар світла */
 void gfx_light_begin(uint32_t amb);
 void gfx_light_end(void *target);
+void gfx_light_shade(const float *xy, int nv, uint32_t col);   /* тіні: трикутники кольору col у шарі світла (заміна) */
 void gfx_end(void);                     /* PSP: кадр відданий чипу, не чекаємо */
 void gfx_sync(void);                    /* дочекатися, поки чип домалює попередній кадр */
 
