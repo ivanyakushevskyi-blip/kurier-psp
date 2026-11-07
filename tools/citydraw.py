@@ -595,11 +595,11 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
 
     # ---------- тіні (на південний схід), м'які краї
     shadow = np.zeros((HF, WF), np.uint8)
-    for i, b, pts, ptf in blds:
+    for i, b, pts, ptf in (blds if not os.environ.get('NOSHADOW') else []):
         s_ = int(np.clip(b['h'] * 0.22 * (0.5 / MPP), 1, 7 * (0.5 / MPP)) * S)
         P = np.round(np.array(ptf)).astype(np.int32)
         for k in range(1, s_ + 1, max(1, S // 2)): cv2.fillPoly(shadow, [P + [k, k]], 1)
-    for x, y, rr, _ in trees: cv2.circle(shadow, (int((x + 2.5) * S), int((y + 2.5) * S)), int(rr * S), 1, -1)
+    for x, y, rr, _ in (trees if not os.environ.get('NOSHADOW') else []): cv2.circle(shadow, (int((x + 2.5) * S), int((y + 2.5) * S)), int(rr * S), 1, -1)
     shf = shadow.astype(np.float32)
     if S > 1:
         shf = cv2.GaussianBlur(shf, (0, 0), 1.0 * S)
