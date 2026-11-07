@@ -113,6 +113,18 @@ def drivable(t):
         and t.get('covered') != 'yes' and t.get('layer', '0') in ('0', '1', '2')
 
 
+def _near_fuel(b, R=30.0):
+    """будинок біля АЗС (навіс над колонками: дорога під ним — за задумом)"""
+    F_ = _near_fuel.__dict__.setdefault('F', None)
+    if F_ is None:
+        pts = []
+        if os.path.exists('build/mapdata.json'): pts = [(f['x'] / K, f['y'] / K) for f in json.load(open('build/mapdata.json')).get('fuel', [])]
+        F_ = _near_fuel.F = np.array(pts, np.float32).reshape(-1, 2)
+    if not len(F_): return False
+    c = np.array(b['q'], np.float32).mean(0)
+    return float(np.hypot(*(F_ - c).T).min()) < R / SRC
+
+
 def _drop_on_roads(C, GW, GH):
     """Будинки, що стоять на проїжджій частині (похибки контурів MS/OSM, кіоски на дорозі) — прибираємо, щоб не врізатися."""
     S = 1.0 / SRC                                          # растр 1 м
@@ -122,7 +134,7 @@ def _drop_on_roads(C, GW, GH):
         if not drivable(wy['t']): continue
         P = np.round(np.array(wy['pts']) / S).astype(np.int32)
         cv2.polylines(road, [P], False, 1, max(1, int(ROAD_W[wy['t']['highway']] - 1.5)))
-        cv2.polylines(cl, [P], False, 1, max(1, int(ROAD_W[wy['t']['highway']] * 0.4)))
+        if wy['t']['highway'] != 'service': cv2.polylines(cl, [P], False, 1, max(1, int(ROAD_W[wy['t']['highway']] * 0.4)))
     kept = {'B': [], 'SAT': []}; n = 0
     for key in ('B', 'SAT'):
         for b in C[key]:
@@ -138,10 +150,10 @@ def _drop_on_roads(C, GW, GH):
             osm = key == 'B' and b['t'].get('src') not in ('ms', 'sat', 'manual')
             # 07.11.2026: дахи, що лише краєм накривають дорогу, лишаються (машина проїжджає під ними, як під аркою);
             # прибираємо лише ті, що заходять у середину проїжджої частини (центральні 40% ширини, >= 6 м2), дрібні й «на дорозі»
-            if frac > 0.6 or (frac > 0 and tot < 12):
-                n += 1; continue
-            if frac > 0:
-                c_ = (cl[ya:ya + m.shape[0], xa:xa + m.shape[1]][m > 0]).sum()
+            # навіси АЗС і building=roof — над проїздом за задумом; великі будинки (>= 450 м2) не прибираємо ніколи (07.11.2026)
+            if frac > 0 and not (b['t'].get('building') in ('roof', 'canopy') or b['t'].get('amenity') == 'fuel' or _near_fuel(b) or tot >= 450):
+                if frac > 0.6 or tot < 12: n += 1; continue
+                c_ = (cl[ya:ya + m.shape[0], xa:xa + m.shape[1]][m > 0]).sum()       # середина проїжджої частини (без service)
                 if c_ >= 6: n += 1; continue
             kept[key].append(b)
     C['B'], C['SAT'] = kept['B'], kept['SAT']
