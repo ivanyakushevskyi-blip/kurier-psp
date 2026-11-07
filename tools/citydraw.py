@@ -397,11 +397,11 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
                 sh.append((pts[i][0] - (b2[1] - a[1]) / L * off, pts[i][1] + (b2[0] - a[0]) / L * off))
             do.line(sh, fill=2, width=S)
     ova = np.array(ov)
-    # 07.11.2026: на мостах над коліями рейок не видно (настил зверху); Трудова (Святослава Хороброго) — теж міст
+    # 07.11.2026: на мостах над коліями рейок не видно (настил зверху)
     bm = Image.new('L', (WF, HF), 0); db = ImageDraw.Draw(bm)
     for h, pts, w in drive:
         t_ = w['t']
-        if t_.get('bridge') in ('yes', 'viaduct') or any(f in t_.get('name', '') for f in ('Святослава Хороброго', 'Трудова')):
+        if t_.get('bridge') in ('yes', 'viaduct'):
             line(pts, ROAD_W[h] + 2 * SIDE_W.get(h, 0) + 1.0, 1, db)
     ova[np.array(bm) > 0] = 0
     img[ova == 1] = SLEEPER; img[ova == 2] = RAIL
