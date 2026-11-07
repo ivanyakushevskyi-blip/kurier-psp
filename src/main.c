@@ -1387,15 +1387,25 @@ static int xing_hit(float x, float y) {                               /* опу�
 static float xing_stop(int i, float left) {                          /* відстань до стоп-лінії переїзду для машини трафіку (пікс) або 1e9 */
     float best = 1e9f;
     for (int k = 0; k < NXING; k++) {
-        if (!xing_closed[k] && xing_bar[XINGS[k].grp] < 0.05f) continue;
-        int e = XINGS[k].e; float L = rg_len(e);
-        if (traf[i].e == e) {
-            float sx = traf[i].dir == 0 ? XINGS[k].s0 : L - XINGS[k].s0, d = sx - traf[i].s - TM(9);
-            if (d > -TM(2) && d < best) best = d;
-        } else if (traf[i].nx >= 0 && (traf[i].nx >> 1) == e) {
-            float sx = (traf[i].nx & 1) == 0 ? XINGS[k].s0 : L - XINGS[k].s0, d = left + sx - TM(9);
-            if (d < best) best = d;
+        int closed = xing_closed[k] || xing_bar[XINGS[k].grp] > 0.05f;
+        int e = XINGS[k].e; float L = rg_len(e), sx;
+        if (traf[i].e == e) sx = traf[i].dir == 0 ? XINGS[k].s0 : L - XINGS[k].s0;
+        else if (traf[i].nx >= 0 && (traf[i].nx >> 1) == e) sx = left + ((traf[i].nx & 1) == 0 ? XINGS[k].s0 : L - XINGS[k].s0) + traf[i].s;
+        else continue;
+        float d = sx - traf[i].s - traf[i].hl - TM(9.5f);                /* ніс за 1,5 м до стріли (стріла — за 8 м від колії) */
+        if (d < -TM(1.5f)) continue;                                    /* уже на переїзді — проїхати, не стояти на коліях */
+        if (!closed) {                                                  /* не заїжджати на переїзд, якщо за ним немає місця (затор) */
+            int room = 1; float far_ = sx + TM(4) + 2 * traf[i].hl + TM(4);
+            for (int j = 0; j < NTRAF; j++) if (j != i && traf[j].on && traf[j].spd < traf[j].vmax * 0.3f) {
+                float sj;
+                if (traf[j].e == traf[i].e && traf[j].dir == traf[i].dir) sj = traf[j].s;
+                else if (traf[i].nx >= 0 && traf[j].e == (traf[i].nx >> 1) && traf[j].dir == (traf[i].nx & 1)) sj = left + traf[j].s + traf[i].s;
+                else continue;
+                if (sj - traf[j].hl > sx - TM(4) && sj - traf[j].hl < far_) room = 0;
+            }
+            if (room || d > TM(25)) continue;
         }
+        if (d < best) best = d;
     }
     return best;
 }
@@ -2473,6 +2483,10 @@ static void sound_update(unsigned btn) {
         float dn = (play && !quiet) ? trains_near(px_, py_) : 1e9f, k = dn < TM(260) ? 1 - dn / TM(260) : 0;
         audio_loop(V_TRAIN, SND_TRAIN, 0.75f * k * k, 1, 0);
         if (dn < TM(28) && tick % 4 == 0) { bump = 2; shake = 1; }
+        if (play && dn < TM(2.4f) && health > 0) {                         /* потрапив під поїзд — авто розбите */
+            health = 0; bump = 30; shake = 6; audio_play(SND_CRASH, 1, 0.7f, 0); audio_play(SND_THORN, 1, 1, 0);
+            say("ПОТЯГ! АВТО РОЗБИТЕ", C_red_3, 160);
+        }
         float xb = 0;
         for (int x = 0; x < NXING; x++) if (xing_closed[x]) {
             float bx, by, ex, ey; xing_boom(x, 1, &bx, &by, &ex, &ey); float d = dist(bx, by, px_, py_);
@@ -2817,6 +2831,7 @@ int main(int argc, char **argv) {
         px_ = x_; py_ = y_;
         for (int t = 0; t < NTRN; t++) if (trn[t].on) { float hx, hy, ha; rail_at(trn[t].line, trn[t].head, &hx, &hy, &ha); printf("train %d line %d head %.0f,%.0f nc %d dist %.0f m\n", t, trn[t].line, hx, hy, trn[t].nc, trains_near(px_, py_) * MPP); }
         for (int x = 0; x < NXING; x++) printf("xing %d closed %d bar %.2f\n", x, xing_closed[x], xing_bar[x]);
+        printf("health %d evac %d\n", (int)health, evac);
         if (getenv("SHOTTROLL")) {                                       /* налагодження: кадр біля тролейбуса */
             { int na = 0; for (int i = 0; i < NTRAF; i++) na += traf[i].on; printf("on %d target %d troll target %d clock %d NTRP %d\n", na, (int)((NTRAF - 4) * traf_density() + 0.5f), trolley_target(), tod_clock(), NTRP); }
             for (int i = 0; i < NTRAF; i++) if (traf[i].on && traf[i].route >= 0) {
