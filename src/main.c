@@ -2383,18 +2383,6 @@ static void render(void *target_buf) {
         for (int i = 0; i < ndarkv; i++) { dv[2 * i] = sx + darkv[2 * i] * ZOOM; dv[2 * i + 1] = sy + darkv[2 * i + 1] * ZOOM; }
         gfx_tris_flat(dv, ndarkv, 0x80000000);
     }
-    static float vv[MAXRV * 4];
-    if (nroofv) {                                                   /* дахи з паралаксом — над машиною */
-        for (int i = 0; i < nroofv; i++) {
-            const float *r = roofv + 4 * i; float *o = vv + 4 * i;
-            o[0] = r[0]; o[1] = r[1]; o[2] = sx + r[0] * ZOOM + r[2]; o[3] = sy + r[1] * ZOOM + r[3];
-        }
-        gfx_tris16(wbuf, WW, WW, WH, 1, vv, nroofv, 0xFFFFFFFF);  /* дах — прямо з шару карти: біт 15 = непрозорість */
-    }
-    for (int j = 0; j < nlmv; j++) {                                /* позначки пам'яток — над дахами, під машиною */
-        int i = lmv[j].i;
-        gfx_layer8(lm_frame(i), LMS[i].w, LMS[i].w, LMS[i].h, sx + lmv[j].x * ZOOM, sy + lmv[j].y * ZOOM, ZOOM, 1, 0);
-    }
     if (world_mode && NPARKED > 0) {                                     /* запарковані машини */
         float k = CAR_LPX / CARTEX_LEN * ZOOM, hx = CARTEX_W / 2 * k, hy = CARTEX_H / 2 * k;
         int gx0 = (int)(viewx - OP(12)) / PK_G, gy0 = (int)(viewy - OP(12)) / PK_G, gx1 = (int)(viewx + VW + OP(12)) / PK_G, gy1 = (int)(viewy + VH + OP(12)) / PK_G;
@@ -2433,6 +2421,18 @@ static void render(void *target_buf) {
         float k = CAR_LPX / CARTEX_LEN * ZOOM, hx = CARTEX_W / 2 * k, hy = CARTEX_H / 2 * k;     /* 7 м = 14 пікс карти */
         if (carv.shadow) gfx_quad((const uint32_t *)(assets_bin + CARTEX_SHD), CARTEX_W, CARTEX_H, carv.x + 0.6f * ZOOM, carv.y + 0.9f * ZOOM, carv.a, hx * 1.0f, hy * 1.06f, 0xFFFFFFFF);
         gfx_quad((const uint32_t *)(assets_bin + (carv.lit ? CARTEX_LIT : CARTEX_OFF)), CARTEX_W, CARTEX_H, carv.x, carv.y, carv.a, hx, hy, carv.col);
+    }
+    static float vv[MAXRV * 4];
+    if (nroofv) {                                                   /* дахи з паралаксом — над машинами (07.11.2026: малюються після машин — під дахом над дорогою машину не видно) */
+        for (int i = 0; i < nroofv; i++) {
+            const float *r = roofv + 4 * i; float *o = vv + 4 * i;
+            o[0] = r[0]; o[1] = r[1]; o[2] = sx + r[0] * ZOOM + r[2]; o[3] = sy + r[1] * ZOOM + r[3];
+        }
+        gfx_tris16(wbuf, WW, WW, WH, 1, vv, nroofv, 0xFFFFFFFF);  /* дах — прямо з шару карти: біт 15 = непрозорість */
+    }
+    for (int j = 0; j < nlmv; j++) {                                /* позначки пам'яток — над дахами, під машиною */
+        int i = lmv[j].i;
+        gfx_layer8(lm_frame(i), LMS[i].w, LMS[i].w, LMS[i].h, sx + lmv[j].x * ZOOM, sy + lmv[j].y * ZOOM, ZOOM, 1, 0);
     }
     if (arch_used) gfx_layer16(warch, WW, WW, WH, sx, sy, ZOOM, 1, 1, ZOOM != 1.0f);
     if (over_used) gfx_layer8(wover, WW, WW, WH, sx, sy, ZOOM, 1, ZOOM != 1.0f);
