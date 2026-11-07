@@ -45,6 +45,8 @@ for t in _bl:
 import struct
 rgbm = np.load(os.path.join(BUILD, 'map_rgb.npy'), mmap_mode='r')
 surfm = np.load(os.path.join(BUILD, 'surf.npy'), mmap_mode='r')
+import railbridge as _RB
+_decks = _RB.decks(CD.data()); _decks_px = [d_['poly'] for d_ in _decks]
 crownm = np.load(os.path.join(BUILD, 'crown.npy'), mmap_mode='r') if os.path.exists(os.path.join(BUILD, 'crown.npy')) else None
 sbits = np.packbits(solid.astype(np.uint8), axis=1, bitorder='little')     # (H, W/8)
 import cv2
@@ -63,6 +65,8 @@ for cy in (range(0) if REUSE else range(NCY)):
     roof = np.zeros((CS, W), np.uint8)
     for t in _band_bl[cy]:
         cv2.fillPoly(roof, [t[3].astype(np.int32) - [0, cy * CS]], 1)
+    for P_ in _decks_px:                                                  # настил мосту над коліями: поверх поїздів (07.11.2026)
+        if P_[:, 1].max() >= cy * CS and P_[:, 1].min() < (cy + 1) * CS: cv2.fillPoly(roof, [np.round(P_ - [0, cy * CS]).astype(np.int32)], 1)
     p565 = (band[..., 0] >> 3) | ((band[..., 1] >> 3) << 5) | ((band[..., 2] >> 3) << 10) | (roof.astype(np.uint16) << 15)
     sb_ = np.asarray(surfm[cy * CS:(cy + 1) * CS])
     if crownm is not None: sb_ = (sb_ & 7) | (np.asarray(crownm[cy * CS:(cy + 1) * CS]).astype(np.uint8) << 3)   # біт 3 — крона дерева
@@ -318,6 +322,7 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     for o_ in _xg:
         g_ = next((k_ for k_, p_ in enumerate(_xg[:len(_grp)]) if p_[2] == o_[2] and abs(p_[3] - o_[3]) < 40 / CD.MPP), len(_grp))
         _grp.append(_grp[g_] if g_ < len(_grp) else g_)
+    f.write('#define NDECK %d\nstatic const float DECKS[] = {%s};\n' % (len(_decks_px), ','.join('%.1ff' % v for P_ in _decks_px for v in P_.ravel()) or '0'))
     f.write('#define NXING %d\ntypedef struct { int line; float arc; int e; float s0; int grp; } Xing;\nstatic const Xing XINGS[] = {%s};\n' % (
         len(_xg), ','.join('{%d,%.1ff,%d,%.1ff,%d}' % (o_[0], o_[1], o_[2], o_[3], _grp[k_]) for k_, o_ in enumerate(_xg)) or '{0}'))
     import trolley                                                  # тролейбусні маршрути (07.11.2026)

@@ -2577,6 +2577,17 @@ static void render(void *target_buf) {
             if (trn[t].dir < 0) a += PI_F; if (trn[t].flip[c]) a += PI_F;
             gfx_quad((const uint32_t *)(assets_bin + TRTEX_OFF + trn[t].ty[c] * TRTEX_W * TRTEX_H * 4), TRTEX_W, TRTEX_H, x, y, a, hx, hy, 0xFFFFFFFF);
         }
+        for (int d = 0; d < NDECK; d++) {                                  /* настил мосту — над поїздом (пікселі з шару карти) */
+            const float *P = DECKS + 8 * d; float vv_[6 * 4]; int vis = 0;
+            for (int q = 0; q < 4; q++) { float x = (P[2 * q] - viewx) * ZOOM, y = (P[2 * q + 1] - viewy) * ZOOM; if (x > -50 && x < SW + 50 && y > -50 && y < SH + 50) vis = 1; }
+            if (!vis) continue;
+            static const int TI[6] = { 0, 1, 2, 0, 2, 3 };
+            for (int q = 0; q < 6; q++) {
+                float u = P[2 * TI[q]] - wox, v = P[2 * TI[q] + 1] - woy;
+                vv_[4 * q] = u; vv_[4 * q + 1] = v; vv_[4 * q + 2] = sx + u * ZOOM; vv_[4 * q + 3] = sy + v * ZOOM;
+            }
+            gfx_tris16(wbuf, WW, WW, WH, 1, vv_, 6, 0xFFFFFFFF);
+        }
     }
     if (world_mode && NPARKED > 0) {                                     /* запарковані машини */
         float k = CAR_LPX / CARTEX_LEN * ZOOM, hx = CARTEX_W / 2 * k, hy = CARTEX_H / 2 * k;

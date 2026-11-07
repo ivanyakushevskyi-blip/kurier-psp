@@ -818,6 +818,10 @@ def main():
     br = interchange(D, rgb)
     carve_roads(D, solid)
     market_solid(D, rgb, solid)
+    import railbridge as RB                                       # мости над коліями (07.11.2026, варіант Б)
+    surf = np.load('build/surf.npy', mmap_mode='r+')
+    for dk in RB.decks(D): RB.paint(rgb, solid, surf, dk)
+    surf.flush()
     rgb.flush(); solid.flush()
     json.dump(dict(mazur=mz, bridges=[br]), open('build/mappatch.json', 'w'))
 

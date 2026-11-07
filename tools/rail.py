@@ -64,7 +64,8 @@ def crossings(lines_, g, D, names=('Франка',)):
         LR = LineString(R)
         for ei, e in enumerate(g['edges']):
             nm = e['t'].get('name', '')
-            if not any(k in nm for k in names): continue
+            if e['t'].get('bridge') in ('yes', 'viaduct') or any(k in nm for k in ('Святослава Хороброго', 'Трудова')): continue   # мости
+            if e['t'].get('layer', '0') not in ('0', '-'): continue
             LE = LineString(e['q'])
             if not LR.intersects(LE): continue
             p = LR.intersection(LE)
