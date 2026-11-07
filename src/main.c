@@ -816,7 +816,7 @@ static int rg_light_green(int e, int dir) {                         /* світ�
 /* машина трафіку (31.10.2026): своя позиція й швидкість, кермує до точки попереду на своїй смузі (дуги замість стрибків),
    маршрут на одне ребро наперед (nx), швидкість — IDM за лідером, поворотами й стоп-лініями */
 static struct { int on, e, dir, lane, model, stop_t, brake, nx, blink, lc_t, held, hold_t, wait, hold_ap;
-                float s, spd, vmax, x, y, a, off, T, hold_turn, fade, tn, dg, dc, hl, hw; int blk_t, ghost, lblk; } traf[NTRAF];   /* hl, hw — півдовжина/півширина (пікс) */
+                float s, spd, vmax, x, y, a, off, T, hold_turn, fade, tn, dg, dc, hl, hw; int blk_t, ghost, lblk, route, rk, rstop, dwell; } traf[NTRAF];   /* route — шматок тролейбусного маршруту (-1 — звичайна) */   /* hl, hw — півдовжина/півширина (пікс) */
 static uint32_t node_hold[RG_NN];                                    /* хто зайняв перехрестя (біти машин) */
 static int br_on = -1, br_up;                 /* номер мосту, на/під яким машина; верх? */
 static void br_local(int i, float x, float y, float *al, float *ac) {
@@ -892,6 +892,11 @@ static int tr_choose(int e, int dir) {
     if (nc > 0) return cand[rand() % nc];
     if (!RG_EDGE[e].one) return e * 2 + (dir ^ 1);                     /* тупик — розворот */
     return -1;
+}
+static int tr_next(int i) {                                          /* наступне ребро: тролейбус — за маршрутом, решта — випадково */
+    if (traf[i].route < 0) return tr_choose(traf[i].e, traf[i].dir);
+    int k = traf[i].rk + 1, r = traf[i].route;
+    return k < (int)(TRP_OFF[r + 1] - TRP_OFF[r]) ? TRP_STEP[TRP_OFF[r] + k] : -1;
 }
 /* точка маршруту на відстані d попереду від s (поточне ребро, далі наступне) зі зміщенням у смугу + дотична */
 /* точка осі маршруту (поточне ребро, далі наступне) на відстані ss від початку поточного; згладжена дотична */
@@ -1033,7 +1038,8 @@ static void traf_spawn(int i, float vx, float vy, float vw, float vh) {
         traf[i].T = 1.0f + (rand() % 9) * 0.1f;                         /* характер водія: дистанція 1–1,8 с */
         traf[i].off = tr_off(e, traf[i].lane); traf[i].x = xx - ty * traf[i].off; traf[i].y = yy + tx * traf[i].off; traf[i].a = atan2f(ty, tx);
         traf[i].fade = 1; traf[i].dg = 0; traf[i].blk_t = 0; traf[i].ghost = 0; traf[i].lblk = 0; traf[i].stop_t = 0; traf[i].brake = 0; traf[i].blink = 0; traf[i].lc_t = 0; traf[i].held = -1; traf[i].hold_t = 0; traf[i].wait = 0;
-        traf[i].nx = tr_choose(e, dir); traf[i].tn = tr_turn(e, dir, traf[i].nx); tr_set_dc(i);
+        traf[i].route = -1;
+        traf[i].nx = tr_next(i); traf[i].tn = tr_turn(e, dir, traf[i].nx); tr_set_dc(i);
         return;
     }
 }
@@ -1091,16 +1097,54 @@ static float tr_leader(int i, int lv, float *lv_ms) {                /* шлях
     }
     return best;
 }
+static int trolley_target(void) {                                   /* тролейбусів поруч: вночі немає, у пік більше */
+    float h = tod_clock() / 60.0f;
+    if (NTRP == 0 || h < 5.5f || h >= 23.5f) return 0;
+    return traf_peak() ? 4 : 2;
+}
+static void trolley_spawn(int i, float vx, float vy, float vw, float vh) {
+    for (int tries = 0; tries < 40; tries++) {
+        int r = rand() % NTRP, n = TRP_OFF[r + 1] - TRP_OFF[r];
+        if (n < 3) continue;
+        int k = rand() % (n - 1), code = TRP_STEP[TRP_OFF[r] + k], e = code >> 1, dir = code & 1;
+        const REdge *E = &RG_EDGE[e];
+        if (E->len < TM(20)) continue;
+        float s = TM(6) + rand() % (int)(E->len - TM(12)), xx, yy, tx, ty;
+        rg_at(e, dir, s, &xx, &yy, &tx, &ty);
+        float d = dist(xx, yy, px_, py_);
+        if (d < OP(260) || d > OP(460)) continue;
+        if (xx > vx - OP(30) && xx < vx + vw + OP(30) && yy > vy - OP(30) && yy < vy + vh + OP(30)) continue;
+        int clash = 0;
+        for (int j = 0; j < NTRAF; j++) if (traf[j].on && dist(traf[j].x, traf[j].y, xx, yy) < TM(45)) clash = 1;
+        if (clash) continue;
+        traf[i].on = 1; traf[i].e = e; traf[i].dir = dir; traf[i].s = s; traf[i].lane = tr_per(e) - 1;
+        traf[i].model = TROLLEY_MODEL; tr_set_size(i);
+        traf[i].vmax = 40 / 3.6f / (MPP * 60.0f); traf[i].spd = traf[i].vmax * 0.6f; traf[i].T = 1.6f;
+        traf[i].off = tr_off(e, traf[i].lane); traf[i].x = xx - ty * traf[i].off; traf[i].y = yy + tx * traf[i].off; traf[i].a = atan2f(ty, tx);
+        traf[i].fade = 1; traf[i].dg = 0; traf[i].blk_t = 0; traf[i].ghost = 0; traf[i].lblk = 0; traf[i].stop_t = 0; traf[i].brake = 0; traf[i].blink = 0; traf[i].lc_t = 0; traf[i].held = -1; traf[i].hold_t = 0; traf[i].wait = 0;
+        traf[i].route = r; traf[i].rk = k; traf[i].dwell = 0; traf[i].rstop = TRP_SOFF[r];
+        traf[i].nx = tr_next(i); traf[i].tn = tr_turn(e, dir, traf[i].nx); tr_set_dc(i);
+        return;
+    }
+}
 static void traffic_update(void) {
     /* огляд — найширший (камера віддалена до 80%), щоб машини не з'являлися й не зникали на очах */
     float vw = SW / 0.8f, vh = SH / 0.8f, vx = camx + VW / 2 - vw / 2, vy = camy + VH / 2 - vh / 2;
     static int sp_t;
-    int target = (int)(NTRAF * traf_density() + 0.5f), act = 0;
-    for (int i = 0; i < NTRAF; i++) act += traf[i].on;
+    int target = (int)((NTRAF - 4) * traf_density() + 0.5f), act = 0, ntr = 0, ttg = trolley_target();   /* 4 місця — тролейбусам */
+    for (int i = 0; i < NTRAF; i++) { act += traf[i].on && traf[i].route < 0; ntr += traf[i].on && traf[i].route >= 0; }
     for (int i = 0; i < NTRAF; i++) {
-        if (!traf[i].on) { if (act < target && ++sp_t % 5 == 0) { traf_spawn(i, vx, vy, vw, vh); act += traf[i].on; } continue; }
+        if (!traf[i].on) {
+            if (++sp_t % 5 == 0) {
+                if (ntr < ttg) { trolley_spawn(i, vx, vy, vw, vh); ntr += traf[i].on; }
+                if (!traf[i].on && act < target) { traf_spawn(i, vx, vy, vw, vh); act += traf[i].on; }
+            }
+            continue;
+        }
         int seen = traf[i].x > vx - OP(30) && traf[i].x < vx + vw + OP(30) && traf[i].y > vy - OP(30) && traf[i].y < vy + vh + OP(30);
-        if (!seen && (dist(traf[i].x, traf[i].y, px_, py_) > OP(640) || traf[i].wait > 60 * 25 || act > target)) { tr_release(i); traf[i].on = 0; act--; continue; }
+        if (!seen && (dist(traf[i].x, traf[i].y, px_, py_) > OP(640) || traf[i].wait > 60 * 25 || (traf[i].route < 0 ? act > target : ntr > ttg))) {
+            if (traf[i].route < 0) act--; else ntr--;
+            tr_release(i); traf[i].on = 0; continue; }
         if (traf[i].ghost > 0 && !(traf[i].ghost == 1 && dist(traf[i].x, traf[i].y, px_, py_) < CP(15))) traf[i].ghost--;   /* не тверднути, поки гравець усередині */
         int e = traf[i].e, dir = traf[i].dir, nd = rg_end_node(e, dir);
         float len = rg_len(e), left = len - traf[i].s, v = tv_ms(traf[i].spd);
@@ -1122,7 +1166,7 @@ static void traffic_update(void) {
             float va = sqrtf(vc * vc + 2 * 2.0f * fmaxf(0, d - 3));
             if (va < vlim) vlim = va;
         }
-        int exitn = traf[i].nx < 0 && RG_NODE_X[nd];
+        int exitn = traf[i].nx < 0 && (RG_NODE_X[nd] || traf[i].route >= 0);   /* кінець шматка маршруту тролейбуса — теж згасає */
         if (traf[i].nx < 0 && !exitn) { float va = sqrtf(2 * 2.5f * fmaxf(0, left * MPP - 3)); if (va < vlim) vlim = va; }
         traf[i].fade = exitn ? fminf(1, fmaxf(0, (left - TM(4)) / TM(30))) : fminf(1, traf[i].fade + 0.02f);   /* у темряву за межею — згасає */
         /* ---- стоп-лінії: світлофор і зайняте перехрестя */
@@ -1164,6 +1208,17 @@ static void traffic_update(void) {
                 }
             if (dx * cosf(traf[i].a) + dy * sinf(traf[i].a) < -TM(7) || dist(px_, py_, traf[i].x, traf[i].y) > TM(30) || left < TM(12)) traf[i].dg = 0;
         }
+        if (traf[i].route >= 0 && NTRP > 0) {                                     /* тролейбус: зупинки */
+            int r = traf[i].route;
+            while (traf[i].rstop < (int)TRP_SOFF[r + 1] && (TRP_STOP_K[traf[i].rstop] < traf[i].rk ||
+                   (TRP_STOP_K[traf[i].rstop] == traf[i].rk && TRP_STOP_S[traf[i].rstop] < traf[i].s - TM(3)))) traf[i].rstop++;
+            if (traf[i].dwell > 0) { traf[i].dwell--; if (traf[i].dwell == 0) traf[i].rstop++; stop = fminf(stop, 0); }
+            else if (traf[i].rstop < (int)TRP_SOFF[r + 1] && TRP_STOP_K[traf[i].rstop] == traf[i].rk) {
+                float sd = TRP_STOP_S[traf[i].rstop] - traf[i].s;
+                if (sd < stop) stop = sd;
+                if (sd < TM(2.5f) && v < 0.4f) traf[i].dwell = 360 + rand() % 300;      /* 6–11 с на зупинці */
+            }
+        }
         if (stop < 1e8f) { float g2 = stop * MPP + 1.0f; if (g2 < gap) { gap = g2; dv = v; } }
         const float A = 1.5f, B = 2.2f, S0 = 2.0f;
         float vv0 = fmaxf(0.5f, vlim), q_ = v / vv0, acc = A * (1 - q_ * q_ * q_ * q_);
@@ -1178,6 +1233,8 @@ static void traffic_update(void) {
         int per = tr_per(e);
         if (per > 1 && traf[i].lc_t == 0 && (tick + i * 13) % 30 == 0) {
             int want = traf[i].lane;
+            if (traf[i].route >= 0) want = per - 1;                            /* тролейбус — у правій смузі (дроти) */
+            else
             if (fabsf(turn) > 0.5f && left < TM(90)) want = turn > 0 ? per - 1 : 0;
             else if (RG_EDGE[e].one && traf[i].nx >= 0 && !RG_EDGE[traf[i].nx >> 1].one && left < TM(80)) want = per - 1;   /* роздільна → двостороння: у праву смугу */
             else if (gap < 25 && lvs < v0 * 0.6f && rand() % 3 == 0) want = traf[i].lane > 0 ? traf[i].lane - 1 : traf[i].lane + 1;
@@ -1221,7 +1278,8 @@ static void traffic_update(void) {
             traf[i].e = traf[i].nx >> 1; traf[i].dir = traf[i].nx & 1;
             if (traf[i].lane > tr_per(traf[i].e) - 1) traf[i].lane = tr_per(traf[i].e) - 1;
             traf[i].off = tr_off(traf[i].e, traf[i].lane); traf[i].dg = 0;
-            traf[i].nx = tr_choose(traf[i].e, traf[i].dir); traf[i].tn = tr_turn(traf[i].e, traf[i].dir, traf[i].nx); tr_set_dc(i);
+            if (traf[i].route >= 0) traf[i].rk++;
+            traf[i].nx = tr_next(i); traf[i].tn = tr_turn(traf[i].e, traf[i].dir, traf[i].nx); tr_set_dc(i);
         }
         /* перехрестя пройдене — звільнити */
         if (traf[i].held >= 0 && traf[i].held != rg_end_node(traf[i].e, traf[i].dir) && traf[i].s > RG_NODE_R[traf[i].held] + TM(6)) tr_release(i);
@@ -2577,8 +2635,15 @@ int main(int argc, char **argv) {
     if (getenv("SHOTAT")) {                                            /* кадр у заданій точці (налагодження) */
         float x_, y_; sscanf(getenv("SHOTAT"), "%f,%f", &x_, &y_); px_ = x_; py_ = y_; ang = 0; stop_car(); update_camera(1);
         if (getenv("TODM")) tod_mode = atoi(getenv("TODM"));
-        for (int i = 0; i < 30; i++) game_update(0, 0, 128, 128);
-        px_ = x_; py_ = y_; update_camera(1); draw_frame(); draw_frame(); snprintf(nm, sizeof nm, "%s/f_shot.ppm", dir); dump(nm); return 0;
+        for (int i = 0; i < (getenv("WARM") ? atoi(getenv("WARM")) : 30); i++) game_update(0, 0, 128, 128);
+        px_ = x_; py_ = y_;
+        if (getenv("SHOTTROLL")) {                                       /* налагодження: кадр біля тролейбуса */
+            { int na = 0; for (int i = 0; i < NTRAF; i++) na += traf[i].on; printf("on %d target %d troll target %d clock %d NTRP %d\n", na, (int)((NTRAF - 4) * traf_density() + 0.5f), trolley_target(), tod_clock(), NTRP); }
+            for (int i = 0; i < NTRAF; i++) if (traf[i].on && traf[i].route >= 0) {
+                printf("trolley %d route %d rk %d dwell %d spd %.2f at %.0f,%.0f\n", i, traf[i].route, traf[i].rk, traf[i].dwell, traf[i].spd, traf[i].x, traf[i].y);
+                px_ = traf[i].x - cosf(traf[i].a) * TM(14); py_ = traf[i].y - sinf(traf[i].a) * TM(14); ang = traf[i].a; break; }
+        }
+        update_camera(1); draw_frame(); draw_frame(); snprintf(nm, sizeof nm, "%s/f_shot.ppm", dir); dump(nm); return 0;
     }
     if (getenv("PROFONLY")) goto prof_only;
     /* simple autopilot toward the current target */
@@ -2826,7 +2891,7 @@ prof_only:
         const Bridge *B = &BRIDGES[0];
         for (int i = 0; i < NTRAF; i++) { traf[i].on = 0; traf[i].held = -1; }
         memset(node_hold, 0, sizeof node_hold);
-        traf[0].on = 1; traf[0].a = atan2f(B->ux, -B->uy); traf[0].model = 0; tr_set_size(0); traf[0].brake = 0;
+        traf[0].on = 1; traf[0].a = atan2f(B->ux, -B->uy); traf[0].model = 0; tr_set_size(0); traf[0].route = -1; traf[0].brake = 0;
         traf[0].x = B->cx - B->uy * (B->hw + CP(1)); traf[0].y = B->cy + B->ux * (B->hw + CP(1));
         px_ = B->cx - B->uy * OP(60) + B->ux * OP(30); py_ = B->cy + B->ux * OP(60) + B->uy * OP(30); ang = traf[0].a; stop_car(); br_on = -1; freecam = 0; evac = 0;
         update_camera(1); state = S_PLAY; draw_frame(); draw_frame(); snprintf(nm, sizeof nm, "%s/f_traf_bridge.ppm", dir); dump(nm);

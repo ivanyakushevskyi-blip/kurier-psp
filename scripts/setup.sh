@@ -16,8 +16,8 @@ if [ ! -x "$PSPDEV_DIR/bin/psp-gcc" ]; then
 fi
 
 python3 -c "import numpy, scipy, PIL" 2>/dev/null || \
-  pip install --quiet numpy scipy pillow --break-system-packages 2>/dev/null || \
-  pip install --quiet numpy scipy pillow
+  pip install --quiet numpy scipy pillow shapely --break-system-packages 2>/dev/null || \
+  pip install --quiet numpy scipy pillow shapely
 
 echo ">> Готово. Додай у PATH:  export PSPDEV=$PSPDEV_DIR; export PATH=\$PATH:\$PSPDEV/bin"
 "$PSPDEV_DIR/bin/psp-gcc" --version | head -1

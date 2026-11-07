@@ -295,6 +295,15 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     import roadgraph
     _g = roadgraph.build(CD.data(), _pl, W, H)
     roadgraph.write_c(f, _g)
+    import trolley                                                  # тролейбусні маршрути (07.11.2026)
+    _tp = trolley.build(_g, CD.data())
+    _st, _so, _sk, _ss, _soff = [], [0], [], [], [0]
+    for r_ in _tp:
+        _st += [e_ * 2 + d_ for e_, d_ in r_['steps']]; _so.append(len(_st))
+        for k_, sp_ in r_['stops']: _sk.append(k_); _ss.append(int(sp_))
+        _soff.append(len(_sk))
+    f.write('#define NTRP %d\nstatic const uint16_t TRP_STEP[] = {%s};\nstatic const uint32_t TRP_OFF[] = {%s};\n' % (len(_tp), ','.join(map(str, _st)) or '0', ','.join(map(str, _so))))
+    f.write('static const uint16_t TRP_STOP_K[] = {%s};\nstatic const uint16_t TRP_STOP_S[] = {%s};\nstatic const uint32_t TRP_SOFF[] = {%s};\n' % (','.join(map(str, _sk)) or '0', ','.join(map(str, _ss)) or '0', ','.join(map(str, _soff))))
     # запарковані машини: сітка 256 пікс
     import parked
     _pk = parked.build(CD.data(), _g, W, H, _pl, solid, surfm, _tr, [(q, 4) for q in md['shops']] + [(q, 1) for q in md['addrs']])
