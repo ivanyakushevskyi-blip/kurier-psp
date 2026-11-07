@@ -200,7 +200,7 @@ def _drop_on_roads(C, GW, GH):
                 if best is None or g.area > best.area: best = g
         w0 = min(rw_, rh_)
         narrow = best is not None and min(cv2.minAreaRect(np.array(best.exterior.coords, np.float32))[1]) < min(5.0 * S, 0.7 * w0)   # стала смужкою
-        lim = 0.55 if P.area >= 300 * S * S else 0.35                       # середні — можна різати глибше, але не до смужки
+        lim = 0.85 if P.area >= 300 * S * S else 0.35                       # 08.11.2026: великі (багатоповерхівки) — лише зрізати край, інакше лишити цілими; середні — глибше, але не до смужки
         if best is None or best.area < lim * P.area or best.area < 40 * S * S or narrow:
             if P.area >= 300 * S * S:                                  # великий будинок, дорога крізь нього (проїзд/арка або похибка OSM) — не чіпаємо
                 C.setdefault('kept_big', []).append(list(P.exterior.coords)); continue

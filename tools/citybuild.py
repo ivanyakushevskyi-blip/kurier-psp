@@ -72,10 +72,40 @@ def render_block(args):
 EXTRA_SOLID = []                             # паркани, сараї, теплиці (світові координати сітки гри)
 
 
+BSTATE = 'build/bld_state_ss%d.json' % SS
+
+
+def bld_state(D):
+    """відбиток будинків після прибирання/обрізки: {ключ контуру: рамка в пікселях карти}"""
+    st = {}
+    for b in D['B'] + D.get('SAT', []):
+        q = np.round(np.array(b['q'], np.float64), 1)
+        k = '%s|%s' % (b.get('roof'), ';'.join('%.1f,%.1f' % (x, y) for x, y in q))
+        a = q * K; st[k] = [float(a[:, 0].min()), float(a[:, 1].min()), float(a[:, 0].max()), float(a[:, 1].max())]
+    return st
+
+
+def invalidate_changed(jobs, D):
+    """08.11.2026: перемальовувати лише блоки, де змінився хоч один будинок (порівняння з відбитком попереднього запуску)"""
+    cur = bld_state(D)
+    if not os.path.exists(BSTATE): return cur
+    old = json.load(open(BSTATE))
+    ch = [cur[k] for k in cur.keys() - old.keys()] + [old[k] for k in old.keys() - cur.keys()]
+    pad = M + int(40 / CD.MPP)                   # тінь, двір, дерева навколо
+    n = 0
+    for bx, by in jobs:
+        fn = os.path.join(BLK, '%d_%d.npz' % (bx, by))
+        if not os.path.exists(fn): continue
+        if any(r[2] > bx - pad and r[0] < bx + B + pad and r[3] > by - pad and r[1] < by + B + pad for r in ch):
+            os.remove(fn); n += 1
+    print('  змінених будинків %d -> блоків до перемальовування %d' % (len(ch), n), flush=True)
+    return cur
+
+
 def render_all(jobs, rgb, cls, nproc):
     os.makedirs(BLK, exist_ok=True)
     trees = []
-    CD.data()                                    # кеш OSM/будинків до розгалуження процесів
+    cur = invalidate_changed(jobs, CD.data())    # кеш OSM/будинків до розгалуження процесів
     if nproc > 1:
         import multiprocessing as mp
         pool = mp.get_context('fork').Pool(nproc, maxtasksperchild=8)
@@ -87,6 +117,7 @@ def render_all(jobs, rgb, cls, nproc):
         rgb[by:by + h, bx:bx + w] = img; cls[by:by + h, bx:bx + w] = c; trees.extend(tl); EXTRA_SOLID.extend(so)
         print('  block %d/%d' % (k + 1, len(jobs)), bx, by, flush=True)
     if nproc > 1: pool.close(); pool.join()
+    json.dump(cur, open(BSTATE, 'w'))
     # ---- дерева одним проходом (без швів між блоками); дахи будинків — над кронами, маска крон — для гри (07.11.2026)
     D = CD.data()
     roofm = open_memmap('build/roofmask_tmp.npy', 'w+', np.uint8, (H, W))
