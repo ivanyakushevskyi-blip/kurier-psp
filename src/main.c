@@ -229,7 +229,14 @@ static int surf(int x, int y) {
     if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return 0;
     const u8 *c = chunk(x / CS, y / CS) + CPX + CSB;
     int lx = x % CS, ly = y % CS;
-    return (c[ly * (CS / 2) + (lx >> 1)] >> ((lx & 1) * 4)) & 15;
+    return (c[ly * (CS / 2) + (lx >> 1)] >> ((lx & 1) * 4)) & 7;
+}
+/* крона дерева над цим пікселем (біт 3 поверхні, 07.11.2026): такі пікселі карти малюються поверх машин */
+static int crown_at(int x, int y) {
+    if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return 0;
+    const u8 *c = chunk(x / CS, y / CS) + CPX + CSB;
+    int lx = x % CS, ly = y % CS;
+    return (c[ly * (CS / 2) + (lx >> 1)] >> ((lx & 1) * 4)) & 8;
 }
 static void draw_map16(int ox, int oy) {
     if (ox < 0 || oy < 0) memset(wbuf, 0, WW * WH * 2);
@@ -1309,18 +1316,7 @@ static int in_arch(int x, int y) {                                  /* точк�
     }
     return 0;
 }
-static int under_crown(int x, int y) {                              /* точка під кроною дерева? */
-    int cx = x / CS, cy = y / CS;
-    for (int gy = cy - 1; gy <= cy + 1; gy++) for (int gx = cx - 1; gx <= cx + 1; gx++) {
-        if (gx < 0 || gy < 0 || gx >= NCX || gy >= NCY) continue;
-        int k0 = TREE_CELL(gy * NCX + gx), k1 = TREE_CELL(gy * NCX + gx + 1);
-        for (int k = k0; k < k1; k++) {
-            const int16_t *T = TREE(k); float r = abs(T[2]) * 0.9f, dx = T[0] - x, dy = T[1] - y;
-            if (dx * dx + dy * dy <= r * r) return 1;
-        }
-    }
-    return 0;
-}
+static int under_crown(int x, int y) { return crown_at(x, y); }             /* точка під кроною дерева? */
 #define NSKID 1200
 static int16_t skid[NSKID][2]; static int skid_i, skid_n;
 static void add_skid(float x, float y) {
@@ -2020,27 +2016,13 @@ static void render_particles(void) {
 }
 
 static void crown_box(float x, float y, int ox, int oy) {
+    /* пікселі крон (маска з карти) у межах машини — поверх неї; дешево: лише квадрат навколо машини */
     int R = (int)(CAR_LPX * 0.56f) + 1, x0 = (int)x - R, y0 = (int)y - R, x1 = (int)x + R, y1 = (int)y + R;
     if (x1 - ox < 0 || y1 - oy < 0 || x0 - ox >= WW || y0 - oy >= WH) return;
-    const int16_t *TT[8]; float rr[8]; int nt = 0;
-    int cx = (int)x / CS, cy = (int)y / CS;
-    for (int gy = cy - 1; gy <= cy + 1; gy++) for (int gx = cx - 1; gx <= cx + 1; gx++) {
-        if (gx < 0 || gy < 0 || gx >= NCX || gy >= NCY) continue;
-        int k0 = TREE_CELL(gy * NCX + gx), k1 = TREE_CELL(gy * NCX + gx + 1);
-        for (int k = k0; k < k1 && nt < 8; k++) {
-            const int16_t *T = TREE(k); float r = abs(T[2]) * 0.82f, dx = T[0] - x, dy = T[1] - y;
-            if (dx * dx + dy * dy > (r + R * 1.42f) * (r + R * 1.42f)) continue;
-            TT[nt] = T; rr[nt++] = r * r;
-        }
-    }
-    if (!nt) return;
     for (int wy = y0; wy <= y1; wy++) for (int wx = x0; wx <= x1; wx++) {
         int lx = wx - ox, ly = wy - oy;
         if ((unsigned)lx >= WW || (unsigned)ly >= WH) continue;
-        for (int t = 0; t < nt; t++) {
-            float dx = wx - TT[t][0], dy = wy - TT[t][1];
-            if (dx * dx + dy * dy <= rr[t]) { warch[ly * WW + lx] = (uint16_t)(map_px16(wx, wy) | 0x8000); WA_MARK(lx, ly); arch_used = 1; break; }
-        }
+        if (crown_at(wx, wy)) { warch[ly * WW + lx] = (uint16_t)(map_px16(wx, wy) | 0x8000); WA_MARK(lx, ly); arch_used = 1; }
     }
 }
 static void draw_world(void) {
@@ -2085,28 +2067,8 @@ static void draw_world(void) {
     if (!(PARALLAX && !freecam && roofs_parallax(ox, oy, vx + VW / 2, vy + VH / 2))) { nroofv = 0; ndarkv = 0; }
     PROF(2)
     carv.on = 0;
-    if (!freecam && state != S_TITLE && NTREE > 0) {
-        /* крони над машиною: пікселі крони з карти — поверх машини (непрозоро) */
-        int cx = (int)px_ / CS, cy = (int)py_ / CS;
-        for (int gy = cy - 1; gy <= cy + 1; gy++) for (int gx = cx - 1; gx <= cx + 1; gx++) {
-            if (gx < 0 || gy < 0 || gx >= NCX || gy >= NCY) continue;
-            int k0 = TREE_CELL(gy * NCX + gx), k1 = TREE_CELL(gy * NCX + gx + 1);
-            for (int k = k0; k < k1; k++) {
-                const int16_t *T = TREE(k);
-                float r = abs(T[2]) * 0.82f, dx = T[0] - px_, dy = T[1] - py_;
-                if (dx * dx + dy * dy > (r + OP(10)) * (r + OP(10))) continue;
-                int ri = (int)r;
-                for (int yy = -ri; yy <= ri; yy++) for (int xx = -ri; xx <= ri; xx++) {
-                    if (xx * xx + yy * yy > r * r) continue;
-                    int wx = T[0] + xx, wy = T[1] + yy, lx = wx - ox, ly = wy - oy;
-                    if ((unsigned)lx >= WW || (unsigned)ly >= WH) continue;
-                    warch[ly * WW + lx] = (uint16_t)(map_px16(wx, wy) | 0x8000); WA_MARK(lx, ly);
-                }
-                arch_used = 1;
-            }
-        }
-    }
-    if (state != S_TITLE && NTREE > 0) {
+    if (!freecam && state != S_TITLE) crown_box(px_, py_, ox, oy);          /* крони над машиною гравця — за маскою з карти */
+    if (state != S_TITLE) {
         /* крони над трафіком і запаркованими (01.11.2026): лише в межах самої машини — дешево */
         for (int i = 0; i < NTRAF; i++) if (traf[i].on && !freecam) crown_box(traf[i].x, traf[i].y, ox, oy);
         if (NPARKED > 0) {

@@ -87,10 +87,16 @@ def render_all(jobs, rgb, cls, nproc):
         rgb[by:by + h, bx:bx + w] = img; cls[by:by + h, bx:bx + w] = c; trees.extend(tl); EXTRA_SOLID.extend(so)
         print('  block %d/%d' % (k + 1, len(jobs)), bx, by, flush=True)
     if nproc > 1: pool.close(); pool.join()
-    # ---- дерева одним проходом (без швів між блоками)
+    # ---- дерева одним проходом (без швів між блоками); дахи будинків — над кронами, маска крон — для гри (07.11.2026)
+    D = CD.data()
+    roofm = open_memmap('build/roofmask_tmp.npy', 'w+', np.uint8, (H, W))
+    for b in D['B'] + D.get('SAT', []):
+        cv2.fillPoly(roofm, [np.round(np.array(b['q']) * K).astype(np.int32)], 1)
+    crown = open_memmap('build/crown.npy', 'w+', np.uint8, (H, W))
     for x, y, rr, kind in sorted(trees, key=lambda t: (t[1], t[0])):
-        if SS > 1: CD.draw_tree_aa(rgb, x, y, rr, kind, random.Random(x * 7919 + y), SS)
+        if SS > 1: CD.draw_tree_aa(rgb, x, y, rr, kind, random.Random(x * 7919 + y), SS, roofm, crown)
         else: CD.draw_tree(rgb, x, y, rr, kind, random.Random(x * 7919 + y))
+    crown.flush(); del crown, roofm; os.remove('build/roofmask_tmp.npy')
     print('trees', len(trees), flush=True)
     json.dump([[int(x), int(y), round(float(rr), 1), k] for x, y, rr, k in trees], open('build/trees.json', 'w'))
 

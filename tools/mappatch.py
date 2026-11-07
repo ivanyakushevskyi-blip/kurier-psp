@@ -747,6 +747,9 @@ def beach(D, rgb):
 
 
 # ---------------------------------------------------------------- розмітка паркувань під запарковані машини (01.11.2026)
+CROWN = np.load('build/crown.npy', mmap_mode='r') if os.path.exists('build/crown.npy') else None
+
+
 def parking_marks(D, rgb):
     """стара розмітка (смуги не в масштабі) — геть; нова: ряди «ніс до носа» по 5 м, місця 2,6 м (як у parked.lot_slots)"""
     import parked as PK
@@ -763,7 +766,8 @@ def parking_marks(D, rgb):
         lum = img.mean(-1); sat_ = img.max(-1) - img.min(-1)
         base = np.median(img[mk & (sat_ < 14)], 0) if (mk & (sat_ < 14)).sum() > 20 else np.median(img[mk], 0)
         bl = base.mean()
-        old = mk & (sat_ < 16) & (lum > bl + 6)                                  # світлі сірі смуги старої розмітки
+        cr_ = np.asarray(CROWN[y0:y1, x0:x1]).astype(bool) if CROWN is not None else np.zeros(mk.shape, bool)
+        old = mk & (sat_ < 16) & (lum > bl + 6) & ~cr_                           # світлі сірі смуги старої розмітки
         img[old] = base
         rgb[y0:y1, x0:x1] = np.clip(img + 0.5, 0, 255).astype(np.uint8)
         if not rows: continue
@@ -778,7 +782,8 @@ def parking_marks(D, rgb):
             ph = np.mod(al + nst * m(PK.STALL) / 2, m(PK.STALL))
             lines |= inrow & ((ph < m(0.07)) | (ph > m(PK.STALL) - m(0.07)))
             lines |= (np.abs(np.abs(ac - acr) - m(PK.ROW) / 2) < m(0.07)) & (np.abs(al) < nst * m(PK.STALL) / 2) & (np.sign(ac - acr) == -nose)   # торцева лінія біля проїзду
-        cv.put(lines & sel, np.clip(base * 1.32 + 18, 0, 235))
+        crs = np.repeat(np.repeat(cr_, SS, 0), SS, 1)[:lines.shape[0], :lines.shape[1]]
+        cv.put(lines & sel & ~crs, np.clip(base * 1.32 + 18, 0, 235))       # не по кронах дерев
         cv.commit(rgb); n += 1
     print('  розмітка паркувань: %d' % n)
 

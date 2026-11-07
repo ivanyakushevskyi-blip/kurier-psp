@@ -45,6 +45,7 @@ for t in _bl:
 import struct
 rgbm = np.load(os.path.join(BUILD, 'map_rgb.npy'), mmap_mode='r')
 surfm = np.load(os.path.join(BUILD, 'surf.npy'), mmap_mode='r')
+crownm = np.load(os.path.join(BUILD, 'crown.npy'), mmap_mode='r') if os.path.exists(os.path.join(BUILD, 'crown.npy')) else None
 sbits = np.packbits(solid.astype(np.uint8), axis=1, bitorder='little')     # (H, W/8)
 import cv2
 SHARP = float(os.environ.get('SHARP', '0.6'))         # різкість карти (нерізка маска, сигма 0,8); 0 — вимкнено
@@ -64,6 +65,7 @@ for cy in (range(0) if REUSE else range(NCY)):
         cv2.fillPoly(roof, [t[3].astype(np.int32) - [0, cy * CS]], 1)
     p565 = (band[..., 0] >> 3) | ((band[..., 1] >> 3) << 5) | ((band[..., 2] >> 3) << 10) | (roof.astype(np.uint16) << 15)
     sb_ = np.asarray(surfm[cy * CS:(cy + 1) * CS])
+    if crownm is not None: sb_ = (sb_ & 7) | (np.asarray(crownm[cy * CS:(cy + 1) * CS]).astype(np.uint8) << 3)   # біт 3 — крона дерева
     s4 = (sb_[:, 0::2] & 15) | ((sb_[:, 1::2] & 15) << 4)
     for cx in range(NCX):
         pxl = p565[:, cx * CS:(cx + 1) * CS].astype('<u2').tobytes()

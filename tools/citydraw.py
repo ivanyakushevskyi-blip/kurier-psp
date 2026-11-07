@@ -862,7 +862,7 @@ def draw_tree(img, x, y, rr, kind, rs, ss=1):
     dst[msk] = o[sl][msk]
 
 
-def draw_tree_aa(img, x, y, rr, kind, rs, ss=4):
+def draw_tree_aa(img, x, y, rr, kind, rs, ss=4, roof=None, crown=None):
     """Дерево зі згладженими краями на карті сітки гри: малюється в ss разів детальніше (двічі — на чорному й білому,
     щоб точно знати покриття) і накладається з цим покриттям."""
     R = int(math.ceil(rr * 1.2)) + 3
@@ -880,8 +880,11 @@ def draw_tree_aa(img, x, y, rr, kind, rs, ss=4):
     ax0, ay0, ax1, ay1 = max(0, x0), max(0, y0), min(W, x0 + n), min(H, y0 + n)
     if ax1 <= ax0 or ay1 <= ay0: return
     sl = (slice(ay0 - y0, ay1 - y0), slice(ax0 - x0, ax1 - x0))
+    a = a[sl]
+    if roof is not None: a = a * (1 - np.asarray(roof[ay0:ay1, ax0:ax1], np.float32)[..., None])   # дах вищий за крону (07.11.2026)
+    if crown is not None: crown[ay0:ay1, ax0:ax1] |= (a[..., 0] > 0.4).astype(np.uint8)            # маска крон: у грі — над машинами
     dst = img[ay0:ay1, ax0:ax1].astype(np.float32)
-    img[ay0:ay1, ax0:ax1] = np.clip(dst * (1 - a[sl]) + col[sl] * a[sl], 0, 255).astype(np.uint8)
+    img[ay0:ay1, ax0:ax1] = np.clip(dst * (1 - a) + col[sl] * a, 0, 255).astype(np.uint8)
 
 
 if __name__ == '__main__':
