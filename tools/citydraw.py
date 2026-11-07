@@ -171,14 +171,38 @@ def _drop_on_roads(C, GW, GH):
         b = kept[key][i]
         try: P = Polygon(b['q']).buffer(0)
         except Exception: continue
+        if P.is_empty or P.area <= 0 or P.geom_type != 'Polygon': continue
         near = [rl[j].buffer(rw[j], cap_style=2) for j in tree.query(P.buffer(20 * S))]
-        if not near or P.area <= 0: continue
-        D_ = P.difference(unary_union(near))
-        parts = [g for g in getattr(D_, 'geoms', [D_]) if g.geom_type == 'Polygon' and not g.is_empty]
-        if not parts: gone.add((key, i)); ndrop += 1; continue
-        g = max(parts, key=lambda g: g.area)
-        if g.area < 0.45 * P.area or g.area < 12 * S * S: gone.add((key, i)); ndrop += 1; C.setdefault('gone2', []).append(list(P.exterior.coords)); continue
-        g = g.simplify(0.15 * S)
+        if not near: continue
+        U = unary_union(near)
+        if not P.intersects(U): continue
+        if P.area < 60 * S * S: gone.add((key, i)); ndrop += 1; C.setdefault('gone2', []).append(list(P.exterior.coords)); continue   # дрібні — геть
+        # різ паралельно одній зі стін будинку (кути лишаються прямими): пробуємо обидві осі й обидва боки, беремо найбільший залишок
+        (cx_, cy_), (rw_, rh_), ang = cv2.minAreaRect(np.array(P.exterior.coords, np.float32))
+        best = None
+        for th in (math.radians(ang), math.radians(ang) + math.pi / 2):
+            nx, ny = math.cos(th), math.sin(th)
+            pr = lambda g: [(x - cx_) * nx + (y - cy_) * ny for x, y in (g.exterior.coords if g.geom_type == 'Polygon' else [c for gg in g.geoms for c in gg.exterior.coords])]
+            bp = pr(P); lo, hi = min(bp), max(bp)
+            ov = P.intersection(U)
+            if ov.is_empty: continue
+            op = pr(ov) if ov.geom_type in ('Polygon', 'MultiPolygon') else None
+            if not op: continue
+            for side in (1, -1):                                       # залишити бік, протилежний до дороги
+                cut = (min(op) - 0.01) if side > 0 else (max(op) + 0.01)
+                far = 1e5
+                hp = Polygon([(cx_ + nx * a_ - ny * t_, cy_ + ny * a_ + nx * t_) for a_, t_ in
+                              (((lo - far if side > 0 else cut), -far), ((cut if side > 0 else hi + far), -far), ((cut if side > 0 else hi + far), far), ((lo - far if side > 0 else cut), far))])
+                g = P.intersection(hp)
+                if g.is_empty: continue
+                g = max(getattr(g, 'geoms', [g]), key=lambda z: z.area)
+                if g.intersection(U).area > 0.02 * P.area: continue        # ще на дорозі
+                if best is None or g.area > best.area: best = g
+        if best is None or best.area < 0.55 * P.area or best.area < 40 * S * S:
+            if P.area >= 300 * S * S:                                  # великий будинок, дорога крізь нього (проїзд/арка або похибка OSM) — не чіпаємо
+                C.setdefault('kept_big', []).append(list(P.exterior.coords)); continue
+            gone.add((key, i)); ndrop += 1; C.setdefault('gone2', []).append(list(P.exterior.coords)); continue
+        g = best.simplify(0.1 * S)
         C.setdefault('clipped', []).append((key, P.area, g.area, list(P.exterior.coords)))
         b['q'] = [list(c) for c in g.exterior.coords[:-1]]
         if 'area' in b: b['area'] = b['area'] * g.area / P.area
