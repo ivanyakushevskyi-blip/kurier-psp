@@ -208,7 +208,7 @@ def _drop_on_roads(C, GW, GH):
         g = best.simplify(0.1 * S)
         C.setdefault('clipped', []).append((key, P.area, g.area, list(P.exterior.coords)))
         b['q'] = [list(c) for c in g.exterior.coords[:-1]]
-        if 'area' in b: b['area'] = b['area'] * g.area / P.area
+        if 'area' in b: b['area0'] = b['area']; b['area'] = b['area'] * g.area / P.area
         nclip += 1
     for key in ('B', 'SAT'): kept[key] = [b for i, b in enumerate(kept[key]) if (key, i) not in gone]
     C['B'], C['SAT'] = kept['B'], kept['SAT']
@@ -703,13 +703,14 @@ def draw_roof(img, b, pts, rs, ss=1):
     F = m.astype(bool)
     if F.sum() < 4 * S_ * S_: return
     area = b['area']; t = b['t']; bt = t.get('building', 'yes')
+    area_k = b.get('area0', area)                         # 08.11.2026: обрізаний будинок зберігає тип даху (плаский лишається пласким)
     per = float(np.sum(np.linalg.norm(np.diff(np.array(b['q']), axis=0), axis=1))) * SRC
     circ = 4 * math.pi * area / max(per, 1) ** 2
     kind = roof_kind(b.get('roof'))
     rr_ = b.get('roof')
     if S_ > 1 and (rr_ is None or max(rr_) < 48):           # колір даху в тіні не виміряти — типовий для міста, закріплений за будинком
         h_ = int(abs(b['q'][0][0] * 7919 + b['q'][0][1] * 104729)) % 1000 / 1000.0
-        if bt in ('house', 'detached', 'semidetached_house', 'yes') and area < 300:
+        if bt in ('house', 'detached', 'semidetached_house', 'yes') and area_k < 300:
             pal_ = [('red', .18), ('brown', .2), ('darkred', .08), ('orange', .06), ('metal', .12), ('gray', .12), ('green', .08), ('blue', .06), ('teal', .04), ('beige', .06)]
         else:
             pal_ = [('gray', .38), ('darkgray', .14), ('metal', .2), ('beige', .12), ('white', .1), ('teal', .06)]
@@ -732,7 +733,7 @@ def draw_roof(img, b, pts, rs, ss=1):
         R = d.max()
         out[d > R * 0.82] = S[4]; out[d > R * 0.9] = S[0]
         out[(d > R * 0.55) & (d < R * 0.62)] = S[1]
-    elif (bt in ('house', 'detached', 'semidetached_house', 'terrace', 'church') or area < 260 or (area < 700 and b['h'] < 11)) \
+    elif (bt in ('house', 'detached', 'semidetached_house', 'terrace', 'church') or area_k < 260 or (area_k < 700 and b['h'] < 11)) \
             and bt not in ('garage', 'garages', 'shed', 'kiosk'):
         # скатний (вальмовий) дах: світло з північного заходу
         dd = cv2.GaussianBlur(d, (0, 0), 0.8 * S_)

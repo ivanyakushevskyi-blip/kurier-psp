@@ -81,6 +81,7 @@ def bld_state(D):
     for b in D['B'] + D.get('SAT', []):
         q = np.round(np.array(b['q'], np.float64), 1)
         k = '%s|%s' % (b.get('roof'), ';'.join('%.1f,%.1f' % (x, y) for x, y in q))
+        if 'area0' in b: k += '|a0'                 # обрізаний (тип даху — за початковою площею)
         a = q * K; st[k] = [float(a[:, 0].min()), float(a[:, 1].min()), float(a[:, 0].max()), float(a[:, 1].max())]
     return st
 
