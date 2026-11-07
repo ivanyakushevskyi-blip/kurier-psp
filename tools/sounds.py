@@ -126,10 +126,43 @@ def night():
     return _norm(_loop_fade(x + 0.05 * _bp_noise(n, 200, 1500), 1000), 0.4)
 
 
+def train():
+    """поїзд поруч: низький гул + стукіт коліс на стиках (пари ударів візків), петля 2,4 с"""
+    n = int(SR * 2.4); t = np.arange(n) / SR
+    x = _bp_noise(n, 30, 220) * 0.9 + 0.25 * _bp_noise(n, 220, 900)
+    for t0 in (0.15, 0.32, 1.35, 1.52):                                  # «та-дам ... та-дам»
+        for dt in (0.0, 0.09):
+            k = int((t0 + dt) * SR); L = int(0.12 * SR)
+            if k + L < n:
+                env = np.exp(-np.arange(L) / (0.018 * SR))
+                x[k:k + L] += 1.4 * env * (np.sin(2 * np.pi * 95 * np.arange(L) / SR) + 0.5 * _lp(rng.standard_normal(L), 0.7))
+    return _norm(_loop_fade(np.tanh(x * 0.8), 1500), 0.75)
+
+
+def thorn():
+    """гудок локомотива: два низькі тони, ~1,6 с"""
+    n = int(SR * 1.6); t = np.arange(n) / SR
+    env = np.minimum(1, t / 0.08) * np.minimum(1, (1.6 - t) / 0.25)
+    x = np.zeros(n)
+    for f in (311, 370):
+        for h, a in ((1, 1), (2, 0.45), (3, 0.25), (4, 0.12)): x += a * np.sin(2 * np.pi * f * h * t * (1 + 0.003 * np.sin(2 * np.pi * 5 * t)))
+    return _norm(np.tanh(x * 0.5) * env, 0.85)
+
+
+def xbell():
+    """дзвінок переїзду: часті удари дзвоника, петля 1 с"""
+    n = SR; x = np.zeros(n)
+    for k in range(7):
+        p = int(k * n / 7); L = n // 7; tt = np.arange(L) / SR
+        x[p:p + L] += np.exp(-tt * 28) * (np.sin(2 * np.pi * 1180 * tt) + 0.5 * np.sin(2 * np.pi * 2650 * tt) + 0.3 * np.sin(2 * np.pi * 3900 * tt))
+    return _norm(x, 0.6)
+
+
 def sounds():
     return {'engine': (engine(), 1), 'intake': (intake(), 1), 'skid': (skid(), 1), 'crash': (crash(), 0), 'bump': (bump(), 0),
             'horn': (horn(), 1), 'tick': (tick(), 0), 'pick': (chime([660, 880]), 0), 'deliver': (chime([523, 659, 784, 1047]), 0),
-            'fail': (chime([392, 311], 0.16, 0.4), 0), 'rain': (rain(), 1), 'city': (city(), 1)}       # цвіркуни прибрано (01.11.2026)
+            'fail': (chime([392, 311], 0.16, 0.4), 0), 'rain': (rain(), 1), 'city': (city(), 1),
+            'train': (train(), 1), 'thorn': (thorn(), 0), 'xbell': (xbell(), 1)}       # цвіркуни прибрано (01.11.2026)
 
 
 if __name__ == '__main__':

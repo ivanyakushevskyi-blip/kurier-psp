@@ -1127,6 +1127,7 @@ static void trolley_spawn(int i, float vx, float vy, float vw, float vh) {
         return;
     }
 }
+static float xing_stop(int i, float left);
 static void traffic_update(void) {
     /* огляд — найширший (камера віддалена до 80%), щоб машини не з'являлися й не зникали на очах */
     float vw = SW / 0.8f, vh = SH / 0.8f, vx = camx + VW / 2 - vw / 2, vy = camy + VH / 2 - vh / 2;
@@ -1208,6 +1209,7 @@ static void traffic_update(void) {
                 }
             if (dx * cosf(traf[i].a) + dy * sinf(traf[i].a) < -TM(7) || dist(px_, py_, traf[i].x, traf[i].y) > TM(30) || left < TM(12)) traf[i].dg = 0;
         }
+        { float xs = xing_stop(i, left); if (xs < stop) stop = xs; }              /* переїзд закрито */
         if (traf[i].route >= 0 && NTRP > 0) {                                     /* тролейбус: зупинки */
             int r = traf[i].route;
             while (traf[i].rstop < (int)TRP_SOFF[r + 1] && (TRP_STOP_K[traf[i].rstop] < traf[i].rk ||
@@ -1286,6 +1288,117 @@ static void traffic_update(void) {
     }
 }
 
+/* ---- залізниця (07.11.2026): поїзди їдуть головними коліями біля гравця; переїзд на Франка зі шлагбаумами */
+#define NTRN 2
+#define TRN_MAXC 34
+static struct { int on, line, dir, nc; float head, spd, len; uint8_t ty[TRN_MAXC], flip[TRN_MAXC]; float off[TRN_MAXC]; } trn[NTRN];
+static int trn_timer = 60 * 25;                                       /* перший поїзд — скоро */
+static float xing_bar[NXING > 0 ? NXING : 1];                          /* шлагбаум: 0 — піднятий, 1 — опущений */
+static int xing_closed[NXING > 0 ? NXING : 1];
+static int rail_n(int l) { return RAIL_OFF[l + 1] - RAIL_OFF[l]; }
+static float rail_len(int l) { return (rail_n(l) - 1) * RAIL_STEP; }
+static void rail_at(int l, float a, float *x, float *y, float *ang) {  /* точка й напрям на лінії за дугою (пікс) */
+    int n = rail_n(l); float u = a / RAIL_STEP; if (u < 0) u = 0; if (u > n - 1.001f) u = n - 1.001f;
+    int k = (int)u; float t = u - k; const int16_t *P = RAIL_PT + 2 * (RAIL_OFF[l] + k);
+    *x = P[0] + (P[2] - P[0]) * t; *y = P[1] + (P[3] - P[1]) * t;
+    int k0 = k > 2 ? k - 2 : 0, k1 = k + 3 < n ? k + 3 : n - 1; const int16_t *A = RAIL_PT + 2 * (RAIL_OFF[l] + k0), *B = RAIL_PT + 2 * (RAIL_OFF[l] + k1);
+    *ang = atan2f(B[1] - A[1], B[0] - A[0]);
+}
+static float rail_proj(int l, float x, float y, float *d) {          /* дуга найближчої точки лінії */
+    int n = rail_n(l); float bd = 1e18f, ba = 0; const int16_t *P = RAIL_PT + 2 * RAIL_OFF[l];
+    for (int k = 0; k < n; k += 2) { float dx = P[2 * k] - x, dy = P[2 * k + 1] - y, q = dx * dx + dy * dy; if (q < bd) { bd = q; ba = k * RAIL_STEP; } }
+    *d = sqrtf(bd); return ba;
+}
+static void trn_spawn(int t) {
+    int bl = -1; float bd = TM(700), ba = 0;
+    for (int l = 0; l < NRAIL; l++) { float d, a = rail_proj(l, px_, py_, &d); if (d < bd && (rand() % 3 || bl < 0)) { bd = d; bl = l; ba = a; } }
+    if (bl < 0) return;
+    for (int u = 0; u < NTRN; u++) if (trn[u].on && trn[u].line == bl) return;   /* одна лінія — один поїзд */
+    int dir = rand() % 2 ? 1 : -1, kind = rand() % 3;
+    float start = ba - dir * TM(950);
+    if (start < 0 || start > rail_len(bl)) { dir = -dir; start = ba - dir * TM(950); }
+    if (start < 0) start = 0; if (start > rail_len(bl)) start = rail_len(bl);
+    int nc = 0; uint8_t ty[TRN_MAXC], fl[TRN_MAXC];
+    if (kind == 0) { int m = 4 + 2 * (rand() % 2); for (int k = 0; k < m; k++) { ty[nc] = (k == 0 || k == m - 1) ? TRC_EMU_HEAD : TRC_EMU_MID; fl[nc++] = k == m - 1; } }
+    else if (kind == 1) { ty[nc] = TRC_LOCO_PASS; fl[nc++] = 0; int m = 8 + rand() % 5; for (int k = 0; k < m; k++) { ty[nc] = TRC_COACH; fl[nc++] = 0; } }
+    else { ty[nc] = TRC_LOCO_FRT; fl[nc++] = 0; ty[nc] = TRC_LOCO_FRT; fl[nc++] = 1;
+           int m = 16 + rand() % 12; int w[6] = { TRC_BOXCAR, TRC_TANK, TRC_HOPPER, TRC_GONDOLA, TRC_FLAT, TRC_BOXCAR2 }, g = w[rand() % 6];
+           for (int k = 0; k < m && nc < TRN_MAXC; k++) { if (rand() % 4 == 0) g = w[rand() % 6]; ty[nc] = g; fl[nc++] = rand() % 2; } }
+    float o = 0;
+    for (int k = 0; k < nc; k++) { float L = TM(TRLEN[ty[k]]); trn[t].off[k] = o + L / 2; o += L + TM(1.2f); trn[t].ty[k] = ty[k]; trn[t].flip[k] = fl[k]; }
+    trn[t].nc = nc; trn[t].len = o; trn[t].line = bl; trn[t].dir = dir; trn[t].head = start; trn[t].on = 1;
+    trn[t].spd = (kind == 0 ? 60 : kind == 1 ? 70 : 50) / 3.6f / (MPP * 60.0f);
+}
+static void trains_update(void) {
+    if (NRAIL == 0) return;
+    if (--trn_timer <= 0) {
+        trn_timer = 60 * (80 + rand() % 100);                              /* раз на 1,5–3 хв */
+        for (int t = 0; t < NTRN; t++) if (!trn[t].on) { trn_spawn(t); break; }
+    }
+    for (int t = 0; t < NTRN; t++) {
+        if (!trn[t].on) continue;
+        trn[t].head += trn[t].dir * trn[t].spd;
+        float tail = trn[t].head - trn[t].dir * trn[t].len, d, pa = rail_proj(trn[t].line, px_, py_, &d);
+        if ((tail - pa) * trn[t].dir > TM(1000) || tail < -TM(5) || tail > rail_len(trn[t].line) + TM(5)) trn[t].on = 0;
+    }
+    for (int x = 0; x < NXING; x++) {                                     /* переїзд: закрито за ~350 м до голови й до проходу хвоста */
+        int cl = 0;
+        for (int t = 0; t < NTRN; t++) if (trn[t].on && trn[t].line == XINGS[x].line) {
+            float dh = (XINGS[x].arc - trn[t].head) * trn[t].dir, dt = (XINGS[x].arc - (trn[t].head - trn[t].dir * trn[t].len)) * trn[t].dir;
+            if (dh < TM(350) && dt > -TM(25)) cl = 1;
+        }
+        xing_closed[x] = cl;
+    }
+    for (int x = 0; x < NXING; x++) if (XINGS[x].grp != x && xing_closed[x]) xing_closed[XINGS[x].grp] = 1;   /* група: закрито, якщо закрита будь-яка колія */
+    for (int x = 0; x < NXING; x++) {
+        if (XINGS[x].grp != x) { xing_closed[x] = xing_closed[XINGS[x].grp]; xing_bar[x] = 0; continue; }
+        xing_bar[x] += xing_closed[x] ? 1.0f / 150 : -1.0f / 120; if (xing_bar[x] < 0) xing_bar[x] = 0; if (xing_bar[x] > 1) xing_bar[x] = 1;
+    }
+}
+static float trains_near(float x, float y) {                          /* відстань до найближчого вагона (пікс) */
+    float best = 1e9f;
+    for (int t = 0; t < NTRN; t++) if (trn[t].on) {
+        float d, a = rail_proj(trn[t].line, x, y, &d), h = trn[t].head, tl = h - trn[t].dir * trn[t].len;
+        float lo = fminf(h, tl), hi = fmaxf(h, tl), along = a < lo ? lo - a : (a > hi ? a - hi : 0);
+        float q = sqrtf(d * d + along * along); if (q < best) best = q;
+    }
+    return best;
+}
+/* шлагбаум: опора біля правого краю дороги перед колією (для кожного під'їзду), стріла — до осі дороги */
+static void xing_boom(int x, int side, float *bx, float *by, float *ex, float *ey) {
+    float px, py, tx, ty; int e = XINGS[x].e; rg_at(e, 0, XINGS[x].s0, &px, &py, &tx, &ty);
+    float w2 = RG_EDGE[e].w2, rx = -ty * side, ry = tx * side;
+    float cx = px - tx * side * TM(8), cy = py - ty * side * TM(8);
+    *bx = cx + rx * (w2 + TM(0.6f)); *by = cy + ry * (w2 + TM(0.6f)); *ex = cx + rx * TM(0.3f); *ey = cy + ry * TM(0.3f);
+}
+static int xing_hit(float x, float y) {                               /* опущена стріла — перешкода */
+    for (int k = 0; k < NXING; k++) {
+        if (xing_bar[k] < 0.7f) continue;
+        for (int sd = -1; sd <= 1; sd += 2) {
+            float bx, by, ex, ey; xing_boom(k, sd, &bx, &by, &ex, &ey);
+            float vx = ex - bx, vy = ey - by, l2 = vx * vx + vy * vy, t = ((x - bx) * vx + (y - by) * vy) / l2;
+            if (t < 0 || t > 1) continue;
+            float qx = bx + vx * t - x, qy = by + vy * t - y;
+            if (qx * qx + qy * qy < TM(0.35f) * TM(0.35f)) return 1;
+        }
+    }
+    return 0;
+}
+static float xing_stop(int i, float left) {                          /* відстань до стоп-лінії переїзду для машини трафіку (пікс) або 1e9 */
+    float best = 1e9f;
+    for (int k = 0; k < NXING; k++) {
+        if (!xing_closed[k] && xing_bar[XINGS[k].grp] < 0.05f) continue;
+        int e = XINGS[k].e; float L = rg_len(e);
+        if (traf[i].e == e) {
+            float sx = traf[i].dir == 0 ? XINGS[k].s0 : L - XINGS[k].s0, d = sx - traf[i].s - TM(9);
+            if (d > -TM(2) && d < best) best = d;
+        } else if (traf[i].nx >= 0 && (traf[i].nx >> 1) == e) {
+            float sx = (traf[i].nx & 1) == 0 ? XINGS[k].s0 : L - XINGS[k].s0, d = left + sx - TM(9);
+            if (d < best) best = d;
+        }
+    }
+    return best;
+}
 /* ---- мости з двома рівнями (розв'язка): верх — їдеш мостом між огорожами; низ — проїжджаєш під ним.
    Рівень вирішується при в'їзді в зону мосту: з торця — верх, збоку — низ. */
 static int br_wall(float x, float y) {        /* стіни мосту для поточного рівня */
@@ -1316,6 +1429,7 @@ static int hit(float x, float y, float a) {
     }
     for (int i = 1; i < 9; i++) if (traf_hit(x + CP(HP[i][0]) * c - CP(HP[i][1]) * s, y + CP(HP[i][0]) * s + CP(HP[i][1]) * c)) return 1;
     if (NPARKED > 0) for (int i = 0; i < 9; i++) if (park_hit(x + CP(HP[i][0]) * c - CP(HP[i][1]) * s, y + CP(HP[i][0]) * s + CP(HP[i][1]) * c)) return 1;
+    if (NXING > 0) for (int i = 0; i < 9; i++) if (xing_hit(x + CP(HP[i][0]) * c - CP(HP[i][1]) * s, y + CP(HP[i][0]) * s + CP(HP[i][1]) * c)) return 1;
     return 0;
 }
 
@@ -2078,7 +2192,12 @@ static void draw_particles(int ox, int oy) {
     }
 }
 static uint32_t __attribute__((aligned(16))) puff_tex[16 * 16];      /* м'яка кругла пляма */
+static uint32_t __attribute__((aligned(16))) boom_tex[64 * 8];     /* стріла шлагбаума: червоно-біла */
 static void puff_tex_init(void) {
+    for (int y = 0; y < 8; y++) for (int x = 0; x < 64; x++) {
+        int edge = y == 0 || y == 7;
+        boom_tex[y * 64 + x] = edge ? 0xFF202020 : (((x / 8) & 1) ? 0xFFF4F4F4 : 0xFF2828E0);
+    }
     for (int y = 0; y < 16; y++) for (int x = 0; x < 16; x++) {
         float dx = (x + 0.5f - 8) / 8, dy = (y + 0.5f - 8) / 8, d = 1 - sqrtf(dx * dx + dy * dy);
         if (d < 0) d = 0;
@@ -2350,6 +2469,25 @@ static void sound_update(unsigned btn) {
         float k = 1 - best / TM(40), sp = tv_ms(traf[bi].spd);
         audio_loop(V_TRAF, SND_ENGINE, 0.22f * k * k, 0.55f + sp / 18.0f, fmaxf(-0.8f, fminf(0.8f, (traf[bi].x - px_) / TM(30))));
     } else audio_loop(V_TRAF, SND_ENGINE, 0, 1, 0);
+    {   /* поїзд: гул і стукіт за відстанню; дзвінок переїзду; гудок перед переїздом; легкий струс поруч */
+        float dn = (play && !quiet) ? trains_near(px_, py_) : 1e9f, k = dn < TM(260) ? 1 - dn / TM(260) : 0;
+        audio_loop(V_TRAIN, SND_TRAIN, 0.75f * k * k, 1, 0);
+        if (dn < TM(28) && tick % 4 == 0) { bump = 2; shake = 1; }
+        float xb = 0;
+        for (int x = 0; x < NXING; x++) if (xing_closed[x]) {
+            float bx, by, ex, ey; xing_boom(x, 1, &bx, &by, &ex, &ey); float d = dist(bx, by, px_, py_);
+            if (d < TM(180)) xb = fmaxf(xb, 1 - d / TM(180));
+        }
+        audio_loop(V_XBELL, SND_XBELL, (play && !quiet) ? 0.35f * xb : 0, 1, 0);
+        static int horn_cd;
+        if (horn_cd > 0) horn_cd--;
+        for (int t = 0; t < NTRN && !horn_cd && play; t++) if (trn[t].on)
+            for (int x = 0; x < NXING; x++) if (XINGS[x].line == trn[t].line) {
+                float dh = (XINGS[x].arc - trn[t].head) * trn[t].dir;
+                if (dh > TM(120) && dh < TM(160)) { float hx, hy, ha; rail_at(trn[t].line, trn[t].head, &hx, &hy, &ha);
+                    float d = dist(hx, hy, px_, py_); if (d < TM(400)) { audio_play(SND_THORN, 0.8f * (1 - d / TM(400)) + 0.2f, 1, 0); horn_cd = 60 * 12; } }
+            }
+    }
 }
 static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
     tick++;
@@ -2393,7 +2531,7 @@ static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
     else {
         int was_open = note_open;
         notebook_input(pressed);
-        update_player(btn, lx); update_camera(0); traffic_update();
+        update_player(btn, lx); update_camera(0); traffic_update(); trains_update();
         update_orders(was_open ? pressed : (pressed & ~PSP_CTRL_TRIANGLE)); update_repair();
         update_fuel(note_open ? 0 : pressed);
     }
@@ -2429,6 +2567,16 @@ static void render(void *target_buf) {
         static float dv[MAXRV * 2];
         for (int i = 0; i < ndarkv; i++) { dv[2 * i] = sx + darkv[2 * i] * ZOOM; dv[2 * i + 1] = sy + darkv[2 * i + 1] * ZOOM; }
         gfx_tris_flat(dv, ndarkv, 0x80000000);
+    }
+    if (world_mode && NRAIL > 0) {                                        /* поїзди (07.11.2026) */
+        float k = TM(TRTEX_M) * ZOOM, hx = TRTEX_W / 2 * k, hy = TRTEX_H / 2 * k;
+        for (int t = 0; t < NTRN; t++) if (trn[t].on) for (int c = 0; c < trn[t].nc; c++) {
+            float wx, wy, a; rail_at(trn[t].line, trn[t].head - trn[t].dir * trn[t].off[c], &wx, &wy, &a);
+            float x = (wx - viewx) * ZOOM, y = (wy - viewy) * ZOOM;
+            if (x < -150 || x > SW + 150 || y < -150 || y > SH + 150) continue;
+            if (trn[t].dir < 0) a += PI_F; if (trn[t].flip[c]) a += PI_F;
+            gfx_quad((const uint32_t *)(assets_bin + TRTEX_OFF + trn[t].ty[c] * TRTEX_W * TRTEX_H * 4), TRTEX_W, TRTEX_H, x, y, a, hx, hy, 0xFFFFFFFF);
+        }
     }
     if (world_mode && NPARKED > 0) {                                     /* запарковані машини */
         float k = CAR_LPX / CARTEX_LEN * ZOOM, hx = CARTEX_W / 2 * k, hy = CARTEX_H / 2 * k;
@@ -2487,6 +2635,25 @@ static void render(void *target_buf) {
     for (int j = 0; j < nlmv; j++) {                                /* позначки пам'яток — над дахами, під машиною */
         int i = lmv[j].i;
         gfx_layer8(lm_frame(i), LMS[i].w, LMS[i].w, LMS[i].h, sx + lmv[j].x * ZOOM, sy + lmv[j].y * ZOOM, ZOOM, 1, 0);
+    }
+    for (int k_ = 0; k_ < NXING && world_mode; k_++) {                  /* шлагбауми й вогні переїзду */
+        if (XINGS[k_].grp != k_) continue;
+        for (int sd = -1; sd <= 1; sd += 2) {
+            float bx, by, ex, ey; xing_boom(k_, sd, &bx, &by, &ex, &ey);
+            float x0 = (bx - viewx) * ZOOM, y0 = (by - viewy) * ZOOM;
+            if (x0 < -60 || x0 > SW + 60 || y0 < -60 || y0 > SH + 60) continue;
+            float b = xing_bar[k_], vx = ex - bx, vy = ey - by, L = sqrtf(vx * vx + vy * vy) * (0.12f + 0.88f * b), a = atan2f(vy, vx);
+            float mx = x0 + cosf(a) * L * 0.5f * ZOOM, my = y0 + sinf(a) * L * 0.5f * ZOOM;
+            gfx_quad(boom_tex, 64, 8, mx, my, a, L * 0.5f * ZOOM, TM(0.18f) * ZOOM, 0xFFFFFFFF);
+            gfx_quad(puff_tex, 16, 16, x0, y0, 0, TM(0.5f) * ZOOM, TM(0.5f) * ZOOM, 0xFF303030);          /* стійка */
+            if (xing_closed[k_]) {                                       /* два червоні вогні блимають по черзі */
+                int ph = (tick / 30) & 1; float ux = -sinf(a), uy = cosf(a);
+                for (int q = 0; q < 2; q++) {
+                    float lx = x0 + ux * TM(0.7f) * (q ? 1 : -1) * ZOOM - cosf(a) * TM(0.9f) * ZOOM, ly = y0 + uy * TM(0.7f) * (q ? 1 : -1) * ZOOM - sinf(a) * TM(0.9f) * ZOOM;
+                    gfx_quad(puff_tex, 16, 16, lx, ly, 0, TM(q == ph ? 1.6f : 0.5f) * ZOOM, TM(q == ph ? 1.6f : 0.5f) * ZOOM, q == ph ? 0xE02030FF : 0xFF101040);
+                }
+            }
+        }
     }
     if (arch_used) gfx_layer16(warch, WW, WW, WH, sx, sy, ZOOM, 1, 1, ZOOM != 1.0f);
     if (over_used) gfx_layer8(wover, WW, WW, WH, sx, sy, ZOOM, 1, ZOOM != 1.0f);
@@ -2637,6 +2804,8 @@ int main(int argc, char **argv) {
         if (getenv("TODM")) tod_mode = atoi(getenv("TODM"));
         for (int i = 0; i < (getenv("WARM") ? atoi(getenv("WARM")) : 30); i++) game_update(0, 0, 128, 128);
         px_ = x_; py_ = y_;
+        for (int t = 0; t < NTRN; t++) if (trn[t].on) { float hx, hy, ha; rail_at(trn[t].line, trn[t].head, &hx, &hy, &ha); printf("train %d line %d head %.0f,%.0f nc %d dist %.0f m\n", t, trn[t].line, hx, hy, trn[t].nc, trains_near(px_, py_) * MPP); }
+        for (int x = 0; x < NXING; x++) printf("xing %d closed %d bar %.2f\n", x, xing_closed[x], xing_bar[x]);
         if (getenv("SHOTTROLL")) {                                       /* налагодження: кадр біля тролейбуса */
             { int na = 0; for (int i = 0; i < NTRAF; i++) na += traf[i].on; printf("on %d target %d troll target %d clock %d NTRP %d\n", na, (int)((NTRAF - 4) * traf_density() + 0.5f), trolley_target(), tod_clock(), NTRP); }
             for (int i = 0; i < NTRAF; i++) if (traf[i].on && traf[i].route >= 0) {

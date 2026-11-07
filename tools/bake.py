@@ -133,6 +133,8 @@ SPR_LIT = put(b''.join(f.tobytes() for f in sprites.car_frames(lit=True)))
 CARTEX_OFF, CARTEX_LIT, CARTEX_SHD = (put(t) for t in sprites.car_textures())
 _tt = sprites.traffic_textures(); TRAFTEX_OFF = put(b''.join(_tt)); NTRAFMODEL = len(_tt) // 2
 LONGTEX_OFF = put(b''.join(sprites.long_textures()))                # довгі машини (07.11.2026)
+import trains as TRN                                                  # поїзди (07.11.2026)
+_trt, _trl = TRN.textures(); TRTEX_OFF = put(b''.join(_trt))
 import sounds as SNDS                                             # звуки, синтезовані кодом (01.11.2026)
 _snd = SNDS.sounds(); _snd_tab = []
 for _k, (_a, _lp) in _snd.items(): _snd_tab.append((_k, put(_a.astype('<i2').tobytes()), len(_a), _lp))
@@ -268,6 +270,9 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('static const float LONG_LEN[] = {%s};\nstatic const float LONG_WID[] = {%s};\n' % (','.join('%.2ff' % l[2] for l in sprites.LONG), ','.join('%.2ff' % l[3] for l in sprites.LONG)))
     _w = list(sprites.TRAFFIC_W) + list(sprites.LONG_W)
     f.write('static const uint8_t TR_W[] = {%s};\n#define TR_WSUM %d\n#define TROLLEY_MODEL (NTRAFMODEL + %d)\n' % (','.join(map(str, _w)), sum(_w), [l[0] for l in sprites.LONG].index('trolley')))
+    f.write('#define TRTEX_OFF %d\n#define TRTEX_W %d\n#define TRTEX_H %d\n#define TRTEX_M %.4ff\n' % (TRTEX_OFF, TRN.TW, TRN.TH, TRN.TM_))
+    f.write('static const float TRLEN[] = {%s};\n' % ','.join('%.2ff' % l for l in _trl))
+    for _i, _nm in enumerate(TRN.NAMES): f.write('#define TRC_%s %d\n' % (_nm.upper(), _i))
     f.write('#define SND_RATE %d\n' % SNDS.SR)
     for _i, (_k, _o, _n, _lp) in enumerate(_snd_tab): f.write('#define SND_%s %d\n' % (_k.upper(), _i))
     f.write('#define NSND %d\ntypedef struct { uint32_t off, len; uint8_t loop; } SndDef;\nstatic const SndDef SNDS[] = {%s};\n' % (
@@ -295,6 +300,26 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     import roadgraph
     _g = roadgraph.build(CD.data(), _pl, W, H)
     roadgraph.write_c(f, _g)
+    import rail                                                     # залізниця й переїзд на Франка (07.11.2026)
+    _rl = rail.lines(CD.data(), _pl)
+    _rl_keep = []
+    for R_ in _rl:                                                    # лише шматок у зоні (+600 м з боків)
+        ins = [k_ for k_, (x_, y_) in enumerate(R_) if 0 <= x_ < W and 0 <= y_ < H and _pl[int(y_), int(x_)]]
+        if len(ins) * 2 < 300: continue
+        a_, b_ = max(0, ins[0] - 300), min(len(R_), ins[-1] + 300)
+        _rl_keep.append(R_[a_:b_])
+    _rl_keep = _rl_keep[:6]
+    _xg = rail.crossings(_rl_keep, _g, CD.data())
+    _rp, _ro = [], [0]
+    for R_ in _rl_keep: _rp += [int(round(v)) for xy in R_ for v in xy]; _ro.append(len(_rp) // 2)
+    f.write('#define NRAIL %d\n#define RAIL_STEP %.3ff\nstatic const int16_t RAIL_PT[] = {%s};\nstatic const uint32_t RAIL_OFF[] = {%s};\n' % (
+        len(_rl_keep), 2.0 / CD.MPP, ','.join(map(str, _rp)) or '0', ','.join(map(str, _ro))))
+    _grp = []                                                        # дві колії одного переїзду — одна група (одні шлагбауми)
+    for o_ in _xg:
+        g_ = next((k_ for k_, p_ in enumerate(_xg[:len(_grp)]) if p_[2] == o_[2] and abs(p_[3] - o_[3]) < 40 / CD.MPP), len(_grp))
+        _grp.append(_grp[g_] if g_ < len(_grp) else g_)
+    f.write('#define NXING %d\ntypedef struct { int line; float arc; int e; float s0; int grp; } Xing;\nstatic const Xing XINGS[] = {%s};\n' % (
+        len(_xg), ','.join('{%d,%.1ff,%d,%.1ff,%d}' % (o_[0], o_[1], o_[2], o_[3], _grp[k_]) for k_, o_ in enumerate(_xg)) or '{0}'))
     import trolley                                                  # тролейбусні маршрути (07.11.2026)
     _tp = trolley.build(_g, CD.data())
     _st, _so, _sk, _ss, _soff = [], [0], [], [], [0]
