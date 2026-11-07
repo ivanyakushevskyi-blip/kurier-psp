@@ -177,8 +177,9 @@ def _drop_on_roads(C, GW, GH):
         parts = [g for g in getattr(D_, 'geoms', [D_]) if g.geom_type == 'Polygon' and not g.is_empty]
         if not parts: gone.add((key, i)); ndrop += 1; continue
         g = max(parts, key=lambda g: g.area)
-        if g.area < 0.45 * P.area or g.area < 12 * S * S: gone.add((key, i)); ndrop += 1; continue
+        if g.area < 0.45 * P.area or g.area < 12 * S * S: gone.add((key, i)); ndrop += 1; C.setdefault('gone2', []).append(list(P.exterior.coords)); continue
         g = g.simplify(0.15 * S)
+        C.setdefault('clipped', []).append((key, P.area, g.area, list(P.exterior.coords)))
         b['q'] = [list(c) for c in g.exterior.coords[:-1]]
         if 'area' in b: b['area'] = b['area'] * g.area / P.area
         nclip += 1
