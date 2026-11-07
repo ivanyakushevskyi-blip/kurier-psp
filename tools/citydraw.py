@@ -135,7 +135,7 @@ def _drop_on_roads(C, GW, GH):
         P = np.round(np.array(wy['pts']) / S).astype(np.int32)
         cv2.polylines(road, [P], False, 1, max(1, int(ROAD_W[wy['t']['highway']] - 1.5)))
         if wy['t']['highway'] != 'service': cv2.polylines(cl, [P], False, 1, max(1, int(ROAD_W[wy['t']['highway']] * 0.4)))
-    kept = {'B': [], 'SAT': []}; n = 0
+    kept = {'B': [], 'SAT': []}; n = 0; clip = []
     for key in ('B', 'SAT'):
         for b in C[key]:
             q = np.array(b['q']) / S
@@ -151,13 +151,41 @@ def _drop_on_roads(C, GW, GH):
             # 07.11.2026: дахи, що лише краєм накривають дорогу, лишаються (машина проїжджає під ними, як під аркою);
             # прибираємо лише ті, що заходять у середину проїжджої частини (центральні 40% ширини, >= 6 м2), дрібні й «на дорозі»
             # навіси АЗС і building=roof — над проїздом за задумом; великі будинки (>= 450 м2) не прибираємо ніколи (07.11.2026)
-            if frac > 0 and not (b['t'].get('building') in ('roof', 'canopy') or b['t'].get('amenity') == 'fuel' or _near_fuel(b) or tot >= 450):
+            canopy = b['t'].get('building') in ('roof', 'canopy') or b['t'].get('amenity') == 'fuel' or _near_fuel(b)
+            if frac > 0 and not canopy and tot < 450:
                 if frac > 0.6 or tot < 12: n += 1; continue
                 c_ = (cl[ya:ya + m.shape[0], xa:xa + m.shape[1]][m > 0]).sum()       # середина проїжджої частини (без service)
                 if c_ >= 6: n += 1; continue
+            if frac > 0 and not canopy: clip.append((key, len(kept[key])))
             kept[key].append(b)
+    # 07.11.2026 (Іван: «під будинком їхати — погано»): будинок, що краєм заходить на проїжджу частину, обрізаємо по її краю
+    # (новий контур — і дах малюється вже для нього, з нормальними скатами); якщо лишається мало — прибираємо
+    from shapely.geometry import LineString, Polygon
+    from shapely.strtree import STRtree
+    from shapely.ops import unary_union
+    rl, rw = [], []
+    for wy in C['w']:
+        if drivable(wy['t']) and len(wy['pts']) > 1: rl.append(LineString(wy['pts'])); rw.append((ROAD_W[wy['t']['highway']] / 2 + 0.3) * S)
+    tree = STRtree(rl); nclip = ndrop = 0; gone = set()
+    for key, i in clip:
+        b = kept[key][i]
+        try: P = Polygon(b['q']).buffer(0)
+        except Exception: continue
+        near = [rl[j].buffer(rw[j], cap_style=2) for j in tree.query(P.buffer(20 * S))]
+        if not near or P.area <= 0: continue
+        D_ = P.difference(unary_union(near))
+        parts = [g for g in getattr(D_, 'geoms', [D_]) if g.geom_type == 'Polygon' and not g.is_empty]
+        if not parts: gone.add((key, i)); ndrop += 1; continue
+        g = max(parts, key=lambda g: g.area)
+        if g.area < 0.45 * P.area or g.area < 12 * S * S: gone.add((key, i)); ndrop += 1; continue
+        g = g.simplify(0.15 * S)
+        b['q'] = [list(c) for c in g.exterior.coords[:-1]]
+        if 'area' in b: b['area'] = b['area'] * g.area / P.area
+        nclip += 1
+    for key in ('B', 'SAT'): kept[key] = [b for i, b in enumerate(kept[key]) if (key, i) not in gone]
     C['B'], C['SAT'] = kept['B'], kept['SAT']
-    C['dropped'] = n
+    C['dropped'] = n + ndrop
+    print('  будинки на дорозі: прибрано %d, обрізано по краю дороги %d (ще прибрано після обрізки %d)' % (n, nclip, ndrop))
 
 
 ROAD_W = {'primary': 13, 'secondary': 11, 'tertiary': 9.5, 'residential': 7, 'unclassified': 6.5, 'living_street': 5.5,

@@ -2098,26 +2098,35 @@ static void light_tex_init(void) {
         uint32_t v = (uint32_t)(fminf(1, d * 1.15f) * 255); cone_tex[y * 64 + x] = 0xFF000000u | v << 16 | v << 8 | v;
     }
 }
+static uint32_t acol(float r, float g, float b, float a) {           /* колір з прозорістю (0xAABBGGRR) */
+    int R = (int)r, G = (int)g, B = (int)b, A = (int)(a * 255); if (R > 255) R = 255; if (G > 255) G = 255; if (B > 255) B = 255; if (A > 255) A = 255; if (A < 0) A = 0;
+    return (uint32_t)A << 24 | (uint32_t)B << 16 | (uint32_t)G << 8 | (uint32_t)R;
+}
 static uint32_t lcol(float r, float g, float b, float k) {
     int R = (int)(r * k), G = (int)(g * k), B = (int)(b * k); if (R > 255) R = 255; if (G > 255) G = 255; if (B > 255) B = 255;
     return 0xFF000000u | (uint32_t)B << 16 | (uint32_t)G << 8 | (uint32_t)R;
 }
 /* ---- погода (07.11.2026): ясно, хмарно, дощ, туман, сніг; «авто» — змінюється сама раз на кілька ігрових годин */
-enum { WX_CLEAR, WX_CLOUD, WX_RAIN, WX_FOG, WX_SNOW, WX_N };
-static const char *WX_NAME[WX_N + 1] = { "ЯСНО", "ХМАРНО", "ДОЩ", "ТУМАН", "СНІГ", "АВТО" };
+enum { WX_CLEAR, WX_CLOUD, WX_RAIN, WX_STORM, WX_FOG, WX_SNOW, WX_N };
+static const char *WX_NAME[WX_N + 1] = { "ЯСНО", "ХМАРНО", "ДОЩ", "ГРОЗА", "ТУМАН", "СНІГ", "АВТО" };
+static float wx_storm, wx_flash; static int wx_thunder_t;           /* гроза: сила, спалах блискавки, відлік до грому */
 static int wx_mode = WX_N, wx_cur = WX_CLEAR, wx_t = 60 * 240;     /* wx_mode == WX_N — авто */
 static void weather_update(void) {
     if (wx_mode == WX_N) {
         if (state == S_PLAY && --wx_t <= 0) {
-            int r = rand() % 100; wx_cur = r < 45 ? WX_CLEAR : r < 70 ? WX_CLOUD : r < 88 ? WX_RAIN : r < 95 ? WX_FOG : WX_SNOW;
+            int r = rand() % 100; wx_cur = r < 43 ? WX_CLEAR : r < 66 ? WX_CLOUD : r < 81 ? WX_RAIN : r < 88 ? WX_STORM : r < 95 ? WX_FOG : WX_SNOW;
             wx_t = 60 * (150 + rand() % 210);                              /* 2,5–6 хв (6–15 ігрових годин) */
         }
     } else wx_cur = wx_mode;
-    float tc = (wx_cur == WX_CLOUD || wx_cur == WX_RAIN || wx_cur == WX_SNOW) ? 1 : (wx_cur == WX_FOG ? 0.6f : 0);
+    float tc = (wx_cur == WX_CLOUD || wx_cur == WX_RAIN || wx_cur == WX_STORM || wx_cur == WX_SNOW) ? 1 : 0;   /* туман — світлий, не темнить */
     float k = 1.0f / 600;                                                  /* перехід ~10 с */
     #define WXA(v, t) v += ((t) > v ? k : -k) * (fabsf((t) - v) > k); if (fabsf((t) - v) <= k) v = (t);
-    WXA(wx_cloud, tc); WXA(wx_rain, wx_cur == WX_RAIN ? 1.0f : 0.0f); WXA(wx_fog, wx_cur == WX_FOG ? 1.0f : 0.0f); WXA(wx_snow, wx_cur == WX_SNOW ? 1.0f : 0.0f);
+    WXA(wx_cloud, tc); WXA(wx_rain, (wx_cur == WX_RAIN || wx_cur == WX_STORM) ? 1.0f : 0.0f); WXA(wx_storm, wx_cur == WX_STORM ? 1.0f : 0.0f); WXA(wx_fog, wx_cur == WX_FOG ? 1.0f : 0.0f); WXA(wx_snow, wx_cur == WX_SNOW ? 1.0f : 0.0f);
     #undef WXA
+    if (wx_flash > 0) wx_flash *= 0.86f;                                  /* блискавка: 1–3 спалахи, грім — із запізненням */
+    if (wx_storm > 0.6f && state == S_PLAY && rand() % 420 == 0) { wx_flash = 1; if (!wx_thunder_t) wx_thunder_t = 30 + rand() % 150; }
+    if (wx_flash > 0.25f && wx_flash < 0.4f && rand() % 3 == 0) wx_flash = 0.9f;
+    if (wx_thunder_t > 0 && --wx_thunder_t == 0 && state == S_PLAY) audio_play(SND_THUNDER, 0.6f + (rand() % 40) * 0.01f, 0.85f + (rand() % 30) * 0.01f, 0);
 }
 /* ---- тіні від сонця (07.11.2026): опівдні немає, вранці на північний захід, увечері на північний схід; довжина <= пів висоти */
 #define MAXSV 12000
@@ -2128,7 +2137,7 @@ static float sun_shadow(float *dx, float *dy) {                      /* зсув
     float az = (180.0f + f * 90.0f) * PI_F / 180;                       /* сонце: 9:00 — південний схід, 15:00 — південний захід */
     float len = 0.5f * fabsf(f);
     *dx = -sinf(az) * TM(len); *dy = cosf(az) * TM(len);
-    float k = (1 - night_k) * (1 - wx_cloud) * fminf(1, fabsf(f) * 4);   /* опівдні й у хмари — немає */
+    float k = (1 - night_k) * (1 - wx_cloud) * (1 - wx_fog) * fminf(1, fabsf(f) * 4);   /* опівдні, у хмари й туман — немає; лише будинки */
     if (h < 7.5f || h > 19.5f) k = 0;
     return k;
 }
@@ -2150,18 +2159,6 @@ static void build_shadows(float vx, float vy, float sdx, float sdy) {
                 const int16_t *A = BLD_PT(p0 + a), *C = BLD_PT(p0 + (a + 1) % np);
                 SV(A[0], A[1]); SV(C[0], C[1]); SV(C[0] + ox, C[1] + oy);
                 SV(A[0], A[1]); SV(C[0] + ox, C[1] + oy); SV(A[0] + ox, A[1] + oy);
-            }
-        }
-    }
-    for (int gy = cy0; gy <= cy1; gy++) for (int gx = cx0; gx <= cx1; gx++) {                       /* дерева: м'який круг, зсунутий за сонцем */
-        int k0 = TREE_CELL(gy * NCX + gx), k1 = TREE_CELL(gy * NCX + gx + 1);
-        for (int k = k0; k < k1; k++) {
-            if (nshv + 18 > MAXSV) return;
-            const int16_t *T = TREE(k); if (T[2] < 0) continue;                 /* у гаях — лише дерева-стовбури (решта — крони поруч) */
-            float r = abs(T[2]) * 0.8f, hh = r * MPP * 1.6f + 3, cx = T[0] + sdx * hh * 0.7f, cy = T[1] + sdy * hh * 0.7f;
-            for (int q = 0; q < 6; q++) {
-                float a0 = q * PI_F / 3, a1 = (q + 1) * PI_F / 3;
-                SV(cx, cy); SV(cx + cosf(a0) * r, cy + sinf(a0) * r); SV(cx + cosf(a1) * r, cy + sinf(a1) * r);
             }
         }
     }
@@ -2320,7 +2317,8 @@ static void puff_tex_init(void) {
         puff_tex[y * 16 + x] = ((uint32_t)(fminf(1, d * 1.6f) * 255) << 24) | 0xFFFFFF;
     }
 }
-#define NRAIN 220
+#define NRAIN 300
+static uint32_t __attribute__((aligned(16))) fog_tex[64 * 64];
 static float rdrop[NRAIN][3];                                        /* x, y на екрані, фаза */
 static void weather_draw(void) {
     static float wt; wt += 1;
@@ -2328,35 +2326,54 @@ static void weather_draw(void) {
     static float pcx, pcy; float mdx = (cvx - pcx) * ZOOM, mdy = (cvy - pcy) * ZOOM; pcx = cvx; pcy = cvy;
     if (fabsf(mdx) > 60 || fabsf(mdy) > 60) mdx = mdy = 0;
     float lum = 0.35f + 0.65f * (1 - night_k);
-    if (wx_rain > 0.02f || wx_snow > 0.02f) {
-        int n = (int)(NRAIN * fmaxf(wx_rain, wx_snow * 0.6f));
+    if (wx_snow > 0.02f) {                                             /* сніг: пластівці повільно пливуть разом зі світом */
+        int n = (int)(NRAIN * 0.5f * wx_snow);
         for (int i = 0; i < n; i++) {
             float *d = rdrop[i];
-            if (d[2] == 0) { d[0] = rand() % SW; d[1] = rand() % SH; d[2] = 1 + rand() % 100; }
-            d[0] -= mdx; d[1] -= mdy;
-            if (wx_snow > wx_rain) { d[0] += 0.35f * sinf(wt * 0.03f + d[2]) + 0.25f; d[1] += 0.55f + (int)d[2] % 3 * 0.15f; }
-            else { d[0] += 2.6f; d[1] += 7.5f; }
+            if (d[2] <= 0 || d[2] > 200) { d[0] = rand() % SW; d[1] = rand() % SH; d[2] = 1 + rand() % 100; }
+            d[0] -= mdx; d[1] -= mdy; d[0] += 0.35f * sinf(wt * 0.03f + d[2]) + 0.15f; d[1] += 0.25f + (int)d[2] % 3 * 0.1f;
             if (d[0] < -10) d[0] += SW + 20; if (d[0] > SW + 10) d[0] -= SW + 20; if (d[1] < -10) d[1] += SH + 20; if (d[1] > SH + 10) d[1] -= SH + 20;
-            if (wx_snow > wx_rain) gfx_quad(puff_tex, 16, 16, d[0], d[1], 0, 1.4f, 1.4f, lcol(255 * lum, 255 * lum, 255 * lum, 0.85f * wx_snow));
-            else gfx_quad(puff_tex, 16, 16, d[0], d[1], 0.33f, 0.75f, 8.0f, lcol(210 * lum, 222 * lum, 236 * lum, 0.8f * wx_rain));
-        }
-        if (wx_rain > 0.3f) for (int k = 0; k < 6; k++) {                 /* бризки на асфальті */
-            uint32_t h = (uint32_t)(wt * 7 + k * 977) * 2654435761u; float x = (h >> 8) % SW, y = (h >> 18) % SH, t = (int)wt % 12 / 12.0f;
-            gfx_quad(puff_tex, 16, 16, x, y, 0, 1 + t * 3, 0.7f + t * 2, lcol(220 * lum, 230 * lum, 240 * lum, 0.35f * (1 - t) * wx_rain));
+            gfx_quad(puff_tex, 16, 16, d[0], d[1], 0, 1.3f, 1.3f, acol(255 * lum, 255 * lum, 255 * lum, 0.85f * wx_snow));
         }
     }
-    if (wx_fog > 0.02f) {                                              /* туман: світла пелена + повільні клуби */
-        uint32_t fc = lcol(200 * lum + 20, 205 * lum + 20, 210 * lum + 22, 0);
-        gfx_rect(0, 0, SW, SH, (fc & 0xFFFFFF) | ((uint32_t)(wx_fog * 0.42f * 255) << 24));
-        for (int k = 0; k < 7; k++) {
-            float x = fmodf(k * 97.0f + wt * 0.15f - camx * ZOOM * 0.6f, SW + 240) - 120, y = fmodf(k * 61.0f + wt * 0.05f - camy * ZOOM * 0.6f, SH + 200) - 100;
-            if (x < -120) x += SW + 240; if (y < -100) y += SH + 200;
-            gfx_quad(puff_tex, 16, 16, x, y, 0, 110, 80, (fc & 0xFFFFFF) | ((uint32_t)(wx_fog * 0.22f * 255) << 24));
+    if (wx_rain > 0.02f) {
+        /* дощ (07.11.2026, v2): кожна крапля живе 4–8 кадрів у випадковому місці — без «потоку», що крутить голову */
+        int n = (int)(NRAIN * 0.85f * wx_rain * (1 + 0.4f * wx_storm));
+        if (n > NRAIN) n = NRAIN;
+        for (int i = 0; i < n; i++) {
+            float *d = rdrop[i];
+            if (d[2] <= 0 || d[2] > 8) { d[0] = rand() % SW; d[1] = rand() % SH; d[2] = 4 + rand() % 5; }
+            d[2] -= 1; d[0] -= mdx; d[1] -= mdy;
+            float a = 0.33f + 0.12f * ((i * 7) % 3), len = 3.5f + (i % 4) * 1.2f + 2.5f * wx_storm;
+            gfx_quad(puff_tex, 16, 16, d[0] - d[2] * 0.6f, d[1] - d[2] * 1.4f, a, 0.6f, len, acol(205 * lum, 218 * lum, 232 * lum, (0.45f + 0.25f * wx_storm) * wx_rain));
+        }
+        int ns = (int)(14 * wx_rain * (1 + wx_storm));                     /* бризки: кільця на асфальті */
+        for (int k = 0; k < ns; k++) {
+            uint32_t h = ((uint32_t)wt / 9 * 131 + k * 977) * 2654435761u; float x = (h >> 8) % SW, y = (h >> 18) % SH, t = ((int)wt % 9) / 9.0f;
+            gfx_quad(puff_tex, 16, 16, x, y, 0, 0.8f + t * 2.6f, 0.6f + t * 1.9f, acol(225 * lum, 232 * lum, 240 * lum, 0.32f * (1 - t) * wx_rain));
         }
     }
+    if (wx_fog > 0.02f) {
+        /* туман як у Silent Hill: світла молочна димка; біля машини прозоріше, далі — густо; клуби повільно пливуть */
+        float px = (px_ - viewx) * ZOOM, py = (py_ - viewy) * ZOOM;
+        uint32_t fc = acol(232 * lum + 10, 232 * lum + 10, 228 * lum + 10, 1) & 0xFFFFFF;
+        gfx_rect(0, 0, SW, SH, fc | ((uint32_t)(wx_fog * 0.30f * 255) << 24));
+        gfx_quad(fog_tex, 64, 64, px, py, 0, SW * 0.95f, SW * 0.95f, fc | ((uint32_t)(wx_fog * 0.92f * 255) << 24));
+        for (int k = 0; k < 8; k++) {
+            float x = fmodf(k * 97.0f + wt * 0.12f - camx * ZOOM * 0.85f, SW + 260), y = fmodf(k * 61.0f + wt * 0.04f - camy * ZOOM * 0.85f, SH + 220);
+            if (x < 0) x += SW + 260; if (y < 0) y += SH + 220;
+            gfx_quad(puff_tex, 16, 16, x - 130, y - 110, 0, 120, 90, fc | ((uint32_t)(wx_fog * 0.28f * 255) << 24));
+        }
+    }
+    if (wx_flash > 0.05f) gfx_rect(0, 0, SW, SH, 0x00FFF4F0 | ((uint32_t)(fminf(1, wx_flash) * 0.45f * 255) << 24));   /* блискавка */
 }
 static uint32_t __attribute__((aligned(16))) wat_tex[64 * 64], glint_tex[64 * 64];
 static void water_tex_init(void) {
+    for (int y = 0; y < 64; y++) for (int x = 0; x < 64; x++) {          /* туман: прозорий центр -> густий край */
+        float dx = (x + 0.5f - 32) / 32, dy = (y + 0.5f - 32) / 32, r = sqrtf(dx * dx + dy * dy), t = (r - 0.12f) / 0.55f;
+        if (t < 0) t = 0; if (t > 1) t = 1; t = t * t * (3 - 2 * t);
+        fog_tex[y * 64 + x] = ((uint32_t)(t * 255) << 24) | 0xFFFFFF;
+    }
     for (int y = 0; y < 64; y++) for (int x = 0; x < 64; x++) {          /* бриж: бшовні синусоїди (цілі періоди на 64) */
         float u = x * 2 * PI_F / 64, v = y * 2 * PI_F / 64;
         float w = (sinf(u * 2 + v * 1) + sinf(u * 1 - v * 3 + 1.3f) * 0.8f + sinf(u * 5 + v * 2 + 2.1f) * 0.35f) / 2.15f;
@@ -2876,7 +2893,8 @@ static void render(void *target_buf) {
     if (over_used) gfx_layer8(wover, WW, WW, WH, sx, sy, ZOOM, 1, ZOOM != 1.0f);
     render_particles();
     float sdx, sdy, sk = (world_mode && !freecam) ? sun_shadow(&sdx, &sdy) : 0;
-    float wk = 1 - 0.13f * wx_cloud - 0.12f * wx_rain - 0.05f * wx_snow;   /* хмари й дощ — темніше */
+    float wk = 1 - 0.13f * wx_cloud - 0.12f * wx_rain - 0.12f * wx_storm - 0.05f * wx_snow;   /* хмари, дощ, гроза — темніше */
+    if (wx_flash > 0.05f) wk = fminf(1.25f, wk + wx_flash * 0.9f);        /* спалах блискавки висвітлює місто */
     float ar = amb_r * wk, ag = amb_g * wk, ab = amb_b * (wk + 0.04f * wx_rain);
     if (ar < 254 || ag < 254 || ab < 254 || sk > 0.02f) {               /* вечір, ніч, хмари, тіні: шар світла */
         gfx_light_begin(lcol(ar, ag, ab, 1));
@@ -3038,8 +3056,9 @@ int main(int argc, char **argv) {
         float x_, y_; sscanf(getenv("SHOTAT"), "%f,%f", &x_, &y_); px_ = x_; py_ = y_; ang = 0; stop_car(); update_camera(1);
         if (getenv("TODM")) tod_mode = atoi(getenv("TODM"));
         if (getenv("TODF")) { tod_mode = 0; tod = atof(getenv("TODF")); }
-        if (getenv("WX")) { wx_mode = wx_cur = atoi(getenv("WX")); wx_cloud = (wx_cur == WX_CLOUD || wx_cur == WX_RAIN || wx_cur == WX_SNOW) ? 1 : wx_cur == WX_FOG ? 0.6f : 0;
-                            wx_rain = wx_cur == WX_RAIN; wx_fog = wx_cur == WX_FOG; wx_snow = wx_cur == WX_SNOW; }
+        if (getenv("WX")) { wx_mode = wx_cur = atoi(getenv("WX")); wx_cloud = (wx_cur == WX_CLOUD || wx_cur == WX_RAIN || wx_cur == WX_STORM || wx_cur == WX_SNOW) ? 1 : 0;
+                            wx_rain = wx_cur == WX_RAIN || wx_cur == WX_STORM; wx_storm = wx_cur == WX_STORM; wx_fog = wx_cur == WX_FOG; wx_snow = wx_cur == WX_SNOW;
+                            if (getenv("FLASH")) wx_flash = atof(getenv("FLASH")); }
         for (int i = 0; i < (getenv("WARM") ? atoi(getenv("WARM")) : 30); i++) game_update(0, 0, 128, 128);
         px_ = x_; py_ = y_;
         for (int t = 0; t < NTRN; t++) if (trn[t].on) { float hx, hy, ha; rail_at(trn[t].line, trn[t].head, &hx, &hy, &ha); printf("train %d line %d head %.0f,%.0f nc %d dist %.0f m\n", t, trn[t].line, hx, hy, trn[t].nc, trains_near(px_, py_) * MPP); }

@@ -158,11 +158,21 @@ def xbell():
     return _norm(x, 0.6)
 
 
+def thunder():
+    """грім: тріск на початку + довгий низький гуркіт з перекатами, ~4 с"""
+    n = int(SR * 4.2); t = np.arange(n) / SR
+    x = _bp_noise(n, 20, 160) * (np.exp(-t * 0.9) * (0.6 + 0.4 * np.sin(2 * np.pi * 0.9 * t) ** 2))
+    x += 0.6 * _bp_noise(n, 160, 900) * np.exp(-t * 3.5)
+    x += 0.8 * _bp_noise(n, 900, 5000) * np.exp(-t * 18)                  # тріск
+    env = np.minimum(1, t / 0.04)
+    return _norm(np.tanh(x * env * 1.3), 0.95)
+
+
 def sounds():
     return {'engine': (engine(), 1), 'intake': (intake(), 1), 'skid': (skid(), 1), 'crash': (crash(), 0), 'bump': (bump(), 0),
             'horn': (horn(), 1), 'tick': (tick(), 0), 'pick': (chime([660, 880]), 0), 'deliver': (chime([523, 659, 784, 1047]), 0),
             'fail': (chime([392, 311], 0.16, 0.4), 0), 'rain': (rain(), 1), 'city': (city(), 1),
-            'train': (train(), 1), 'thorn': (thorn(), 0), 'xbell': (xbell(), 1)}       # цвіркуни прибрано (01.11.2026)
+            'train': (train(), 1), 'thorn': (thorn(), 0), 'xbell': (xbell(), 1), 'thunder': (thunder(), 0)}       # цвіркуни прибрано (01.11.2026)
 
 
 if __name__ == '__main__':
