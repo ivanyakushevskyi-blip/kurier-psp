@@ -579,7 +579,12 @@ static int freecam;                       /* L: огляд міста без м�
 static float fcx, fcy;
 static int ostate = O_NONE, owait = 60, otimer, olimit, shop_i = -1, addr_i = -1, pay, load_t;
 static int money, deliveries, late;
-static char toast[48]; static int toast_t; static u8 toast_c;
+/* 08.11.2026: рейтинг кур'єра 1..5 і відкриті етапи районів (1 Озерна .. 4 південь), заклади не повторюються */
+static float rating = 3.0f; static int dstage = 1;
+static int recent_shop[5] = { -1, -1, -1, -1, -1 };
+static const int ST_DEL[5] = { 0, 0, 15, 40, 75 };            /* доставок для етапу */
+static const float ST_RAT[5] = { 0, 0, 3.4f, 3.9f, 4.3f };     /* рейтинг для етапу */
+static char toast[96]; static int toast_t; static u8 toast_c;
 static int street_i = -1, street_t;
 static char save_path[512] = "save.dat";
 /* пам'ятки: відкриті (біт = порядок у data/landmarks.json), анімація таблички */
@@ -589,7 +594,7 @@ static int lm_count;
 
 static int bump;
 static void puff(float x, float y, float dx, float dy, int life, u8 kind);
-static void say(const char *t, u8 c, int life) { strncpy(toast, t, 47); toast[47] = 0; toast_t = life; toast_c = c; }
+static void say(const char *t, u8 c, int life) { strncpy(toast, t, 95); toast[95] = 0; toast_t = life; toast_c = c; }
 static float dist(float ax, float ay, float bx, float by) { float dx = ax - bx, dy = ay - by; return sqrtf(dx * dx + dy * dy); }
 
 static void load_save(void) {
@@ -601,6 +606,7 @@ static void load_save(void) {
             for (int i = 0; i < NLM; i++) { int k = LMS[i].bit; if (k < (int)strlen(bits) && bits[k] == '1') { lm_found[i] = 1; lm_count++; } }
         int la = 0; if (fscanf(f, "%d", &la) == 1) lane_assist = la != 0;
         float fu, he; if (fscanf(f, "%f %f", &fu, &he) == 2) { fuel = fu; health = he > 5 ? he : 100; }
+        float ra; int sg; if (fscanf(f, "%f %d", &ra, &sg) == 2) { rating = ra < 1 ? 1 : (ra > 5 ? 5 : ra); dstage = sg < 1 ? 1 : (sg > 4 ? 4 : sg); }
         fclose(f);
     }
 }
@@ -612,7 +618,7 @@ static void write_save(void) {
         if (n > 128) n = 128;
         memset(bits, '0', (size_t)n); bits[n] = 0;
         for (int i = 0; i < NLM; i++) if (lm_found[i] && LMS[i].bit < n) bits[LMS[i].bit] = '1';
-        fprintf(f, "%d %d %s %d %.1f %.1f\n", money, deliveries, n ? bits : "-", lane_assist, fuel, health); fclose(f);
+        fprintf(f, "%d %d %s %d %.1f %.1f %.2f %d\n", money, deliveries, n ? bits : "-", lane_assist, fuel, health, rating, dstage); fclose(f);
     }
 }
 
@@ -627,27 +633,37 @@ static int note_open, note_sel;          /* нотатник висунутий;
 static float cargo = 100;                    /* стан крихкого вантажу, % */
 static u8 tcol(int t) { return t == T_DANGER ? C_red_3 : (t == T_URGENT || t == T_FOOD ? C_yellow_3 : (t == T_FRAGILE ? C_white_2 : C_green_3)); }
 static int is_food(int i) { const char *k = SHOPS[i].kind; return !strcmp(k, "КАВ'ЯРНЯ") || !strcmp(k, "РЕСТОРАН") || !strcmp(k, "ФАСТФУД") || !strcmp(k, "ПІЦА") || !strcmp(k, "ПЕКАРНЯ"); }
+static int shop_ok(int i) {
+    if (SHOP_ST[i] > dstage) return 0;
+    for (int k = 0; k < 5; k++) if (recent_shop[k] == i) return 0;
+    for (int j = 0; j < 3; j++) if (offers[j].ttl > 0 && offers[j].shop == i) return 0;
+    return 1;
+}
+static int any_shop(void) { for (int t = 0; t < 2000; t++) { int i = rand() % NSHOPS; if (SHOP_ST[i] <= dstage) return i; } return 0; }
+static int any_addr(void) { for (int t = 0; t < 4000; t++) { int i = rand() % NADDRS; if (ADDR_ST[i] <= dstage) return i; } return 0; }
 static int pick_shop(float maxd, int food) {
     int best = -1;
-    for (int t = 0; t < 300; t++) {
+    for (int t = 0; t < 600; t++) {
         int i = rand() % NSHOPS;
+        if (!shop_ok(i)) continue;
         if (food && !is_food(i)) continue;
         float d = dist(px_, py_, SHOPS[i].x, SHOPS[i].y);
         if (d > OP(120) && d < maxd) return i;
         if (best < 0 || d < dist(px_, py_, SHOPS[best].x, SHOPS[best].y)) best = i;
     }
-    return best < 0 ? rand() % NSHOPS : best;
+    return best < 0 ? any_shop() : best;
 }
 static int pick_addr(int shop, float dmin, float dmax) {
     int ab = -1;
     float bd = 0;
     for (int t = 0; t < 600; t++) {
         int i = rand() % NADDRS;
+        if (ADDR_ST[i] > dstage) continue;
         float d = dist(SHOPS[shop].x, SHOPS[shop].y, ADDRS[i].x, ADDRS[i].y);
         if (d > dmin && d < dmax) return i;
         if (d < dmax && d > bd) { bd = d; ab = i; }              /* інакше — найдальша з допустимих */
     }
-    return ab < 0 ? rand() % NADDRS : ab;
+    return ab < 0 ? any_addr() : ab;
 }
 /* відстані в пікселях (0,5 м): звичайне 1,5–3,5 км, термінове/їжа 1,2–2,5 км, далеке 4–6 км — з району в район */
 static void make_offer(int k) {
@@ -671,9 +687,12 @@ static void make_offers(void) {
     n_offers = 3; offer_sel = 0;
     say("НОВІ ЗАМОВЛЕННЯ!", C_green_3, 100);
 }
+static void rate(float d) { rating += d; if (rating < 1) rating = 1; if (rating > 5) rating = 5; }
 static void accept_offer(int k) {
     Offer *o = &offers[k];
     shop_i = o->shop; addr_i = o->addr; otype = o->type; pay = o->pay; olimit = o->limit; cargo = 100;
+    for (int j = 4; j > 0; j--) recent_shop[j] = recent_shop[j - 1];
+    recent_shop[0] = shop_i;
     n_offers = 0; ostate = O_PICK;
     char b[48]; snprintf(b, sizeof b, "ЗАМОВЛЕННЯ: %s", TNAME[otype]); say(b, tcol(otype), 110);
 }
@@ -686,12 +705,12 @@ static void notebook_input(unsigned pressed) {
     if (ostate != O_NONE) {                                  /* під час замовлення: СХОВАТИ / ВІДМОВИТИСЯ */
         if (pressed & (PSP_CTRL_UP | PSP_CTRL_DOWN)) note_sel ^= 1;
         if (pressed & PSP_CTRL_TRIANGLE) {
-            if (note_sel) { ostate = O_NONE; n_offers = 0; owait = 300; say("ВІДМОВИВСЯ ВІД ЗАМОВЛЕННЯ", C_red_3, 120); }
+            if (note_sel) { ostate = O_NONE; n_offers = 0; owait = 300; rate(-0.1f); say("ВІДМОВИВСЯ ВІД ЗАМОВЛЕННЯ", C_red_3, 120); }
             note_open = 0;
         }
     }
 }
-static void fail_order(const char *why) { ostate = O_NONE; owait = 200; late++; say(why, C_red_3, 160); audio_play(SND_FAIL, 0.7f, 1, 0); }
+static void fail_order(const char *why) { ostate = O_NONE; owait = 200; late++; rate(otype == T_FRAGILE || otype == T_DANGER ? -0.35f : -0.25f); say(why, C_red_3, 160); audio_play(SND_FAIL, 0.7f, 1, 0); write_save(); }
 
 static void update_orders(unsigned pressed) {
     if (ostate == O_NONE) {
@@ -725,8 +744,12 @@ static void update_orders(unsigned pressed) {
             int got = pay + bonus;
             if (otype == T_FRAGILE) got = (int)(got * cargo / 100.0f);
             money += got; deliveries++; audio_play(SND_DELIVER, 0.75f, 1, 0);
-            char b[48]; snprintf(b, sizeof b, "+%d ГРН%s", got, bonus > 5 ? "  ШВИДКО!" : "");
+            rate(0.08f + (bonus > 5 ? 0.04f : 0) - (otype == T_FRAGILE && cargo < 70 ? 0.13f : 0));
+            char b[96]; snprintf(b, sizeof b, "+%d ГРН%s  %.1f/5", got, bonus > 5 ? " ШВИДКО!" : "", rating);
             say(b, C_green_3, 150);
+            if (dstage < 4 && deliveries >= ST_DEL[dstage + 1] && rating >= ST_RAT[dstage + 1]) {
+                dstage++; snprintf(b, sizeof b, "ВІДКРИТО: %s", STAGE_NAME[dstage]); say(b, C_yellow_3, 300);
+            }
             ostate = O_NONE; owait = 140;
             write_save();
         }
@@ -2585,7 +2608,7 @@ static void draw_bigmap(void) {
 }
 
 static void draw_frame(void) {
-    char b[64];
+    char b[128];
     world_mode = 0; ndim = 0; target(fb, SW, SH);
     if (state == S_TITLE) {
         camx = SPAWN_X - VW / 2 + sinf(tick * 0.004f) * OP(300); camy = SPAWN_Y - VH / 2 - OP(200) + cosf(tick * 0.003f) * OP(180);
@@ -2629,8 +2652,10 @@ static void draw_frame(void) {
         darken_rect(0, 0, SW, SH - DASH_H, 2);
         otext8_c(SW / 2, 56, 4, C_white_2, C_ink_0, "ПАУЗА");
         snprintf(b, sizeof b, "ЗАРОБЛЕНО: %d ГРН", money); otext8_c(SW / 2, 100, 1, C_yellow_3, C_ink_0, b);
-        snprintf(b, sizeof b, "ДОСТАВОК: %d   ЗАПІЗНЕНЬ: %d", deliveries, late); otext8_c(SW / 2, 114, 1, C_white_2, C_ink_0, b);
-        snprintf(b, sizeof b, "ПАМ'ЯТКИ МІСТА: %d/%d", lm_count, NLM); otext8_c(SW / 2, 128, 1, C_yellow_3, C_ink_0, b);
+        if (dstage < 4) snprintf(b, sizeof b, "ДОСТАВОК: %d  ЗАПІЗНЕНЬ: %d  НОВИЙ РАЙОН: %d ДОСТ., РЕЙТИНГ %.1f", deliveries, late, ST_DEL[dstage + 1], ST_RAT[dstage + 1]);
+        else snprintf(b, sizeof b, "ДОСТАВОК: %d   ЗАПІЗНЕНЬ: %d   УСЕ МІСТО ВІДКРИТО", deliveries, late);
+        otext8_c(SW / 2, 114, 1, C_white_2, C_ink_0, b);
+        snprintf(b, sizeof b, "РЕЙТИНГ: %.1f/5   РАЙОНИ: %d/4   ПАМ'ЯТКИ: %d/%d", rating, dstage, lm_count, NLM); otext8_c(SW / 2, 128, 1, C_yellow_3, C_ink_0, b);
         char todb[48]; snprintf(todb, sizeof todb, "ЧАС ДОБИ: %s", TOD_NAME[tod_mode]);
         char wxb[48]; snprintf(wxb, sizeof wxb, "ПОГОДА: %s", WX_NAME[wx_mode]);
         const char *items[5] = { "ГРАТИ ДАЛІ", "ПОВЕРНУТИ НА ДОРОГУ", lane_assist ? "ПОМІЧНИК СМУГИ: УВІМК" : "ПОМІЧНИК СМУГИ: ВИМК", todb, wxb };
@@ -2656,11 +2681,17 @@ static int return_to_road(void) {
 
 static void game_init(void) {
     px_ = SPAWN_X; py_ = SPAWN_Y; ang = 0; stop_car();
+    /* 08.11.2026: старт — біля випадкового закладу відкритого району (на першому етапі — Озерна) */
+    float cx0 = SPAWN1_X, cy0 = SPAWN1_Y;
+    if (dstage > 1) { int k = any_shop(); cx0 = SHOPS[k].x; cy0 = SHOPS[k].y; }
     /* старт у випадковому місці міста: середина випадкового відрізка звичайної дороги */
-    for (int t = 0; t < 400 && NLANE > 0; t++) {
+    for (int t = 0; t < 4000 && NLANE > 0; t++) {
         const int16_t *L = LANES[rand() % NLANE];
         if (L[4] < 3) continue;
         float x = (L[0] + L[2]) * 0.5f, y = (L[1] + L[3]) * 0.5f, a = atan2f(L[3] - L[1], L[2] - L[0]);
+#ifndef HOST
+        if (dist(x, y, cx0, cy0) > OP(1200) && t < 3600) continue;
+#endif
         if (!hit(x, y, a) && !on_water(x, y)) { px_ = x; py_ = y; ang = a; break; }
     }
     for (int r = 0; r < 200 && hit(px_, py_, ang); r += 2) { px_ += 2; }

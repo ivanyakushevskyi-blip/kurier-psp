@@ -8,6 +8,7 @@ import citydraw as CD
 
 CLS = {'trunk': 0, 'primary': 0, 'secondary': 1, 'tertiary': 2, 'primary_link': 2, 'secondary_link': 2, 'tertiary_link': 2,
        'residential': 3, 'unclassified': 3, 'living_street': 4, 'service': 4}
+ZONE = None                     # (растр зони місій, крок) — задає bake.py через zones.py
 MAIN = 2                       # класи 0..2 — основні дороги (трафік)
 
 
@@ -153,6 +154,10 @@ def traf_flags(D, edges, W, H):
             q = np.array(e['q']) / S
             inside = [bad[int(y), int(x)] for x, y in q if 0 <= x < w_ and 0 <= y < h_]
             if inside and np.mean(inside) > 0.5: ok = False
+        if ok and e['cls'] == 3 and ZONE is not None:                  # 08.11.2026: провулки поза зоною місій — без трафіку
+            zg, zf = ZONE; q = np.array(e['q']) / zf
+            ins = [zg[int(y), int(x)] for x, y in q if 0 <= x < zg.shape[1] and 0 <= y < zg.shape[0]]
+            if ins and np.mean(ins) < 0.5: ok = False
         e['traf'] = 1 if ok else 0
 
 
