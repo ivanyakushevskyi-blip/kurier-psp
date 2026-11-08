@@ -842,13 +842,24 @@ static int rg_next(int e, int dir, int straight, int main_only, float tx, float 
     if (rand() % 100 < 55 && best >= 0) return best;               /* частіше прямо */
     return cand[rand() % nc];
 }
-static int rg_per(int e) { const REdge *E = &RG_EDGE[e]; int nl = E->lanes ? E->lanes : (E->one ? 1 : 2); int per = E->one ? nl : nl / 2; return per < 1 ? 1 : (per > 3 ? 3 : per); }
+static int rg_per(int e) {
+    const REdge *E = &RG_EDGE[e]; int nl = E->lanes ? E->lanes : (E->one ? 1 : 2); int per = E->one ? nl : nl / 2;
+    /* 08.11.2026: смуг не більше, ніж уміщує намальована дорога при ширині смуги >= 2,8 м і центрі крайньої машини >= 1,9 м від бордюру */
+    float room = E->w2 / 2.0f - OP(3.8f), lmin = OP(5.6f);
+    int fit = E->one ? (int)(2 * room / lmin) + 1 : (int)(room / lmin + 0.5f);
+    if (per > fit) per = fit;
+    return per < 1 ? 1 : (per > 3 ? 3 : per);
+}
 /* зміщення праворуч від осі ребра до центру смуги lane (0 — ближча до осьової / лівіша); спільне для трафіку й помічника.
    31.10.2026: і на вузьких двосторонніх — своя права смуга (не по центру), крайня — ще трохи ближче до бордюру, щоб розминатися */
 static float rg_lane_off(int e, int lane) {
     const REdge *E = &RG_EDGE[e]; int per = rg_per(e); if (lane > per - 1) lane = per - 1; if (lane < 0) lane = 0;
     float w = E->w2, lw = fminf(OP(6.8f), E->one ? w / per : w / (2 * per));
-    if (E->one) return (lane + 0.5f) * lw - per * lw * 0.5f;
+    /* 08.11.2026: OSM каже більше смуг, ніж уміщує намальована дорога, — стиснути смуги, щоб крайня права
+       була не ближче 1,9 м (центр машини) до бордюру, а не їхала по білій лінії */
+    float room = w / 2 - OP(3.8f);
+    if (E->one) { if (per > 1 && (per - 1) * lw * 0.5f > room) lw = room * 2 / (per - 1); return (lane + 0.5f) * lw - per * lw * 0.5f; }
+    if (lw * (per - 0.5f) > room) lw = fmaxf(OP(2.0f), room / (per - 0.5f));
     float o = lw * (lane + 0.5f);
     if (lane == per - 1) { float edge = w / 2 - OP(3.8f); if (edge > o) o = fminf(edge, o + OP(1.2f)); }   /* права крайня: правіше, лише якщо до бордюру лишається >= 0,9 м */
     return o;
