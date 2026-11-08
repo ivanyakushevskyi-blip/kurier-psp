@@ -207,7 +207,7 @@ def _drop_on_roads(C, GW, GH):
             gone.add((key, i)); ndrop += 1; C.setdefault('gone2', []).append(list(P.exterior.coords)); continue
         g = best.simplify(0.1 * S)
         C.setdefault('clipped', []).append((key, P.area, g.area, list(P.exterior.coords)))
-        b['q'] = [list(c) for c in g.exterior.coords[:-1]]
+        b['q'] = [list(c) for c in g.exterior.coords]                 # замкнений, як у вихідних даних
         if 'area' in b: b['area0'] = b['area']; b['area'] = b['area'] * g.area / P.area
         nclip += 1
     for key in ('B', 'SAT'): kept[key] = [b for i, b in enumerate(kept[key]) if (key, i) not in gone]
@@ -704,7 +704,8 @@ def draw_roof(img, b, pts, rs, ss=1):
     if F.sum() < 4 * S_ * S_: return
     area = b['area']; t = b['t']; bt = t.get('building', 'yes')
     area_k = b.get('area0', area)                         # 08.11.2026: обрізаний будинок зберігає тип даху (плаский лишається пласким)
-    per = float(np.sum(np.linalg.norm(np.diff(np.array(b['q']), axis=0), axis=1))) * SRC
+    qq_ = np.array(b['q']); qq_ = np.vstack([qq_, qq_[:1]])                # 08.11.2026: замкнений контур (обрізані будинки — незамкнені, ставали «куполами»)
+    per = float(np.sum(np.linalg.norm(np.diff(qq_, axis=0), axis=1))) * SRC
     circ = 4 * math.pi * area / max(per, 1) ** 2
     kind = roof_kind(b.get('roof'))
     rr_ = b.get('roof')
