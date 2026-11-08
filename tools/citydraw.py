@@ -102,6 +102,7 @@ def data():
                 _CACHE['SAT'] = [b for b in _CACHE['SAT'] if cv2.pointPolygonTest(np.array(b['q'], np.float32), pt, False) < 0]
         for b in _CACHE['B'] + _CACHE['SAT']:
             a = np.array(b['q'], np.float32); b['bb'] = (a[:, 0].min(), a[:, 1].min(), a[:, 0].max(), a[:, 1].max())
+        _unify_roofs(_CACHE)
         _drop_on_roads(_CACHE, GW, GH)
     return _CACHE
 
@@ -123,6 +124,43 @@ def _near_fuel(b, R=30.0):
     if not len(F_): return False
     c = np.array(b['q'], np.float32).mean(0)
     return float(np.hypot(*(F_ - c).T).min()) < R / SRC
+
+
+def _unify_roofs(C):
+    """08.11.2026 (Іван: «будинок весь одного кольору»): багатоквартирний будинок у OSM — кілька секцій-контурів;
+    колір даху зі знімка в кожної свій (тіні) — секціям, що стоять впритул, даємо спільний колір (середній за площею)"""
+    from shapely.geometry import Polygon
+    from shapely.strtree import STRtree
+    TY = ('apartments', 'residential', 'dormitory', 'yes', 'commercial', 'retail', 'office')
+    bs = [b for b in C['B'] if b['t'].get('building', 'yes') in TY and b.get('area', 0) >= 60]
+    P = []
+    for b in bs:
+        try: P.append(Polygon(b['q']).buffer(0))
+        except Exception: P.append(Polygon())
+    tr = STRtree(P); par = list(range(len(bs)))
+    def f(a):
+        while par[a] != a: par[a] = par[par[a]]; a = par[a]
+        return a
+    eps = 0.6 / SRC
+    for a, pa in enumerate(P):
+        if pa.is_empty: continue
+        for j in tr.query(pa.buffer(eps)):
+            j = int(j)
+            if j != a and bs[j]['t'].get('building', 'yes') == bs[a]['t'].get('building', 'yes') and not P[j].is_empty \
+               and pa.distance(P[j]) < eps and pa.buffer(eps).intersection(P[j]).length > 0 and pa.buffer(eps).intersection(P[j]).area > 3.0 / SRC ** 2:
+                par[f(a)] = f(j)
+    g = {}
+    for a in range(len(bs)): g.setdefault(f(a), []).append(a)
+    n = 0
+    for mem in g.values():
+        if len(mem) < 2: continue
+        lit = [a for a in mem if bs[a].get('roof') and max(bs[a]['roof']) >= 48]      # секції в тіні — колір з освітлених
+        if not lit: continue
+        w = np.array([bs[a]['area'] for a in lit]); c = np.array([bs[a]['roof'] for a in lit], np.float64)
+        m = np.round((c * w[:, None]).sum(0) / w.sum()).astype(int).tolist()
+        for a in mem: bs[a]['roof'] = m
+        n += len(mem)
+    print('  спільний колір даху: секцій %d у %d будинках' % (n, sum(1 for v in g.values() if len(v) > 1)))
 
 
 def _drop_on_roads(C, GW, GH):
@@ -167,6 +205,38 @@ def _drop_on_roads(C, GW, GH):
     for wy in C['w']:
         if drivable(wy['t']) and len(wy['pts']) > 1: rl.append(LineString(wy['pts'])); rw.append((ROAD_W[wy['t']['highway']] / 2 + 0.3) * S)
     tree = STRtree(rl); nclip = ndrop = 0; gone = set()
+    pas = [LineString(wy['pts']).buffer(8 * S) for wy in C['w'] if wy['t'].get('tunnel') == 'building_passage' or wy['t'].get('covered') == 'yes'
+           if len(wy['pts']) > 1]                                     # 08.11.2026: арка в OSM — будинки біля неї не різати
+    pas_t = STRtree(pas) if pas else None
+    # 08.11.2026 (Зарічанська): будинок з аркою в OSM часто кількома контурами — дорога між ними; якщо будинки на дорозі
+    # стоять впритул і разом ділять дорогу навпіл (є частини з обох боків) — це арка, всю групу не чіпаємо
+    arch_grp = set()
+    cps = []
+    for key, i in clip:
+        try: Pq = Polygon(kept[key][i]['q']).buffer(0)
+        except Exception: Pq = None
+        cps.append(Pq if Pq is not None and not Pq.is_empty and Pq.geom_type == 'Polygon' else None)
+    ok_ = [k for k, z in enumerate(cps) if z is not None]
+    if ok_:
+        ctree = STRtree([cps[k] for k in ok_])
+        par = list(range(len(ok_)))
+        def fnd(a):
+            while par[a] != a: par[a] = par[par[a]]; a = par[a]
+            return a
+        for a, k in enumerate(ok_):
+            for b_ in ctree.query(cps[k].buffer(1.5 * S)):
+                b_ = int(b_)
+                if b_ != a and cps[ok_[b_]].distance(cps[k]) < 1.5 * S: par[fnd(a)] = fnd(b_)
+        grp = {}
+        for a in range(len(ok_)): grp.setdefault(fnd(a), []).append(a)
+        for mem in grp.values():
+            if len(mem) < 2: continue
+            G = unary_union([cps[ok_[a]] for a in mem])
+            U_ = unary_union([rl[j].buffer(rw[j], cap_style=2) for j in tree.query(G.buffer(20 * S))] or [Polygon()])
+            if U_.is_empty or not G.intersects(U_): continue
+            rest = G.difference(U_)
+            if sum(1 for z in getattr(rest, 'geoms', [rest]) if z.area >= max(0.12 * G.area, 25 * S * S)) >= 2:
+                for a in mem: arch_grp.add(clip[ok_[a]])
     for key, i in clip:
         b = kept[key][i]
         try: P = Polygon(b['q']).buffer(0)
@@ -176,6 +246,12 @@ def _drop_on_roads(C, GW, GH):
         if not near: continue
         U = unary_union(near)
         if not P.intersects(U): continue
+        if pas_t is not None and any(pas[int(j)].intersects(P) for j in pas_t.query(P)):
+            C.setdefault('arches', []).append(list(P.exterior.coords)); continue
+        if (key, i) in arch_grp: C.setdefault('arches', []).append(list(P.exterior.coords)); continue
+        rest = P.difference(U)                                            # 08.11.2026: дорога ділить будинок на частини — це арка/проїзд, будинок лишається цілим
+        if sum(1 for z in getattr(rest, 'geoms', [rest]) if z.area >= max(0.12 * P.area, 25 * S * S)) >= 2:
+            C.setdefault('arches', []).append(list(P.exterior.coords)); continue
         if P.area < 60 * S * S: gone.add((key, i)); ndrop += 1; C.setdefault('gone2', []).append(list(P.exterior.coords)); continue   # дрібні — геть
         # різ паралельно одній зі стін будинку (кути лишаються прямими): пробуємо обидві осі й обидва боки, беремо найбільший залишок
         (cx_, cy_), (rw_, rh_), ang = cv2.minAreaRect(np.array(P.exterior.coords, np.float32))
@@ -207,7 +283,7 @@ def _drop_on_roads(C, GW, GH):
             gone.add((key, i)); ndrop += 1; C.setdefault('gone2', []).append(list(P.exterior.coords)); continue
         g = best.simplify(0.1 * S)
         C.setdefault('clipped', []).append((key, P.area, g.area, list(P.exterior.coords)))
-        b['q'] = [list(c) for c in g.exterior.coords]                 # замкнений, як у вихідних даних
+        b['q0'] = b['q']; b['q'] = [list(c) for c in g.exterior.coords]                 # замкнений, як у вихідних даних
         if 'area' in b: b['area0'] = b['area']; b['area'] = b['area'] * g.area / P.area
         nclip += 1
     for key in ('B', 'SAT'): kept[key] = [b for i, b in enumerate(kept[key]) if (key, i) not in gone]
@@ -710,7 +786,8 @@ def draw_roof(img, b, pts, rs, ss=1):
     kind = roof_kind(b.get('roof'))
     rr_ = b.get('roof')
     if S_ > 1 and (rr_ is None or max(rr_) < 48):           # колір даху в тіні не виміряти — типовий для міста, закріплений за будинком
-        h_ = int(abs(b['q'][0][0] * 7919 + b['q'][0][1] * 104729)) % 1000 / 1000.0
+        q0_ = b.get('q0', b['q'])                            # обрізаний — колір як у цілого будинку
+        h_ = int(abs(q0_[0][0] * 7919 + q0_[0][1] * 104729)) % 1000 / 1000.0
         if bt in ('house', 'detached', 'semidetached_house', 'yes') and area_k < 300:
             pal_ = [('red', .18), ('brown', .2), ('darkred', .08), ('orange', .06), ('metal', .12), ('gray', .12), ('green', .08), ('blue', .06), ('teal', .04), ('beige', .06)]
         else:
