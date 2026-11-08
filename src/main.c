@@ -1907,6 +1907,7 @@ static void update_camera(int snap) {
     if (camx > MAP_W - VW) camx = MAP_W - VW; if (camy > MAP_H - VH) camy = MAP_H - VH;
 }
 
+static int return_to_road(void);
 static void update_freecam(unsigned btn, int lx, int ly) {
     float dx = 0, dy = 0;
     if (btn & PSP_CTRL_LEFT) dx = -1; if (btn & PSP_CTRL_RIGHT) dx = 1;
@@ -2641,8 +2642,8 @@ static void draw_frame(void) {
     if (freecam) {
         if (street_i >= 0) otext8_c(244, 10, 1, C_white_2, C_ink_0, STREETS[street_i]);
         panel(0, SH - 18, SW, 18);   /* огляд: без приладів */
-        text8(8, SH - 13, 1, C_yellow_3, "ОГЛЯД МІСТА");
-        text8(118, SH - 13, 1, C_white_1, "СТІК: РУХ   " BT_X " ШВИДКО   L: ДО МАШИНИ");
+        text8(6, SH - 13, 1, C_yellow_3, "ОГЛЯД МІСТА");
+        text8(100, SH - 13, 1, C_white_1, "СТІК: РУХ  " BT_X " ШВИДКО  " BT_SQ " МАШИНУ СЮДИ  L: ДО МАШИНИ");
         return;
     }
     if (ostate == O_PICK || ostate == O_LOAD) draw_target(SHOPS[shop_i].x, SHOPS[shop_i].y, assets_bin + ICON_SHOP, C_green_2, C_green_0);
@@ -2780,7 +2781,15 @@ static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
         if (freecam) { fcx = camx + VW / 2; fcy = camy + VH / 2; stop_car(); }
         else update_camera(1);
     }
-    if (freecam) update_freecam(btn, lx, ly);
+    if (freecam) {
+        update_freecam(btn, lx, ly);
+        if (pressed & PSP_CTRL_SQUARE) {                          /* 08.11.2026: перенести машину сюди (для перевірки місць) */
+            float ox = px_, oy = py_, oa = ang;
+            px_ = fcx; py_ = fcy;
+            if (return_to_road()) { freecam = 0; say("МАШИНУ ПЕРЕНЕСЕНО", C_yellow_3, 90); }
+            else { px_ = ox; py_ = oy; ang = oa; say("ТУТ НЕМАЄ ДОРОГИ", C_white_2, 90); }
+        }
+    }
     else {
         int was_open = note_open;
         notebook_input(pressed);
