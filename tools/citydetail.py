@@ -49,7 +49,7 @@ def road_marks(c):
     img, S = c.img, c.S
     lw = max(1, int(round(c.m(0.35))))
     for h, ptf, w in dw:
-        if h not in MAIN: continue
+        if h not in MAIN or True: continue      # 14.11.2026: крайових ліній немає (Іван: у Хмельницькому таких немає)
         hw = c.m(ROAD_W[h]) / 2 - c.m(0.45)
         nds = w['nds']
         for i in range(len(ptf) - 1):
