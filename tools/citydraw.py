@@ -573,6 +573,35 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None, props_out=None):
     cls = np.array(im)
     yard = cls == G_YARD
     cls[yard & (ycls == 1)] = G_GRASS; cls[yard & (ycls == 2)] = G_DIRT; cls[yard & (ycls == 3)] = G_PAVED
+    if YARD2 and yard.any():
+        # 15.11.2026 правило зелені (Іван, фото Проскурівської й кінотеатру Шевченка):
+        #  - уздовж головних вулиць (до ~15 м від проїжджої частини) — тверде покриття, сіре;
+        #  - біля пішохідних вулиць і площ (до ~22 м) — плитка (як на Проскурівській);
+        #  - навколо кожного будинку — вимощення ~1,2 м;
+        #  - далі від головних вулиць (двори) — газон за знімком, з плавним переходом (шум, без рівної межі)
+        MAINR = ('primary', 'secondary', 'tertiary', 'trunk', 'primary_link', 'secondary_link', 'tertiary_link')
+        mm_ = Image.new('L', (WF, HF), 0); dmm = ImageDraw.Draw(mm_)
+        pp_ = Image.new('L', (WF, HF), 0); dpp = ImageDraw.Draw(pp_)
+        for w, pts, ptf in ways:
+            t = w['t']; h = t.get('highway')
+            if h in MAINR and t.get('area') != 'yes' and len(ptf) >= 2: dmm.line(ptf, fill=1, width=max(1, int(ROAD_W.get(h, 9) / MF)))
+            if (h == 'pedestrian' or t.get('place') == 'square' or t.get('area:highway') == 'pedestrian') and len(ptf) >= 2:
+                if w['closed'] and t.get('area') == 'yes' or t.get('place') == 'square' or t.get('area:highway') == 'pedestrian': dpp.polygon(ptf, fill=1)
+                else: dpp.line(ptf, fill=1, width=int(8 / MF))
+        d_main = cv2.distanceTransform(1 - np.array(mm_), cv2.DIST_L2, 5) * MF
+        d_ped = cv2.distanceTransform(1 - np.array(pp_), cv2.DIST_L2, 5) * MF
+        jit = _up(vnoise(H, W, 30, 21, int(round(x0)), int(round(y0))), S) * 8 - 4     # ±4 м — нерівна межа
+        front = yard & (d_main < 15 + jit)
+        plaza = yard & (d_ped < 22 + jit)
+        cls[front] = G_PAVED; cls[plaza] = G_PED
+        bmk = np.zeros((HF, WF), np.uint8)
+        for _, b in BL: cv2.fillPoly(bmk, [np.round(np.array([tof(p) for p in b['q']])).astype(np.int32)], 1)
+        # щільна забудова (центр): частка дахів у радіусі ~40 м > 35% — двори здебільшого заасфальтовані
+        cov = cv2.blur(cv2.resize(bmk, (W, H), interpolation=cv2.INTER_AREA).astype(np.float32), (int(80 / MPP) | 1, int(80 / MPP) | 1))
+        dense = yard & (_up(cov, S) > 0.35 + jit / 40) & (cls == G_GRASS)
+        cls[dense] = G_PAVED
+        apron = yard & (cv2.distanceTransform(1 - bmk, cv2.DIST_L2, 5) * MF < 1.2) & (bmk == 0)
+        cls[apron & (cls == G_GRASS)] = G_PAVED
 
     # лінійні: вода, рейки, тротуари, доріжки, дороги
     im = Image.fromarray(cls); dr = ImageDraw.Draw(im)
