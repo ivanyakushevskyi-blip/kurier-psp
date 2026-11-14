@@ -683,13 +683,22 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None, props_out=None):
     road = cls == G_ROAD
     walk = np.isin(cls, (G_SIDE, G_PED))
     k3 = np.ones((2 * S + 1, 2 * S + 1), np.uint8)
-    img[walk & cv2.dilate(road.astype(np.uint8), k3).astype(bool)] = CURB
+    if not ROAD3: img[walk & cv2.dilate(road.astype(np.uint8), k3).astype(bool)] = CURB
     soft = np.isin(cls, (G_GRASS, G_WOOD, G_DIRT))
     img[walk & cv2.dilate(soft.astype(np.uint8), k3).astype(bool)] = SIDE[0]
-    if ROAD3:                                                        # 15.11.2026: бордюр і там, де дорога межує з двором/газоном без тротуару
-        open_ = np.isin(cls, (G_YARD, G_GRASS, G_WOOD, G_DIRT, G_PAVED, G_SAND))
-        img[open_ & cv2.dilate(road.astype(np.uint8), k3).astype(bool)] = CURB
-    if SERV2 and servm.any():
+    if ROAD3:
+        # 15.11.2026 (Іван: «що за лінії і чому нерівномірні»): ОДИН бордюр сталої ширини по всьому краю дороги
+        # (раніше три правила різної товщини + квадратний пензель — на діагоналях товстіше й сходинками)
+        if SERV2 and servm.any(): img[servm] = np.clip(img[servm].astype(np.int16) + 6, 0, 255).astype(np.uint8)
+        d_out = cv2.distanceTransform((~road).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+        d_in = cv2.distanceTransform(road.astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+        CW = 1.1 * S                                                  # ≈0,3 м
+        ok = ~np.isin(cls, (G_PARK, G_RAIL, G_WATER, G_ROAD))
+        a_ = (np.clip(CW + 0.5 - d_out, 0, 1) * ok)[..., None]
+        img = (img * (1 - a_) + np.array(CURB, np.float32) * a_).astype(np.uint8)
+        sh_ = (np.clip(1.5 * S + 0.5 - d_in, 0, 1) * road * cv2.dilate(ok.astype(np.uint8), k3).astype(bool))[..., None]
+        img = np.clip(img - 12 * sh_, 0, 255).astype(np.uint8)      # легка тінь від бордюру на асфальті
+    if SERV2 and servm.any() and not ROAD3:
         # проїзди: світліший асфальт з латками; бордюр по краю, де поруч двір/газон/ґрунт (не тротуар, не інша дорога)
         sa = img[servm].astype(np.int16) + 6                      # 15.11.2026: без плям-латок (виглядали брудом)
         img[servm] = np.clip(sa, 0, 255).astype(np.uint8)
