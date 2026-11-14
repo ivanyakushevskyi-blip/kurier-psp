@@ -18,6 +18,15 @@ def _ip(p):
     return (int(round(p[0])), int(round(p[1])))
 
 
+def _prop(c, kind, x, y, ux=1.0, uy=0.0, var=0):
+    """15.11.2026 (Іван): лавки, урни, контейнери, майданчики — не в карті, а об'єктами гри (bake -> PROPS).
+    Якщо c.props є — записує об'єкт (світ, сітка гри; кут осі u) і повертає True (малювати в карту не треба)."""
+    pr = getattr(c, 'props', None)
+    if pr is None: return False
+    wx, wy = c.world((x, y)); pr.append((round(wx, 2), round(wy, 2), round(math.atan2(uy, ux), 4), kind, int(var)))
+    return True
+
+
 class Ctx:
     """Спільні дані блоку: img (детальна), cls (детальна), S, MF (м/пікс детальної), x0, y0 (світ, сітка гри), D, ways, tofn."""
     def __init__(self, **kw): self.__dict__.update(kw)
@@ -170,6 +179,7 @@ def bus_stops(c):
 
 
 def bin_(c, x, y):
+    if _prop(c, 'urn', x, y): return
     cv2.circle(c.img, _ip((x + c.m(0.2), y + c.m(0.25))), max(1, int(round(c.m(0.5)))), (92, 94, 92), -1)
     cv2.circle(c.img, _ip((x, y)), max(1, int(round(c.m(0.5)))), (40, 84, 56), -1)
     cv2.circle(c.img, _ip((x, y)), max(1, int(round(c.m(0.28)))), (22, 26, 24), -1)
@@ -632,6 +642,7 @@ def flowerbeds(c):
 
 def _pg_item(img, c, kind, x, y, ux, uy):
     """обладнання дитмайданчика СТРОГО ЗГОРИ, у власній системі осей (u — вздовж майданчика)"""
+    if _prop(c, 'pg_' + kind, x, y, ux, uy): return
     m = c.m; nx, ny = -uy, ux
     def R(ox, oy, L, Wd, col, a=0):
         cu, cv_ = (ux, uy) if not a else (nx, ny)
@@ -728,6 +739,7 @@ def benches(c):
         a = rs.random() * math.pi
         ux, uy = math.cos(a), math.sin(a)
         L, Wd = c.m(1.8), c.m(0.55)
+        if _prop(c, 'bench', x, y, -ux, -uy): continue
         _rect(img, x + c.m(0.3), y + c.m(0.4), L, Wd, ux, uy, (96, 96, 92))
         _rect(img, x, y, L, Wd, ux, uy, (140, 96, 60))
         _rect(img, x - uy * Wd * 0.3, y + ux * Wd * 0.3, L, Wd * 0.25, ux, uy, (110, 74, 46))
@@ -866,6 +878,9 @@ def park_furniture(c, park_b):
                 r = rs.random()
                 bx, by = px_ + nx * sg * c.m(1.9), py_ + ny * sg * c.m(1.9)
                 if r < 0.45:
+                    if _prop(c, 'bench', bx, by, ux * sg, uy * sg):
+                        if rs.random() < 0.4: bin_(c, bx + ux * c.m(1.5), by + uy * c.m(1.5))
+                        continue
                     _rect(img, bx + c.m(0.3), by + c.m(0.4), c.m(1.8), c.m(0.6), ux, uy, (90, 96, 84))
                     _rect(img, bx, by, c.m(1.8), c.m(0.6), ux, uy, (146, 102, 64))
                     _rect(img, bx + nx * sg * c.m(0.22), by + ny * sg * c.m(0.22), c.m(1.8), c.m(0.15), ux, uy, (112, 76, 46))
@@ -965,6 +980,8 @@ YARD_BT = ('apartments', 'residential', 'dormitory')
 
 def _bench(img, c, x, y, ux, uy):
     """лавка 1,8 x 0,6 м: сидіння-дошки й тінь; урна поруч"""
+    if _prop(c, 'bench', x, y, ux, uy):
+        bin_(c, x + ux * c.m(1.5), y + uy * c.m(1.5)); return
     nx, ny = -uy, ux
     def R(L, Wd, ox, oy, col):
         P = np.array([[-L / 2, -Wd / 2], [L / 2, -Wd / 2], [L / 2, Wd / 2], [-L / 2, Wd / 2]]) @ np.array([[ux, nx], [uy, ny]]).T
@@ -987,6 +1004,11 @@ def _bins(img, c, x, y, ux, uy, rs):
     R(c.m(4.8), c.m(2.6), c.m(0.3), c.m(0.3), (96, 96, 92))
     R(c.m(4.6), c.m(2.4), 0, 0, (176, 174, 168))
     cols = [(46, 108, 70), (52, 84, 140), (96, 100, 104), (46, 108, 70), (176, 120, 40)]
+    if getattr(c, 'props', None) is not None:
+        v_ = sum(rs.randrange(len(cols)) for _ in range(3)) % 4
+        _prop(c, 'bins', x, y, ux, uy, v_); return
+    if getattr(c, 'bins_var', None) is not None:             # спрайт для гри: фіксований набір кольорів
+        cols = [cols[(c.bins_var + k * 2) % len(cols)] for k in range(5)]
     for k in range(3):
         col = cols[rs.randrange(len(cols))]
         R(c.m(1.3), c.m(1.0), c.m(-1.45 + k * 1.45), 0, col)
@@ -1000,7 +1022,11 @@ def _playground(img, c, x, y, ux, uy, rs):
     def P_(pts): return np.round(np.array(pts) @ M_ + [x, y]).astype(np.int32)
     L, Wd = c.m(12), c.m(9)
     box = [[-L / 2, -Wd / 2], [L / 2, -Wd / 2], [L / 2, Wd / 2], [-L / 2, Wd / 2]]
-    surf = (196, 98, 72) if rs.random() < 0.6 else (64, 132, 92)
+    red_ = rs.random() < 0.6
+    if getattr(c, 'props', None) is not None:
+        v_ = (0 if red_ else 2) + (0 if rs.random() < 0.5 else 1)
+        _prop(c, 'pg_yard', x, y, ux, uy, v_); return
+    surf = (196, 98, 72) if red_ else (64, 132, 92)
     cv2.fillPoly(img, [P_(box)], surf)
     cv2.polylines(img, [P_(box)], True, (226, 226, 214), max(1, int(c.m(0.25))))
     def R(cx, cy, l, w, col): cv2.fillPoly(img, [P_([[cx - l / 2, cy - w / 2], [cx + l / 2, cy - w / 2], [cx + l / 2, cy + w / 2], [cx - l / 2, cy + w / 2]])], col)

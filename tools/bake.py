@@ -1,5 +1,5 @@
 """Pack map, collision, minimap, sprites, font and game data into assets.bin + assets.h"""
-import os, sys, json, zlib
+import os, sys, json, zlib, math
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
@@ -353,6 +353,31 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('typedef struct { int16_t x, y; uint8_t a, m; } Parked;\n')
     f.write('static const Parked PARKED[] = {%s};\n' % (','.join('{%d,%d,%d,%d}' % c for c in _pk) or '{0}'))
     f.write('static const uint16_t PK_CELL[] = {%s};\n' % ','.join(map(str, _pst)))
+    # 15.11.2026: об'єкти гри (лавки, урни, контейнери, майданчики, шлагбауми) — спрайти тим самим кодом, сітка 256 пікс
+    import props as _PR
+    _pp = json.load(open(os.path.join(BUILD, 'props.json'))) if os.path.exists(os.path.join(BUILD, 'props.json')) else []
+    _pv = []
+    for x_, y_, a_, k_, v_ in _pp:
+        if k_ == 'barrier': v_ = max(16, int(round(v_ / 8.0)) * 8)
+        if not (0 <= x_ < W and 0 <= y_ < H): continue
+        _pv.append((int(round(x_)), int(round(y_)), int(round((a_ % (2 * math.pi)) / (2 * math.pi) * 256)) & 255, k_, int(v_)))
+    _ptypes = sorted({(k_, v_) for _, _, _, k_, v_ in _pv}, key=lambda t: (_PR.KINDS.index(t[0]), t[1]))
+    _ptex = []
+    for k_, v_ in _ptypes:
+        b_, tw_, th_, hx_, hy_ = _PR.sprite(k_, v_)
+        _ptex.append((put(b_), tw_, th_, hx_, hy_))
+    _tid = {t: i for i, t in enumerate(_ptypes)}
+    _pv.sort(key=lambda c: (c[1] // PG) * pgw + c[0] // PG)
+    _pps = [0] * (pgw * pgh + 1)
+    for c in _pv: _pps[(c[1] // PG) * pgw + c[0] // PG + 1] += 1
+    for i in range(1, len(_pps)): _pps[i] += _pps[i - 1]
+    f.write('#define NPROPS %d\n#define NPROPTEX %d\n' % (len(_pv), len(_ptex)))
+    f.write('typedef struct { int16_t x, y; uint8_t a, t; } Prop;\n')
+    f.write('static const Prop PROPS[] = {%s};\n' % (','.join('{%d,%d,%d,%d}' % (x_, y_, a_, _tid[(k_, v_)]) for x_, y_, a_, k_, v_ in _pv) or '{0}'))
+    f.write('static const uint32_t PROP_CELL[] = {%s};\n' % ','.join(map(str, _pps)))
+    f.write('typedef struct { uint32_t off; uint16_t w, h; float hx, hy; } PropTex;\n')
+    f.write('static const PropTex PROPTEX[] = {%s};\n' % (','.join('{%d,%d,%d,%.3ff,%.3ff}' % t for t in _ptex) or '{0}'))
+    print('props', len(_pv), 'textures', len(_ptex), dict(__import__('collections').Counter(k_ for _, _, _, k_, _ in _pv)))
     # нічне світло: ліхтарі (з карти) й вікна; сітка 256 пікс
     import lights
     _pois = [(q, 4) for q in md['shops']] + [(q, 1) for q in md['addrs']]

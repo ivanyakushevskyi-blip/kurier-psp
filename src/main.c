@@ -3025,6 +3025,17 @@ static void draw_world(void) {
                 for (int q = PK_CELL[c]; q < PK_CELL[c + 1]; q++) crown_box(PARKED[q].x, PARKED[q].y, ox, oy);
             }
         }
+        if (NPROPS > 0) {                                                 /* крони над об'єктами */
+            int gx0 = (int)(viewx - OP(30)) / PK_G, gy0 = (int)(viewy - OP(30)) / PK_G, gx1 = (int)(viewx + VW + OP(30)) / PK_G, gy1 = (int)(viewy + VH + OP(30)) / PK_G;
+            for (int cy = gy0; cy <= gy1; cy++) for (int cx = gx0; cx <= gx1; cx++) {
+                if (cx < 0 || cy < 0 || cx >= PK_GW || cy >= PK_GH) continue;
+                int c = cy * PK_GW + cx;
+                for (uint32_t q = PROP_CELL[c]; q < PROP_CELL[c + 1]; q++) {
+                    const PropTex *T = &PROPTEX[PROPS[q].t];
+                    crown_box_r(PROPS[q].x, PROPS[q].y, ox, oy, (T->hx > T->hy ? T->hx : T->hy) * 1.1f);
+                }
+            }
+        }
     }
     if (!freecam && state != S_TITLE) {
         carv.on = 1; carv.shadow = 1; carv.lit = braking || evac;
@@ -3357,6 +3368,19 @@ static void render(void *target_buf) {
                 vv_[4 * q] = u; vv_[4 * q + 1] = v; vv_[4 * q + 2] = sx + u * ZOOM; vv_[4 * q + 3] = sy + v * ZOOM;
             }
             gfx_tris16(wbuf, WW, WW, WH, 1, vv_, 6, 0xFFFFFFFF);
+        }
+    }
+    if (world_mode && NPROPS > 0) {                                      /* об'єкти: лавки, урни, контейнери, майданчики, шлагбауми (15.11.2026) */
+        int gx0 = (int)(viewx - OP(30)) / PK_G, gy0 = (int)(viewy - OP(30)) / PK_G, gx1 = (int)(viewx + VW + OP(30)) / PK_G, gy1 = (int)(viewy + VH + OP(30)) / PK_G;
+        for (int cy = gy0; cy <= gy1; cy++) for (int cx = gx0; cx <= gx1; cx++) {
+            if (cx < 0 || cy < 0 || cx >= PK_GW || cy >= PK_GH) continue;
+            int c = cy * PK_GW + cx;
+            for (uint32_t q = PROP_CELL[c]; q < PROP_CELL[c + 1]; q++) {
+                const Prop *P = &PROPS[q]; const PropTex *T = &PROPTEX[P->t];
+                float x = (P->x - viewx) * ZOOM, y = (P->y - viewy) * ZOOM, r = (T->hx > T->hy ? T->hx : T->hy) * 1.42f * ZOOM;
+                if (x < -r || x > SW + r || y < -r || y > SH + r) continue;
+                gfx_quad((const uint32_t *)(assets_bin + T->off), T->w, T->h, x, y, PK_ANG(P->a), T->hx * ZOOM, T->hy * ZOOM, 0xFFFFFFFF);
+            }
         }
     }
     if (world_mode && NPARKED > 0) {                                     /* запарковані машини */

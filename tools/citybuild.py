@@ -65,16 +65,18 @@ def render_block(args):
     fn = os.path.join(BLK, '%d_%d.npz' % (bx, by))
     if os.path.exists(fn):
         z = np.load(fn, allow_pickle=True)
-        return bx, by, z['img'], z['cls'], [tuple(t) for t in z['trees'].tolist()], list(z['solid'].tolist())
-    tl, so = [], []
-    img, c = CD.render(bx - M, by - M, w + 2 * M, h + 2 * M, tree_out=tl, ss=SS, solid_out=so)
+        return bx, by, z['img'], z['cls'], [tuple(t) for t in z['trees'].tolist()], list(z['solid'].tolist()), [tuple(t) for t in z['props'].tolist()]
+    tl, so, pr = [], [], []
+    img, c = CD.render(bx - M, by - M, w + 2 * M, h + 2 * M, tree_out=tl, ss=SS, solid_out=so, props_out=pr)
     trees = [t for t in tl if bx <= t[0] < bx + w and by <= t[1] < by + h]
+    props = [t for t in pr if bx <= t[0] < bx + w and by <= t[1] < by + h]       # 15.11.2026: об'єкти гри (лише свої, без запасу)
     img, c = img[M:M + h, M:M + w].copy(), c[M:M + h, M:M + w].copy()
     so_ = np.empty(len(so), dtype=object); so_[:] = so
     tr_ = np.empty(len(trees), dtype=object); tr_[:] = trees
-    np.savez(fn + '.tmp.npz', img=img, cls=c, trees=tr_, solid=so_)
+    pr_ = np.empty(len(props), dtype=object); pr_[:] = props
+    np.savez(fn + '.tmp.npz', img=img, cls=c, trees=tr_, solid=so_, props=pr_)
     os.replace(fn + '.tmp.npz', fn)
-    return bx, by, img, c, trees, so
+    return bx, by, img, c, trees, so, props
 
 
 EXTRA_SOLID = []                             # паркани, сараї, теплиці (світові координати сітки гри)
@@ -124,12 +126,15 @@ def render_all(jobs, rgb, cls, nproc):
         it = pool.imap_unordered(render_block, jobs)
     else:
         it = map(render_block, jobs)
-    for k, (bx, by, img, c, tl, so) in enumerate(it):
+    props = []
+    for k, (bx, by, img, c, tl, so, pr) in enumerate(it):
         h, w = c.shape
-        rgb[by:by + h, bx:bx + w] = img; cls[by:by + h, bx:bx + w] = c; trees.extend(tl); EXTRA_SOLID.extend(so)
+        rgb[by:by + h, bx:bx + w] = img; cls[by:by + h, bx:bx + w] = c; trees.extend(tl); EXTRA_SOLID.extend(so); props.extend(pr)
         print('  block %d/%d' % (k + 1, len(jobs)), bx, by, flush=True)
     if nproc > 1: pool.close(); pool.join()
     json.dump(cur, open(BSTATE, 'w'))
+    json.dump(props, open('build/props_map.json', 'w'))
+    print('props', len(props), flush=True)
     # ---- дерева одним проходом (без швів між блоками); дахи будинків — над кронами, маска крон — для гри (07.11.2026)
     D = CD.data()
     roofm = open_memmap('build/roofmask_tmp.npy', 'w+', np.uint8, (H, W))
@@ -180,6 +185,9 @@ def road_stubs(cls, play, mainx):
     return st
 
 
+BARRIERS = []
+
+
 def barriers(rgb, cls, play, mainx=None):
     """Межа зони на дорогах: червоно-білий бетонний блок поперек проїзду (смуга ≈2,5 м уздовж межі).
     Лише там, де дорога перетинає межу; де дорога йде вздовж межі — нічого (довгі смуги відкидаються). Смугами рядків."""
@@ -197,14 +205,15 @@ def barriers(rgb, cls, play, mainx=None):
         ok = np.zeros(n, bool)
         ok[1:] = (st[1:, cv2.CC_STAT_AREA] >= 20 * FS * FS) & (st[1:, cv2.CC_STAT_AREA] <= 420 * FS * FS) & \
                  (np.maximum(st[1:, cv2.CC_STAT_WIDTH], st[1:, cv2.CC_STAT_HEIGHT]) <= 70 * FS)
-        kp = ok[lab][r0 - a0:r0 - a0 + min(R, H - r0)]; d = dist[r0 - a0:r0 - a0 + kp.shape[0]]
-        yy, xx = np.mgrid[r0:r0 + d.shape[0], 0:W]
-        red = ((xx + yy) // int(6 * FS)) % 2 == 0
-        blk = np.asarray(rgb[r0:r0 + d.shape[0]])
-        inner = kp & (d > FS) & (d <= w5)
-        blk[inner & red] = BAR_RED; blk[inner & ~red] = BAR_WHITE
-        blk[kp & ((d <= FS) | (d > w5))] = CD.OUT
-        rgb[r0:r0 + d.shape[0]] = blk
+        # 15.11.2026: шлагбаум — об'єкт гри (props.json): ряд бетонних блоків поперек дороги біля межі
+        for i in np.nonzero(ok)[0]:
+            ys_, xs_ = np.nonzero(lab == i)
+            cy_ = ys_.mean() + a0
+            if not (r0 <= cy_ < r0 + R): continue                    # кожен — лише в одній смузі
+            (qx, qy), (rw, rh), ang = cv2.minAreaRect(np.stack([xs_, ys_ + a0], 1).astype(np.float32))
+            a_ = math.radians(ang) if rw >= rh else math.radians(ang + 90)
+            Lm = max(rw, rh) * CD.MPP
+            BARRIERS.append((round(float(qx), 1), round(float(qy), 1), round(a_, 4), 'barrier', int(round(min(Lm, 60) * 4))))
         n_ok += int(ok.sum())
     print('barriers', n_ok, flush=True)
 
@@ -255,6 +264,8 @@ def main(nproc=2):
     rgb = out
     mainx = main_roads_mask()
     barriers(rgb, cls, play, mainx)
+    pm_ = json.load(open('build/props_map.json')) if os.path.exists('build/props_map.json') else []
+    json.dump(pm_ + BARRIERS, open('build/props.json', 'w'))
     stubs = road_stubs(cls, play, mainx)
     # ---- зіткнення: будинки OSM + MS + ручні, вода; поза ігровою зоною — стіна
     D = CD.data()

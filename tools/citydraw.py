@@ -378,7 +378,7 @@ def _up(a, S):
     return a if S == 1 else np.repeat(np.repeat(a, S, 0), S, 1)
 
 
-def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
+def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None, props_out=None):
     """tree_out: якщо список — дерева не малюються, а додаються туди у світових координатах (малює citybuild один раз).
     ss: надвибірка — геометрія малюється в ss разів детальніше й зменшується з усередненням (згладжені краї).
     Візерунки (плитка, розмітка, шум) і аналіз знімка — у сітці гри, тож стиль той самий, що й при ss=1."""
@@ -738,7 +738,7 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
 
     import citydetail as CDt
     import citygen as CG
-    ctx = CDt.Ctx(img=img, cls=cls, S=S, MF=MF, x0=x0, y0=y0, D=D, ways=ways, sat=sw, tofn=lambda nid: tof(CG.px(*D['nodes'][nid])))
+    ctx = CDt.Ctx(img=img, cls=cls, S=S, MF=MF, x0=x0, y0=y0, D=D, ways=ways, sat=sw, tofn=lambda nid: tof(CG.px(*D['nodes'][nid])), props=props_out)
     if S > 1: CDt.road_marks(ctx)
 
     # ---------- будинки
