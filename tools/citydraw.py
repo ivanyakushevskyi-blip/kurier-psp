@@ -352,9 +352,8 @@ ROAD_W = {'primary': 13, 'secondary': 11, 'tertiary': 9.5, 'residential': 7, 'un
           'primary_link': 7, 'secondary_link': 6.5, 'tertiary_link': 6.5, 'service': 4.5, 'track': 3.5}
 SIDE_W = {'primary': 3.0, 'secondary': 3.0, 'tertiary': 2.6, 'residential': 2.0, 'unclassified': 1.8, 'living_street': 1.6,
           'primary_link': 2.0, 'secondary_link': 2.0, 'tertiary_link': 2.0}
-if os.environ.get('SIDE2', '1') == '1':                # 15.11.2026 (Іван): тротуари ширші
-    SIDE_W = {'primary': 4.0, 'secondary': 4.0, 'tertiary': 3.5, 'residential': 2.8, 'unclassified': 2.5, 'living_street': 2.0,
-              'primary_link': 2.5, 'secondary_link': 2.5, 'tertiary_link': 2.5}
+if os.environ.get('SIDE2', '1') == '1':                # 15.11.2026 (Іван): тротуари ширші й однакові всюди
+    SIDE_W = {k: 3.0 for k in SIDE_W}
 
 
 def _road_shape(cls, base, drive, joins, svm, nmain, S, MF, G_ROAD, G_SIDE, G_PATH, G_PED):
@@ -425,6 +424,21 @@ def _hash(ix, iy, seed):
     h = (ix.astype(np.int64) * 73856093) ^ (iy.astype(np.int64) * 19349663) ^ (seed * 83492791)
     h = (h ^ (h >> 13)) * 1274126177
     return ((h ^ (h >> 16)) & 0xFFFF).astype(np.float32) / 65535.0
+
+
+def vnoise(H, W, cell, seed, x0=0, y0=0):
+    """15.11.2026: плавний шум у світових координатах (крок cell пікс гри), 0..1 — без швів між блоками"""
+    gx0, gy0 = int(math.floor(x0 / cell)), int(math.floor(y0 / cell))
+    gx1, gy1 = int(math.floor((x0 + W) / cell)) + 2, int(math.floor((y0 + H) / cell)) + 2
+    ix, iy = np.meshgrid(np.arange(gx0, gx1), np.arange(gy0, gy1))
+    g = _hash(ix, iy, seed)
+    xs = (np.arange(x0, x0 + W) + 0.5) / cell - gx0; ys = (np.arange(y0, y0 + H) + 0.5) / cell - gy0
+    xi = np.clip(np.floor(xs).astype(int), 0, g.shape[1] - 2); yi = np.clip(np.floor(ys).astype(int), 0, g.shape[0] - 2)
+    fx = xs - xi; fy = ys - yi
+    fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy)
+    a = g[yi][:, xi]; b = g[yi][:, xi + 1]; c = g[yi + 1][:, xi]; d = g[yi + 1][:, xi + 1]
+    top = a + (b - a) * fx[None, :]; bot = c + (d - c) * fx[None, :]
+    return top + (bot - top) * fy[:, None]
 
 
 def dither(H, W, seed=1, x0=0, y0=0):
@@ -537,6 +551,9 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None, props_out=None):
         # 15.11.2026 (Іван: «чому так багато сірого»): знімки осінні, з довгими тінями — «не зелене» ≠ асфальт.
         # Сірим лишаємо лише явне покриття: рівне, світле, без кольору; решта двору — газон (буре — ґрунт)
         hard = (ch < 20) & (mx > 95) & (mx < 215) & (tex < 3.2)
+        hard = cv2.morphologyEx(hard.astype(np.uint8), cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
+        nl_, lab_, st_, _ = cv2.connectedComponentsWithStats(hard, connectivity=8)
+        hard = (st_[:, cv2.CC_STAT_AREA] >= 4000)[lab_] & (lab_ > 0)    # лише великі майданчики (>≈300 м²), без дрібних сірих плям
         ycls[(ycls == 3) & ~hard] = 1
         ycls[dark] = 1
     else: ycls[dark] = 0
@@ -659,6 +676,25 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None, props_out=None):
     putp(G_GRASS, GRASS[1:], lambda m: t_grass[m]); putp(G_WOOD, GRASS[:3], lambda m: t_grass[m])
     dry = (cls == G_GRASS) & (smf[..., 0] > smf[..., 1] + 4)
     img[dry] = pick(DRY, blob[dry])
+    if YARD2:
+        # 15.11.2026 (Іван: «більше колірного різноманіття»): великі плями соковитої/темнішої і жовтуватої трави,
+        # дрібні світлі галявинки й витоптані місця — плавно, у світових координатах (без швів)
+        gm = np.isin(cls, (G_GRASS, G_WOOD))
+        if gm.any():
+            n1 = _up(vnoise(H, W, 90, 11, int(round(x0)), int(round(y0))), S)
+            n2 = _up(vnoise(H, W, 26, 12, int(round(x0)), int(round(y0))), S)
+            n3 = _up(vnoise(H, W, 14, 13, int(round(x0)), int(round(y0))), S)
+            if S > 1: n1, n2, n3 = (cv2.GaussianBlur(n, (0, 0), 2.0 * S) for n in (n1, n2, n3))
+            g_ = img[gm].astype(np.float32)
+            w_dry = np.clip((n1[gm] - 0.55) / 0.2, 0, 1)[:, None] * 0.85
+            w_lush = np.clip((0.42 - n1[gm]) / 0.2, 0, 1)[:, None] * 0.75
+            w_lt = np.clip((n2[gm] - 0.62) / 0.2, 0, 1)[:, None] * 0.6
+            w_worn = (np.clip((n3[gm] - 0.84) / 0.08, 0, 1) * (cls[gm] == G_GRASS))[:, None] * 0.7
+            g_ = g_ * (1 - w_dry) + np.array((172, 166, 92), np.float32) * w_dry
+            g_ = g_ * (1 - w_lush) + np.array((54, 98, 40), np.float32) * w_lush
+            g_ = g_ * (1 - w_lt) + np.array((136, 182, 82), np.float32) * w_lt
+            g_ = g_ * (1 - w_worn) + np.array((146, 124, 92), np.float32) * w_worn
+            img[gm] = np.clip(g_, 0, 255).astype(np.uint8)
     putp(G_DIRT, DIRT, lambda m: 0.3 + 0.5 * blob[m] + 0.2 * (fine[m] > 0.9))
     putp(G_PAVED, PAVED, lambda m: 0.35 + 0.3 * blob[m] + 0.2 * (fine[m] > 0.92))
     tile4 = ((xx % 4 == 0) | (yy % 4 == 0))

@@ -1037,6 +1037,21 @@ def _playground(img, c, x, y, ux, uy, rs):
     _pg_item(img, c, 'swing', *at(m(-2.6), m(2.4)), ux, uy)
     _pg_item(img, c, 'climb' if rs.random() < 0.5 else 'carousel', *at(m(3.6), m(2.2)), ux, uy)
 
+YARD2 = __import__('os').environ.get('YARD2', '1') == '1'
+
+
+def _worn(img, free, x, y, r, ux, uy):
+    """витоптана земля навколо дитмайданчика: м'яка пляма, лише на вільному (газон/двір)"""
+    H, W = free.shape; R = int(r * 1.3) + 2
+    xa, xb, ya, yb = max(0, int(x) - R), min(W, int(x) + R), max(0, int(y) - R), min(H, int(y) + R)
+    if xb <= xa or yb <= ya: return
+    yy, xx = np.mgrid[ya:yb, xa:xb]
+    du = (xx - x) * ux + (yy - y) * uy; dv = -(xx - x) * uy + (yy - y) * ux
+    d = np.sqrt((du / 1.25) ** 2 + dv ** 2) / r
+    a = (np.clip((1.0 - d) / 0.35, 0, 1) * free[ya:yb, xa:xb])[..., None] * 0.55
+    img[ya:yb, xa:xb] = (img[ya:yb, xa:xb] * (1 - a) + np.array((150, 128, 96), np.float32) * a).astype(np.uint8)
+
+
 def yards(c, blds, trees):
     """Двори біля багатоквартирних (патерни, не з OSM): лавки біля довгої стіни, що дивиться на проїзд,
     контейнерний майданчик біля проїзду, дитмайданчик у великому вільному дворі. Не на дорогах, будинках, деревах."""
@@ -1062,7 +1077,8 @@ def yards(c, blds, trees):
     for h, ptf, w in _drive_ways(c):
         if h in ('service', 'living_street'): cv2.polylines(sv_, [np.round(np.array(ptf)).astype(np.int32)], False, 1, max(1, int(c.m(4))))
     dserv = cv2.distanceTransform(1 - sv_, cv2.DIST_L2, 5)
-    nb = nbin = npg = 0
+    nb = nbin = npg = npath = 0
+    pathm = np.zeros((H, W), bool); linked = set(); starts = []; skip = {}
     for i, b, pts, ptf in blds:
         bt_ = b['t'].get('building', 'yes')
         if not (bt_ in YARD_BT and b.get('area', 0) >= 250 or bt_ == 'yes' and b.get('area', 0) >= 400 and b.get('h', 0) >= 9): continue
@@ -1085,6 +1101,8 @@ def yards(c, blds, trees):
             if best is None or hits > best[0]: best = (hits, sd)
         if best is None: continue
         ent_ok = best[0] > 0
+        if YARD2 and i not in linked:
+            starts.append((cx + nx * best[1] * (rh / 2 + c.m(1.2)), cy + ny * best[1] * (rh / 2 + c.m(1.2)), 0, i))
         sd = best[1]
         # прибудинкова територія з боку під'їздів: вимощення вздовж стіни, палісадники між під'їздами,
         # доріжки від кожного під'їзду до проїзду/тротуару, козирок над входом, лавки обабіч доріжки
@@ -1096,7 +1114,7 @@ def yards(c, blds, trees):
             if only_free: mm &= free
             img[mm > 0] = col
             return mm
-        paint(quad(-rw / 2, rw / 2, 0, c.m(1.2)), (176, 174, 168))
+        pathm |= paint(quad(-rw / 2, rw / 2, 0, c.m(1.2)), (176, 174, 168)) > 0
         n_ = max(1, int(rw / c.m(16)))
         ent = [((k + 0.5) / n_ - 0.5) * rw for k in range(n_)]
         for k in range(n_ + 1):                                        # палісадники між під'їздами
@@ -1121,6 +1139,7 @@ def yards(c, blds, trees):
                 mm = paint(quad(u - c.m(0.8), u + c.m(0.8), c.m(1.2), L_), (190, 188, 182))
                 ys_, xs_ = np.nonzero(mm)
                 if len(xs_): occ[ys_, xs_] = 1
+                pathm |= mm > 0; linked.add(i)
             paint(quad(u - c.m(1.5), u + c.m(1.5), 0, c.m(1.4)), (150, 152, 156), only_free=False)     # козирок над входом
             paint(quad(u - c.m(1.5), u + c.m(1.5), c.m(1.4), c.m(1.7)), (92, 92, 94), only_free=False)   # його тінь
             for side in (-1, 1):
@@ -1141,9 +1160,45 @@ def yards(c, blds, trees):
                 for t in (0.0, -0.3, 0.3, -0.45, 0.45):
                     bx, by = cx + ux * t * rw + nx * s2 * (rh / 2 + c.m(dist_m)), cy + uy * t * rw + ny * s2 * (rh / 2 + c.m(dist_m))
                     if 0 <= int(bx) < W and 0 <= int(by) < H and fits(bx, by, c.m(6.5)) and droad[int(by), int(bx)] > c.m(6.5):
-                        _playground(img, c, bx, by, ux, uy, rs); take(bx, by, c.m(9)); npg += 1; break
+                        if YARD2: _worn(img, free, bx, by, c.m(8.5), ux, uy)          # витоптано навколо майданчика
+                        _playground(img, c, bx, by, ux, uy, rs); take(bx, by, c.m(9)); npg += 1
+                        starts.append((bx, by, c.m(6), 'pg')); break
                 else: continue
                 break
+    if YARD2 and starts:
+        # 15.11.2026: доріжки до найближчого тротуару/доріжки/проїзду — від дитмайданчиків і від будинків без доріжки
+        # (одна на будинок; не поруч з уже наявною доріжкою — без «сітки»)
+        walk = np.isin(cls, (4, 5, 6, 7, 12)) | pathm
+        for sx, sy, r0, tag in starts:
+            if not (0 <= int(sx) < W and 0 <= int(sy) < H): continue
+            ow = np.zeros((H, W), np.uint8)
+            if tag != 'pg':                                            # своє вимощення не рахується
+                i_ = tag; P_ = [p for k_, b_, p_, pf in blds if k_ == i_ for p in [pf]]
+                if P_: cv2.fillPoly(ow, [np.round(np.array(P_[0])).astype(np.int32)], 1); ow = cv2.dilate(ow, np.ones((int(c.m(3)) | 1,) * 2, np.uint8))
+            tgt = walk & (ow == 0)
+            if not tgt.any(): skip['notgt'] = skip.get('notgt', 0) + 1; continue
+            y0_, y1_ = max(0, int(sy - c.m(40))), min(H, int(sy + c.m(40))); x0_, x1_ = max(0, int(sx - c.m(40))), min(W, int(sx + c.m(40)))
+            sub = tgt[y0_:y1_, x0_:x1_]
+            if not sub.any(): skip['nosub'] = skip.get('nosub', 0) + 1; continue
+            ys_, xs_ = np.nonzero(sub); d2 = (xs_ + x0_ - sx) ** 2 + (ys_ + y0_ - sy) ** 2
+            k_ = int(d2.argmin()); tx, ty = xs_[k_] + x0_, ys_[k_] + y0_; L = math.sqrt(d2[k_])
+            if __import__('os').environ.get('YDBG'): print('  L', round(L / c.m(1), 1), tag if tag == 'pg' else 'b')
+            if L < r0 + c.m(1.5) or L > c.m(40): skip['len'] = skip.get('len', 0) + 1; continue
+            ux_, uy_ = (tx - sx) / L, (ty - sy) / L
+            ax, ay = sx + ux_ * r0, sy + uy_ * r0
+            mx_, my_ = (ax + tx) / 2, (ay + ty) / 2
+            # уже є доріжка поруч із серединою — не дублювати
+            rr = int(c.m(4)); ya, yb, xa, xb = max(0, int(my_) - rr), min(H, int(my_) + rr), max(0, int(mx_) - rr), min(W, int(mx_) + rr)
+            if pathm[ya:yb, xa:xb].any(): skip['dup'] = skip.get('dup', 0) + 1; continue
+            rs_ = _rng(*c.world((sx, sy)), 91); bend = (rs_.random() - 0.5) * 0.25 * (L - r0)
+            qx, qy = mx_ - uy_ * bend, my_ + ux_ * bend               # легкий вигин
+            pts = [((1 - t) ** 2 * ax + 2 * (1 - t) * t * qx + t * t * tx, (1 - t) ** 2 * ay + 2 * (1 - t) * t * qy + t * t * ty) for t in np.linspace(0, 1, 16)]
+            mm = np.zeros((H, W), np.uint8)
+            cv2.polylines(mm, [np.round(np.array(pts)).astype(np.int32)], False, 1, max(2, int(c.m(1.5))))
+            mm = mm.astype(bool) & (free.astype(bool) | (cls == G_DIRT)) & ~(bm > 0)
+            edge_ = cv2.dilate(mm.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool) & ~mm & np.isin(cls, (G_GRASS, G_YARD))
+            img[edge_] = (img[edge_].astype(np.float32) * 0.6 + np.array((150, 132, 100)) * 0.4).astype(np.uint8)   # протоптаний край
+            img[mm] = (186, 184, 178); pathm |= mm; walk |= mm; npath += 1
     if __import__('os').environ.get('YDBG'):
-        print('yards', nb, nbin, npg, len(blds), 'free%%%.0f' % (100 * free.mean()), np.bincount(cls.ravel(), minlength=16)[:16] * 100 // cls.size)
+        print('yards', nb, nbin, npg, 'paths', npath, 'starts', len(starts), skip, len(blds), 'free%%%.0f' % (100 * free.mean()), np.bincount(cls.ravel(), minlength=16)[:16] * 100 // cls.size)
     return nb, nbin, npg
