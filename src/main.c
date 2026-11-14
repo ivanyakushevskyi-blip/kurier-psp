@@ -568,6 +568,13 @@ static float vx_, vy_;                       /* вектор швидкості 
 static float health = 100;                   /* стан авто, % */
 static float fuel = 100;                     /* пальне, % */
 static int fuel_t, fuel_warned;
+/* 14.11.2026 (Іван): газ — R, гальмо/задній — L, ручник — □, сигнал — △; ✕/○ і стрілки — смартфон */
+#define BTN_GAS PSP_CTRL_RTRIGGER
+#define BTN_BRAKE PSP_CTRL_LTRIGGER
+#define BTN_HAND PSP_CTRL_SQUARE
+#define BTN_HORN PSP_CTRL_TRIANGLE
+#define BTN_OK PSP_CTRL_CROSS
+#define BTN_BACK PSP_CTRL_CIRCLE
 static int lane_assist;
 static int menu_i;                      /* помічник утримання смуги (налаштування) */
 static int braking, drifting;
@@ -594,9 +601,9 @@ static int lm_count;
 
 /* ================= смартфон (13.11.2026, docs/design.md «Інтерфейс 2.0») ================= */
 /* стани: сховано / сповіщення (визирає трохи) / навігатор (на 2/3) / повністю відкритий (меню). */
-enum { APP_HOME, APP_ORDERS, APP_NAV, APP_WALLET, APP_RATING, APP_SET, NAPP };
-static const char *APP_NAME[NAPP] = { "", "ЗАМОВЛЕННЯ", "НАВІГАТОР", "ГАМАНЕЦЬ", "РЕЙТИНГ", "НАЛАШТУВАННЯ" };
-static int ph_full, ph_app, ph_sel, show_fps;
+enum { APP_HOME, APP_ORDERS, APP_NAV, APP_WALLET, APP_RATING, APP_SET, APP_LOOK, NAPP };
+static const char *APP_NAME[NAPP] = { "", "ЗАМОВЛЕННЯ", "НАВІГАТОР", "ГАМАНЕЦЬ", "РЕЙТИНГ", "НАЛАШТУВАННЯ", "ОГЛЯД МІСТА" };
+static int ph_full, ph_app, ph_sel, show_fps, ph_hide, want_freecam, o_hold, o_used;
 static float ph_y = SH + 8;                                      /* верх телефона на екрані (анімація) */
 static int nav_on, nav_kind;                                     /* маршрут: 0 — до замовлення, 1 — АЗС, 2 — СТО */
 /* сповіщення: черга */
@@ -767,16 +774,27 @@ static int app_items(void) {
     }
 }
 static int offer_at(int i) { for (int k = 0, n = 0; k < NOFF; k++) if (offers[k].ttl > 0) { if (n == i) return k; n++; } return -1; }
-static void phone_input(unsigned pressed) {
+static int ph_peek(void);
+static void phone_input(unsigned pressed, unsigned btn) {
     if (!ph_full) {
-        if (pressed & PSP_CTRL_TRIANGLE) {
-            ph_full = 1; ph_app = APP_HOME; ph_sel = 0;
-            if (notes_n && note_t > 0 && notes_q[0].offer >= 0 && offers[notes_q[0].offer].ttl > 0) {   /* △ на сповіщенні — одразу до замовлення */
+        /* ○: коротко — сховати телефон; затиснути — вимкнути маршрут */
+        if (pressed & BTN_BACK) { o_hold = 0; o_used = 0; }
+        if (btn & BTN_BACK) {
+            if (++o_hold == 36 && nav_on) { nav_on = 0; o_used = 1; notify("", "МАРШРУТ ВИМКНЕНО", C_white_0, 90, -1); }
+        } else if (o_hold > 0) {
+            if (!o_used && o_hold < 36) { ph_hide = 1; if (notes_n) note_t = 1; }
+            o_hold = 0;
+        }
+        if (pressed & BTN_OK) {
+            audio_play(SND_TICK, 0.5f, 1, 0);
+            int note_offer = notes_n && note_t > 0 && notes_q[0].offer >= 0 && offers[notes_q[0].offer].ttl > 0;
+            if (ph_hide && ph_peek() && !note_offer) { ph_hide = 0; return; }     /* сховане — повернути як було (навігатор/замовлення) */
+            ph_hide = 0; ph_full = 1; ph_app = APP_HOME; ph_sel = 0;
+            if (note_offer) {                                         /* ✕ на сповіщенні — одразу до замовлення */
                 ph_app = APP_ORDERS; ph_sel = 0;
                 for (int i = 0; i < n_offers; i++) if (offer_at(i) == notes_q[0].offer) ph_sel = i;
                 note_t = 1;
             }
-            audio_play(SND_TICK, 0.5f, 1, 0);
         }
         return;
     }
@@ -785,20 +803,22 @@ static void phone_input(unsigned pressed) {
         if (n > 0) { ph_sel = (ph_sel + ((pressed & PSP_CTRL_UP) ? n - 1 : 1)) % n; audio_play(SND_TICK, 0.4f, 1, 0); }
     }
     if (ph_sel >= n) ph_sel = n > 0 ? n - 1 : 0;
-    if (pressed & PSP_CTRL_CIRCLE) {
-        audio_play(SND_TICK, 0.4f, 1, 0);
+    if (pressed & BTN_BACK) {
+        audio_play(SND_TICK, 0.4f, 1, 0); o_hold = 0; o_used = 1;
         if (ph_app == APP_HOME) ph_full = 0; else { ph_sel = ph_app - 1; ph_app = APP_HOME; }
         return;
     }
-    if (!(pressed & PSP_CTRL_TRIANGLE)) return;
+    if (!(pressed & BTN_OK)) return;
     audio_play(SND_TICK, 0.5f, 1, 0);
     switch (ph_app) {
-    case APP_HOME: ph_app = ph_sel + 1; ph_sel = 0; break;
+    case APP_HOME: ph_app = ph_sel + 1; ph_sel = 0;
+        if (ph_app == APP_LOOK) { ph_full = 0; ph_app = APP_HOME; want_freecam = 1; }
+        break;
     case APP_ORDERS:
         if (ostate != O_NONE) {
             if (ph_sel == 0) { nav_on = !(nav_on && nav_kind == 0); nav_kind = 0; if (nav_on) ph_full = 0; }
             else { ostate = O_NONE; owait = 300; rate(-0.1f); if (nav_kind == 0) nav_on = 0; say("ВІДМОВИВСЯ ВІД ЗАМОВЛЕННЯ", C_red_3, 120); write_save(); }
-        } else if (n > 0) { int k = offer_at(ph_sel); if (k >= 0) { accept_offer(k); ph_sel = 0; } }
+        } else if (n > 0) { int k = offer_at(ph_sel); if (k >= 0) { accept_offer(k); ph_sel = 0; ph_full = 0; ph_hide = 0; } }
         break;
     case APP_NAV:
         if (ph_sel == 3) nav_on = 0;
@@ -1802,16 +1822,14 @@ static int on_water(float x, float y) { return surf((int)x, (int)y) == 2; }
 static float snd_rpm = 850, snd_gas, snd_skid;
 static void update_player(unsigned btn, int lx) {
     float steer = 0;
-    if (btn & PSP_CTRL_LEFT) steer = -1;
-    if (btn & PSP_CTRL_RIGHT) steer = 1;
     if (abs(lx - 128) > 20) {                                   /* стік: м'яка крива — малі відхилення дають тонке підрулювання */
         float a = (abs(lx - 128) - 20) / 96.0f; if (a > 1) a = 1;
         steer = (lx > 128 ? 1 : -1) * powf(a, 1.35f);
     }
     if (steer > 1) steer = 1; if (steer < -1) steer = -1;
-    int gas = (btn & PSP_CTRL_CROSS) != 0;
-    int brake = (btn & PSP_CTRL_SQUARE) != 0;
-    int hand = (btn & PSP_CTRL_RTRIGGER) != 0;
+    int gas = (btn & BTN_GAS) != 0;
+    int brake = (btn & BTN_BRAKE) != 0;
+    int hand = (btn & BTN_HAND) != 0;
     static int free_t;
     if (fabsf(steer) > 0.08f) free_t = 0; else free_t++;
     if (lane_assist && free_t > 24 && !hand && vel > OP(0.12f)) {   /* помічник — через 0,4 с після керма, плавно наростає */
@@ -1978,7 +1996,7 @@ static void update_evac(void) {
     write_save();
 }
 static void update_fuel(unsigned pressed) {
-    if (fuel <= 0 && fabsf(vel) < OP(0.05f) && (pressed & PSP_CTRL_CIRCLE)) { evac = EV_FUEL; evac_t = 0; say("ВИКЛИКАЮ ЕВАКУАТОР...", C_white_2, 110); return; }
+    if (fuel <= 0 && fabsf(vel) < OP(0.05f) && (pressed & BTN_OK)) { evac = EV_FUEL; evac_t = 0; say("ВИКЛИКАЮ ЕВАКУАТОР...", C_white_2, 110); return; }
     if (fuel >= 99.5f) { fuel_t = 0; return; }
     int b = 0; for (int i = 1; i < NFUEL; i++) if (dist(px_, py_, FUELS[i].x, FUELS[i].y) < dist(px_, py_, FUELS[b].x, FUELS[b].y)) b = i;
     if (dist(px_, py_, FUELS[b].x, FUELS[b].y) < OP(26) && fabsf(vel) < OP(0.3f)) {
@@ -2433,6 +2451,11 @@ static void stars_row(int x, int y, float v, int r) {                /* 5 зір
     }
 }
 /* спідометр: круглий, стрілка, шкала 0–200; уздовж краю внизу — паливо (жовта дуга) і стан машини (зелена/червона) */
+static void digits35(int x, int y, u8 c, const char *t) {          /* крихітні цифри 3×5 для шкали */
+    static const uint16_t D[10] = { 0x7B6F, 0x2C97, 0x73E7, 0x73CF, 0x5BC9, 0x79CF, 0x79EF, 0x7249, 0x7BEF, 0x7BCF };
+    for (; *t; t++, x += 4) { if (*t < '0' || *t > '9') continue; uint16_t m = D[*t - '0'];
+        for (int r = 0; r < 5; r++) for (int k = 0; k < 3; k++) if (m & (1 << (14 - r * 3 - k))) rect(x + k, y + r, 1, 1, c); }
+}
 static void arc_bar(float cx, float cy, float r, float v, u8 on, u8 off) {
     for (float a = 62; a <= 118; a += 0.7f) {
         u8 c = a >= 118 - 56 * v ? on : off; float ra = a * PI_F / 180;
@@ -2440,14 +2463,14 @@ static void arc_bar(float cx, float cy, float r, float v, u8 on, u8 off) {
     }
 }
 static void draw_speedo(void) {
-    const float R = 42, cx = SW - 47.5f, cy = SH - 46.5f;
+    const float R = 34, cx = SW - 39.5f, cy = SH - 38.5f;
     disc(cx, cy, R + 3, C_ink_0); ring(cx, cy, R + 2, C_white_0, 2);
     disc(cx, cy, R, C_ink_0);
     for (int v = 0; v <= 200; v += 10) {
         float a = (135 + 270 * v / 200.0f) * PI_F / 180, ca = cosf(a), sa = sinf(a);
         int big = v % 20 == 0; float r2 = R - (big ? 6 : 3.5f);
         lineth(cx + ca * (R - 1.5f), cy + sa * (R - 1.5f), cx + ca * r2, cy + sa * r2, C_white_2, big ? 2 : 1, 0, 0, SW, SH);
-        if (v % 40 == 0) { char t[8]; snprintf(t, sizeof t, "%d", v); int w = tw8(t, 1); text8((int)(cx + ca * (R - 17) - w / 2.0f), (int)(cy + sa * (R - 17) - 6), 1, C_white_1, t); }
+        if (v % 40 == 0) { char t[8]; snprintf(t, sizeof t, "%d", v); int w = (int)strlen(t) * 4 - 1; digits35((int)(cx + ca * (R - 13) - w / 2.0f), (int)(cy + sa * (R - 13) - 2), C_white_1, t); }
     }
     arc_bar(cx, cy, R - 1, fuel / 100, fuel < 20 && (tick / 10) % 2 ? C_red_3 : C_yellow_3, C_ink_2);
     arc_bar(cx, cy, R - 4.5f, health / 100, health > 50 ? C_green_2 : C_red_3, C_ink_2);
@@ -2553,11 +2576,13 @@ static int text_wrap(int x, int y, int maxw, u8 col, const char *s, int maxl) {
 #define PW 150
 #define PH 236
 #define PX 6
-static void phone_bar(int sx, int sy, int sw) {                       /* рядок стану: годинник, рейтинг */
-    char b[16]; int m_ = tod_clock(); snprintf(b, sizeof b, "%02d:%02d", m_ / 60, m_ % 60);
+static void phone_bar(int sx, int sy, int sw) {                       /* рядок стану: годинник, гроші, рейтинг */
+    char b[24]; int m_ = tod_clock(); snprintf(b, sizeof b, "%02d:%02d", m_ / 60, m_ % 60);
     text8(sx + 3, sy + 1, 1, C_white_2, b);
     snprintf(b, sizeof b, "%.1f", rating); int w = tw8(b, 1);
     text8(sx + sw - 4 - w, sy + 1, 1, C_yellow_3, b); star5(sx + sw - 11 - w, sy + 6, 4, C_yellow_3);
+    snprintf(b, sizeof b, "%d ГРН", money); int wm = tw8(b, 1);
+    text8(sx + (sw - 18 - w) / 2 + 22 - wm / 2, sy + 1, 1, money < 0 ? C_red_3 : C_green_3, b);
 }
 static void note_card(int x, int y, int w, const Note *n) {
     int h = n->t[0] ? 40 : 30;
@@ -2574,10 +2599,8 @@ static void app_title(int sx, int y, int sw, const char *t) { rect(sx, y, sw, 15
 static void phone_full_draw(int sx, int sy, int sw, int sh) {
     char b[96], kb[24]; int y = sy;
     if (ph_app == APP_HOME) {
-        rect(sx, y, sw, 26, C_box_3); text8(sx + 5, y + 2, 1, C_ink_0, "ПРОСКУРІВ ЕКСПРЕС");
-        snprintf(b, sizeof b, "%d ГРН", money); text8(sx + 5, y + 13, 1, money < 0 ? C_red_1 : C_ink_1, b);
-        y += 30;
-        static const u8 IC[NAPP] = { 0, C_box_3, C_blue_3, C_green_2, C_yellow_3, C_white_0 };
+        y += 4;
+        static const u8 IC[NAPP] = { 0, C_box_3, C_blue_3, C_green_2, C_yellow_3, C_white_0, C_red_2 };
         for (int i = 1; i < NAPP; i++) {
             int yy = y + (i - 1) * 24, sel = ph_sel == i - 1;
             if (sel) rect(sx + 2, yy, sw - 4, 22, C_panel_1);
@@ -2585,7 +2608,7 @@ static void phone_full_draw(int sx, int sy, int sw, int sh) {
             if (i == APP_ORDERS && n_offers) { snprintf(b, sizeof b, "%d", n_offers); rect(sx + 6, yy + 4, 14, 14, C_red_2); text8(sx + 13 - tw8(b, 1) / 2, yy + 5, 1, C_white_2, b); }
             text8(sx + 26, yy + 5, 1, sel ? C_white_2 : C_white_1, APP_NAME[i]);
         }
-        text8(sx + 4, sy + sh - 13, 1, C_white_0, BT_TRI " ВИБІР  " BT_CIR " СХОВАТИ");
+        text8(sx + 4, sy + sh - 13, 1, C_white_0, BT_X " ВИБІР  " BT_CIR " СХОВАТИ");
         return;
     }
     app_title(sx, y, sw, APP_NAME[ph_app]); y += 18;
@@ -2625,7 +2648,7 @@ static void phone_full_draw(int sx, int sy, int sw, int sh) {
                 snprintf(b, sizeof b, "%s · %d ГРН", kb, o->pay); text8(sx + 6, yy + 23, 1, C_white_0, b);
                 rect(sx + 6, yy + 34, sw - 14, 2, C_ink_2); rect(sx + 6, yy + 34, (sw - 14) * o->ttl / (o->ttl0 > 0 ? o->ttl0 : 1), 2, o->ttl < 600 ? C_red_3 : C_box_2);
             }
-            text8(sx + 4, sy + sh - 13, 1, C_white_0, BT_TRI " ВЗЯТИ   " BT_CIR " НАЗАД");
+            text8(sx + 4, sy + sh - 13, 1, C_white_0, BT_X " ВЗЯТИ   " BT_CIR " НАЗАД");
         }
     } else if (ph_app == APP_NAV) {
         const char *opt[4] = { "ДО ЗАМОВЛЕННЯ", "ДО АЗС", "ДО СТО", "ВИМКНУТИ" };
@@ -2634,7 +2657,7 @@ static void phone_full_draw(int sx, int sy, int sw, int sh) {
             int on = (k < 3 && nav_on && nav_kind == k) || (k == 3 && !nav_on);
             text8(sx + 6, y, 1, on ? C_box_3 : (k == 0 && ostate == O_NONE ? C_ink_2 : C_white_2), opt[k]); y += 17;
         }
-        text_wrap(sx + 4, y + 8, sw - 8, C_white_0, "МАРШРУТ — ЛІНІЄЮ НА КАРТІ ТЕЛЕФОНА", 3);
+        text_wrap(sx + 4, y + 8, sw - 8, C_white_0, "ЗАТИСНИ " BT_CIR " — ВИМКНУТИ МАРШРУТ", 3);
     } else if (ph_app == APP_WALLET) {
         snprintf(b, sizeof b, "%d ГРН", money); text8(sx + 4, y, 2, money < 0 ? C_red_3 : C_green_3, b); y += 24;
         snprintf(b, sizeof b, "ЗАРОБЛЕНО: %d", earned_today); text8(sx + 4, y, 1, C_white_0, b); y += 16;
@@ -2668,11 +2691,26 @@ static void phone_full_draw(int sx, int sy, int sw, int sh) {
         y += 6; text8(sx + 4, y, 1, C_white_0, "SELECT — КАРТА"); y += 12; text8(sx + 4, y, 1, C_white_0, "START — ПАУЗА");
     }
 }
+/* що телефон показує, коли меню закрите: 2 — навігатор, 1 — поточне замовлення, 0 — нічого */
+static int ph_peek(void) {
+    if (nav_on && (ostate != O_NONE || nav_kind)) return 2;
+    if (ostate != O_NONE) return 1;
+    return 0;
+}
+static void target_arrow(float cx, float cy, float tx, float ty, u8 c) {   /* стрілка-«радар»: куди ціль (північ угорі, як камера) */
+    float a = atan2f(ty - py_, tx - px_), ux = cosf(a), uy = sinf(a), nx = -uy, ny = ux;
+    tri(cx + ux * 7, cy + uy * 7, cx - ux * 5 + nx * 5.5f, cy - uy * 5 + ny * 5.5f, cx - ux * 5 - nx * 5.5f, cy - uy * 5 - ny * 5.5f, C_ink_0);
+    tri(cx + ux * 5.5f, cy + uy * 5.5f, cx - ux * 3.5f + nx * 4, cy - uy * 3.5f + ny * 4, cx - ux * 3.5f - nx * 4, cy - uy * 3.5f - ny * 4, c);
+}
+#define NAV_MAP_H 104                                                  /* карта навігатора ≈ 4:3 */
 static void draw_phone(void) {
-    /* куди висунути: повністю > навігатор > сповіщення > сховано */
-    float want = SH + 8;
-    if (notes_n && note_t > 0) want = SH - 70;
-    if (nav_on && nroute >= 0 && (ostate != O_NONE || nav_kind)) want = SH - 168;
+    int peek = ph_hide ? 0 : ph_peek(), note = notes_n && note_t > 0;
+    /* висота, на яку визирає (від низу екрана): рамка 12 + рядок стану 14 + вміст */
+    int vis = 0;
+    if (peek == 2) vis = 12 + 14 + 26 + NAV_MAP_H;
+    else if (peek == 1) vis = 12 + 14 + 26 + (note ? 44 : 0);
+    else if (note) vis = 12 + 14 + 44;
+    float want = vis ? SH - vis : SH + 8;
     if (ph_full) want = SH - PH - 2;
     ph_y += (want - ph_y) * 0.28f; if (fabsf(want - ph_y) < 0.6f) ph_y = want;
     int y = (int)ph_y; if (y >= SH) return;
@@ -2685,24 +2723,26 @@ static void draw_phone(void) {
     phone_bar(sx, sy, sw);
     int cy = sy + 14, ch = sh - 14;
     if (ph_full) { phone_full_draw(sx, cy, sw, ch); return; }
-    int mapmode = nav_on && (ostate != O_NONE || nav_kind);
-    if (mapmode) {
-        int vis = SH - cy;                                            /* видима частина під рядком стану */
-        phone_map(sx, cy, sw, ch, sx + sw / 2, cy + 30 + (vis - 30) * 0.55f);
-        rect(sx, cy, sw, 28, C_panel_0); rect(sx, cy + 28, sw, 1, C_ink_2);
-        float tx, ty; nav_target(&tx, &ty); char b[64], kb[24];
+    char b[64], kb[24];
+    if (peek) {                                                       /* плашка поточної цілі зі стрілкою-радаром */
+        float tx, ty; int nk = peek == 2 ? nav_kind : 0;
+        int sv = nav_kind; nav_kind = nk; nav_target(&tx, &ty); nav_kind = sv;
         km_str(kb, sizeof kb, dist(px_, py_, tx, ty) * MPP);
-        if (nav_kind == 0) {
-            text_clip(sx + 3, cy + 1, sw - 6, C_white_2, ostate == O_DROP ? ADDRS[addr_i].name : SHOPS[shop_i].name);
-            if (ostate == O_DROP) { int s_ = otimer / 60; snprintf(b, sizeof b, "%s  %d:%02d  %d ГРН", kb, s_ / 60, s_ % 60, pay); }
-            else snprintf(b, sizeof b, "ЗАБРАТИ · %s", kb);
-            text8(sx + 3, cy + 14, 1, ostate == O_DROP && otimer < 15 * 60 && (tick / 8) % 2 ? C_red_3 : C_box_3, b);
+        target_arrow(sx + 9, cy + 12, tx, ty, nk ? C_green_3 : (ostate == O_DROP ? C_yellow_3 : C_green_3));
+        if (nk == 0) {
+            snprintf(b, sizeof b, "%s %s", ostate == O_DROP ? "ВЕЗТИ:" : "ЗАБРАТИ:", ostate == O_DROP ? ADDRS[addr_i].name : SHOPS[shop_i].name);
+            text_clip(sx + 20, cy + 1, sw - 23, C_white_2, b);
+            if (ostate == O_DROP) { int s_ = otimer / 60; snprintf(b, sizeof b, "%s   %d:%02d", kb, s_ / 60, s_ % 60); }
+            else snprintf(b, sizeof b, "%s   %d ГРН", kb, pay);
+            text8(sx + 20, cy + 13, 1, ostate == O_DROP && otimer < 15 * 60 && (tick / 8) % 2 ? C_red_3 : C_box_3, b);
         } else {
-            text8(sx + 3, cy + 1, 1, C_white_2, nav_kind == 1 ? "НАЙБЛИЖЧА АЗС" : "НАЙБЛИЖЧЕ СТО");
-            text8(sx + 3, cy + 14, 1, C_box_3, kb);
+            text8(sx + 20, cy + 1, 1, C_white_2, nav_kind == 1 ? "НАЙБЛИЖЧА АЗС" : "НАЙБЛИЖЧЕ СТО");
+            text8(sx + 20, cy + 13, 1, C_box_3, kb);
         }
+        rect(sx, cy + 25, sw, 1, C_ink_2);
+        if (peek == 2) phone_map(sx, cy + 26, sw, NAV_MAP_H, sx + sw / 2, cy + 26 + NAV_MAP_H * 0.55f);
     }
-    if (notes_n && note_t > 0) note_card(sx + 3, cy + (mapmode ? 31 : 2), sw - 6, &notes_q[0]);
+    if (note) note_card(sx + 3, cy + (peek ? 28 : 2), sw - 6, &notes_q[0]);
 }
 
 static void draw_hud(void) {
@@ -2721,7 +2761,7 @@ static void draw_hud(void) {
         otext8_c(SW / 2, y - 15, 1, C_white_2, C_ink_0, prog);
         rect(x - 2, y - 2, ww + 4, 10, C_ink_0); rect(x, y, ww * t / 70, 6, C_yellow_3);
     }
-    if (fuel <= 0 && fabsf(vel) < 0.05f && !evac) otext8_c(SW / 2, 172, 1, C_red_3, C_ink_0, "ПАЛЬНЕ СКІНЧИЛОСЯ.  " BT_CIR " ЕВАКУАТОР ДО АЗС (300 ГРН)");
+    if (fuel <= 0 && fabsf(vel) < 0.05f && !evac) otext8_c(SW / 2, 172, 1, C_red_3, C_ink_0, "ПАЛЬНЕ СКІНЧИЛОСЯ.  " BT_X " ЕВАКУАТОР ДО АЗС (300 ГРН)");
     draw_speedo();
     draw_phone();
 }
@@ -3052,7 +3092,7 @@ static void draw_frame(void) {
         if (street_i >= 0) otext8_c(244, 10, 1, C_white_2, C_ink_0, STREETS[street_i]);
         panel(0, SH - 18, SW, 18);   /* огляд: без приладів */
         text8(6, SH - 13, 1, C_yellow_3, "ОГЛЯД МІСТА");
-        text8(100, SH - 13, 1, C_white_1, "СТІК: РУХ  " BT_X " ШВИДКО  " BT_SQ " МАШИНУ СЮДИ  L: ДО МАШИНИ");
+        text8(100, SH - 13, 1, C_white_1, "СТІК: РУХ  " BT_X " ШВИДКО  " BT_SQ " МАШИНУ СЮДИ  " BT_CIR " ДО МАШИНИ");
         return;
     }
     if (ostate == O_PICK || ostate == O_LOAD) draw_target(SHOPS[shop_i].x, SHOPS[shop_i].y, assets_bin + ICON_SHOP, C_green_2, C_green_0);
@@ -3118,7 +3158,7 @@ static void sound_update(unsigned btn) {
     { static float sk; float tg = play ? snd_skid : 0;                    /* плавна огинаюча: прапорець заносу мерехтить між кадрами */
       sk += (tg - sk) * (tg > sk ? 0.25f : 0.07f);
       audio_loop(V_SKID, SND_SKID, sk * 0.45f, 0.78f + 0.1f * sk, 0); }   /* нижче (07.11.2026) */
-    audio_loop(V_HORN, SND_HORN, play && (btn & PSP_CTRL_UP) ? 0.6f : 0, 1, 0);
+    audio_loop(V_HORN, SND_HORN, play && (btn & BTN_HORN) ? 0.6f : 0, 1, 0);
     audio_loop(V_RAIN, SND_RAIN, (quiet || state == S_TITLE) ? 0 : 0.45f * wx_rain, 1, 0);
     audio_loop(V_CITY, SND_CITY, quiet ? 0 : state == S_TITLE ? 0.12f : 0.12f * (1 - 0.7f * night_k), 1, 0);   /* удень гучніше, вночі тихо */
     float best = 1e9f; int bi = -1;
@@ -3186,7 +3226,8 @@ static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
     if (pressed & PSP_CTRL_SELECT) { state = S_BIGMAP; return; }
     update_particles();
     if (evac) { update_evac(); update_camera(0); update_street(); prefetch((int)camx, (int)camy, 0, 0); return; }
-    if (pressed & PSP_CTRL_LTRIGGER) {
+    if ((freecam && (pressed & (PSP_CTRL_LTRIGGER | BTN_BACK))) || want_freecam) {
+        want_freecam = 0;
         freecam = !freecam;
         if (freecam) { fcx = camx + VW / 2; fcy = camy + VH / 2; stop_car(); }
         else update_camera(1);
@@ -3202,10 +3243,11 @@ static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
     }
     else {
         int was_full = ph_full;
-        phone_input(pressed);
-        update_player(ph_full ? (btn & ~(PSP_CTRL_UP | PSP_CTRL_DOWN)) : btn, lx); update_camera(0); traffic_update(); trains_update();
+        update_fuel(ph_full ? 0 : pressed);                         /* ✕ при порожньому баку — евакуатор (раніше за телефон) */
+        if (!evac) phone_input(pressed, btn);
+        update_player(btn, lx); update_camera(0); traffic_update(); trains_update();
         update_orders(pressed); update_repair();
-        update_fuel(was_full || ph_full ? 0 : pressed);
+        (void)was_full;
         nav_update();
     }
     update_street();
@@ -3533,18 +3575,18 @@ int main(int argc, char **argv) {
         unsigned btn = 0; int lx = 128;
         if (ostate == O_NONE && n_offers) {
             static int shot_off; if (!shot_off++) { draw_frame(); snprintf(nm, sizeof nm, "%s/f_offers.ppm", dir); dump(nm); }
-            game_update(0, PSP_CTRL_TRIANGLE, 128, 128);                 /* △ — дістати телефон */
+            game_update(0, BTN_OK, 128, 128);                 /* △ — дістати телефон */
             if (shot_off == 1) { draw_frame(); snprintf(nm, sizeof nm, "%s/f_note.ppm", dir); dump(nm); }
             if (ph_app != APP_ORDERS) { ph_app = APP_ORDERS; ph_sel = 0; }
-            game_update(0, PSP_CTRL_TRIANGLE, 128, 128);                 /* △ — взяти */
-            if (ostate != O_NONE) game_update(0, PSP_CTRL_CIRCLE, 128, 128);
+            game_update(0, BTN_OK, 128, 128);                 /* △ — взяти */
+            if (ostate != O_NONE) game_update(0, BTN_BACK, 128, 128);
             ph_full = 0; fuel = 100; }
         if (ostate != O_NONE) {
             float want = atan2f(ty - py_, tx - px_), d = want - ang;
             while (d > PI_F) d -= 2 * PI_F; while (d < -PI_F) d += 2 * PI_F;
             lx = 128 + (int)(fmaxf(-1, fminf(1, d * 2)) * 127);
             float dd = dist(px_, py_, tx, ty);
-            if (dd > OP(60)) btn |= PSP_CTRL_CROSS; else if (vel > OP(0.2f)) btn |= PSP_CTRL_SQUARE;
+            if (dd > OP(60)) btn |= BTN_GAS; else if (vel > OP(0.2f)) btn |= BTN_BRAKE;
         }
         if (f % 120 == 0) { if (dist(px_, py_, lastx, lasty) < OP(6) && ostate != O_NONE) stuck++; lastx = px_; lasty = py_; }
         if (stuck > 1 && ostate != O_NONE) {     /* teleport the bot along when it gets stuck in the street maze */
@@ -3555,7 +3597,7 @@ int main(int argc, char **argv) {
             stop_car(); stuck = 0;
         }
         if (f == 400 && ostate != O_NONE) {
-            game_update(0, PSP_CTRL_TRIANGLE, 128, 128); ph_app = APP_ORDERS; ph_sel = 0; for (int i = 0; i < 20; i++) draw_frame(); snprintf(nm, sizeof nm, "%s/f_note_task.ppm", dir); dump(nm);
+            game_update(0, BTN_OK, 128, 128); ph_full = 1; ph_app = APP_ORDERS; ph_sel = 0; for (int i = 0; i < 20; i++) draw_frame(); snprintf(nm, sizeof nm, "%s/f_note_task.ppm", dir); dump(nm);
             ph_full = 0;
         }
         game_update(btn, 0, lx, 128);
@@ -3569,13 +3611,13 @@ int main(int argc, char **argv) {
         if (ostate == O_NONE) { make_offer(0); offers_count(); accept_offer(0); }
         for (int k = 1; k < 4; k++) { make_offer(k); } offers_count();
         wallet(346, "АГЗС Avantage7"); wallet(-120, "ЗАПРАВКА");
-        static const char *nm_[] = { "home", "orders", "nav", "wallet", "rating", "set" };
-        for (int a = 0; a < NAPP; a++) {
+        static const char *nm_[] = { "home", "orders", "nav", "wallet", "rating", "set", "look" };
+        for (int a = 0; a < APP_LOOK; a++) {
             ph_full = 1; ph_app = a; ph_sel = 0;
             for (int i = 0; i < 25; i++) draw_frame();
             snprintf(nm, sizeof nm, "%s/f_ph_%s.ppm", dir, nm_[a]); dump(nm);
         }
-        ph_full = 0; nav_on = 1; nav_kind = 0; route_age = 9999; nav_update();
+        ph_full = 0; ph_hide = 0; notes_n = 0; nav_on = 1; nav_kind = 0; route_age = 9999; nav_update();
         for (int i = 0; i < 25; i++) draw_frame();
         snprintf(nm, sizeof nm, "%s/f_ph_navmap.ppm", dir); dump(nm);
         printf("phone: route edges %d\n", nroute);
@@ -3583,8 +3625,10 @@ int main(int argc, char **argv) {
         snprintf(nm, sizeof nm, "%s/f_ph_navnote.ppm", dir); dump(nm);
         nav_on = 0; note_t = 1; notes_tick(); notes_n = 0; offer_notify(2); for (int i = 0; i < 25; i++) draw_frame();
         snprintf(nm, sizeof nm, "%s/f_ph_note.ppm", dir); dump(nm);
-        notes_n = 0; for (int i = 0; i < 25; i++) draw_frame();
-        snprintf(nm, sizeof nm, "%s/f_ph_clean.ppm", dir); dump(nm);
+        notes_n = 0; ph_hide = 0; for (int i = 0; i < 25; i++) draw_frame();
+        snprintf(nm, sizeof nm, "%s/f_ph_orderpeek.ppm", dir); dump(nm);
+        ph_hide = 1; for (int i = 0; i < 25; i++) draw_frame();
+        snprintf(nm, sizeof nm, "%s/f_ph_clean.ppm", dir); dump(nm); ph_hide = 0;
     }
     /* стрес-тест зіткнень: «п'яний» водій 72 000 кадрів (20 хв гри), газ і випадкове кермо */
     {
@@ -3593,7 +3637,7 @@ int main(int argc, char **argv) {
             static int st = 128, rev = 0; if (f % 40 == 0) st = rand() % 256;
             if (still >= 1 && rev == 0) rev = 70;                       /* як гравець: уперся — здай назад */
             fuel = 100;
-            game_update(rev > 0 ? PSP_CTRL_SQUARE : PSP_CTRL_CROSS, 0, rev > 0 ? 255 - st : st, 128); if (rev > 0) rev--;
+            game_update(rev > 0 ? BTN_BRAKE : BTN_GAS, 0, rev > 0 ? 255 - st : st, 128); if (rev > 0) rev--;
             if (hit(px_, py_, ang)) inwall++;
             if (f % 60 == 0) { if (dist(px_, py_, lx0, ly0) < OP(3)) { if (++still == 3) { stuck_ep++; { float nd_ = 1e9f; for (int t = 0; t < NTRAF; t++) if (traf[t].on) nd_ = fminf(nd_, dist(traf[t].x, traf[t].y, px_, py_)); printf("  stuck at %d %d ang %.2f, nearest traffic %.0f m\n", (int)px_, (int)py_, ang, nd_ * MPP); } } } else still = 0; lx0 = px_; ly0 = py_; }
         }
@@ -3611,7 +3655,7 @@ int main(int argc, char **argv) {
         px_ = L[0] + ux * OP(10) - uy * L[4]; py_ = L[1] + uy * OP(10) + ux * L[4]; ang = atan2f(uy, ux); stop_car(); unstick(); update_camera(1);
         int kmin = 999, kmax = 0, t100 = -1, t140 = -1, sl0 = sync_loads;
         for (int f = 0; f < 2400 && dist(px_, py_, L[0], L[1]) < bl - OP(60); f++) {
-            game_update(PSP_CTRL_CROSS, 0, 128, 128);
+            game_update(BTN_GAS, 0, 128, 128);
             if (getenv("ANIM2") && f >= 120 && f < 300 && f % 2 == 0) { draw_frame(); snprintf(nm, sizeof nm, "%s/anim2_%03d.ppm", dir, (f - 120) / 2); dump(nm); }
             int k = (int)(fabsf(vel) * MPP * 60 * 3.6f + 0.5f);
             if (k >= 100 && t100 < 0) t100 = f;
@@ -3621,13 +3665,13 @@ int main(int argc, char **argv) {
         printf("speed run: frames that waited for memory stick = %d\n", sync_loads - sl0);
         printf("speed: segment %.0f m, 100 km/h after %.1f s, 80 after %.1f s, shown after that %d..%d\n", bl * MPP, t100 / 60.0f, t140 / 60.0f, kmin, kmax);
         /* занос на ручнику */
-        for (int f = 0; f < 24; f++) { game_update(PSP_CTRL_CROSS | PSP_CTRL_RTRIGGER, 0, 255, 128); draw_frame(); }
+        for (int f = 0; f < 24; f++) { game_update(BTN_GAS | BTN_HAND, 0, 255, 128); draw_frame(); }
         snprintf(nm, sizeof nm, "%s/f_drift.ppm", dir); dump(nm);
         printf("drift: slip %d, skids %d\n", drifting, skid_n);
         /* помічник смуги: відхилити на 0,35 рад, керма немає */
         lane_assist = 1; px_ = L[0] + ux * OP(30) - uy * L[4]; py_ = L[1] + uy * OP(30) + ux * L[4]; ang = atan2f(uy, ux) + 0.35f; stop_car(); vx_ = cosf(ang) * OP(0.5f); vy_ = sinf(ang) * OP(0.5f);
         float e0 = 0.35f;
-        for (int f = 0; f < 150; f++) game_update(PSP_CTRL_CROSS, 0, 128, 128);
+        for (int f = 0; f < 150; f++) game_update(BTN_GAS, 0, 128, 128);
         float e1 = ang - atan2f(uy, ux); while (e1 > PI_F) e1 -= 2 * PI_F; while (e1 < -PI_F) e1 += 2 * PI_F;
         float lat = (px_ - L[0]) * (-uy) + (py_ - L[1]) * ux;
         printf("lane assist: heading error %.2f -> %.2f rad, lateral %.1f px (lane centre %d), health %.0f\n", e0, e1, lat, L[4], health);
@@ -3640,7 +3684,7 @@ int main(int argc, char **argv) {
                 px_ = x - (int)OP(40); py_ = y; ang = 0; stop_car(); unstick(); found = 1;
             }
         int m0 = money, drowned = 0;
-        for (int f = 0; f < 300; f++) { game_update(evac ? 0 : PSP_CTRL_CROSS, 0, 128, 128); if (evac == EV_DROWN) { drowned = 1; if (evac_t == 60) { draw_frame(); snprintf(nm, sizeof nm, "%s/f_drown.ppm", dir); dump(nm); } } }
+        for (int f = 0; f < 300; f++) { game_update(evac ? 0 : BTN_GAS, 0, 128, 128); if (evac == EV_DROWN) { drowned = 1; if (evac_t == 60) { draw_frame(); snprintf(nm, sizeof nm, "%s/f_drown.ppm", dir); dump(nm); } } }
         printf("water: found %d, drowned %d, money %d -> %d\n", found, drowned, m0, money);
         int a = 0; for (int k = -3; k <= 3; k++) a += is_solid((int)OP(8234) + k * 2, (int)OP(7762));
         printf("arch on Podilska solid samples: %d/7\n", a);
@@ -3712,7 +3756,7 @@ int main(int argc, char **argv) {
             float travelled = 0, lx0 = px_, ly0 = py_;
             for (int f = 0; f < 1800; f++) {
                 float h0 = health;
-                game_update(vel < OP(0.5f) ? PSP_CTRL_CROSS : 0, 0, 128, 128);          /* як водій: ~55 км/год */
+                game_update(vel < OP(0.5f) ? BTN_GAS : 0, 0, 128, 128);          /* як водій: ~55 км/год */
                 if (health < h0) { int nt = 0; for (int t = 0; t < NTRAF; t++) if (traf[t].on && dist(traf[t].x, traf[t].y, px_, py_) < CP(16)) nt = 1;
                     printf("    hit at %d %d (%s), edge cls %d\n", (int)px_, (int)py_, nt ? "traffic" : "wall/tree", la_e >= 0 ? RG_EDGE[la_e].cls : -1); }
                 travelled += dist(px_, py_, lx0, ly0); lx0 = px_; ly0 = py_;
@@ -3738,7 +3782,7 @@ int main(int argc, char **argv) {
             ang = atan2f(ay, ax); stop_car(); br_on = -1; update_camera(1);
             int seen_on = -1, seen_up = -1, fr = 0; float h0 = health;
             for (fr = 0; fr < 900; fr++) {
-                game_update(PSP_CTRL_CROSS, 0, 128, 128);
+                game_update(BTN_GAS, 0, 128, 128);
                 if (br_on >= 0 && seen_on < 0) { seen_on = br_on; seen_up = br_up; }
                 if (br_on >= 0 && fr % 6 == 0 && pass == 1) { draw_frame(); snprintf(nm, sizeof nm, "%s/f_bridge_under.ppm", dir); dump(nm); }
                 if (br_on >= 0 && fr % 6 == 0 && pass == 0) { draw_frame(); snprintf(nm, sizeof nm, "%s/f_bridge_over.ppm", dir); dump(nm); }
@@ -3762,18 +3806,18 @@ int main(int argc, char **argv) {
     game_update(0, PSP_CTRL_SELECT, 128, 128); draw_frame();
     snprintf(nm, sizeof nm, "%s/f_bigmap.ppm", dir); dump(nm);
     game_update(0, PSP_CTRL_SELECT, 128, 128);
-    game_update(0, PSP_CTRL_LTRIGGER, 128, 128);
+    want_freecam = 1; game_update(0, 0, 128, 128);
     int maxl = 0;
     for (int f = 0; f < 400; f++) { game_update(PSP_CTRL_CROSS, 0, 255, 60); draw_frame(); if (loads_frame > maxl) maxl = loads_frame; }
     snprintf(nm, sizeof nm, "%s/f_freecam.ppm", dir); dump(nm);
     printf("max chunk loads per frame in fast free camera: %d\n", maxl);
 prof_only:
     {   /* профіль: 600 кадрів їзди містом (час процесора ПК; PSP приблизно в 20-30 разів повільніша) */
-        game_update(0, PSP_CTRL_LTRIGGER, 128, 128);
+        freecam = 0;
         evac = 0; health = 100; fuel = 100; state = S_PLAY; game_init();
         memset(prof, 0, sizeof prof); double tu = 0, td = 0;
         for (int f = 0; f < 600; f++) {
-            double a = now_s(); game_update(PSP_CTRL_CROSS, 0, 128 + (int)(sinf(f * 0.02f) * 60), 128);
+            double a = now_s(); game_update(BTN_GAS, 0, 128 + (int)(sinf(f * 0.02f) * 60), 128);
             double b = now_s(); draw_frame(); double c = now_s(); tu += b - a; td += c - b;
             { static FILE *af; static int16_t ab[735 * 2]; static long peak, clip, nz;
               if (!af) af = fopen("build/test_audio.raw", "wb");
@@ -3786,7 +3830,7 @@ prof_only:
                tu / 600 * 1e6, td / 600 * 1e6, prof[0] / 600 * 1e6, prof[1] / 600 * 1e6, prof[2] / 600 * 1e6, prof[3] / 600 * 1e6, prof[4] / 600 * 1e6);
     }
     if (getenv("PROFONLY")) return 0;
-    game_update(0, PSP_CTRL_LTRIGGER, 128, 128);
+    freecam = 0;
     game_update(0, PSP_CTRL_START, 128, 128); draw_frame();
     snprintf(nm, sizeof nm, "%s/f_pause.ppm", dir); dump(nm);
     /* трафік під мостом: машина наполовину під прольотом — видно лише частину, що виїхала */
