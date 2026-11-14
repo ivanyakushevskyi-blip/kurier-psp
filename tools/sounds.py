@@ -172,7 +172,8 @@ def sounds():
     return {'engine': (engine(), 1), 'intake': (intake(), 1), 'skid': (skid(), 1), 'crash': (crash(), 0), 'bump': (bump(), 0),
             'horn': (horn(), 1), 'tick': (tick(), 0), 'pick': (chime([660, 880]), 0), 'deliver': (chime([523, 659, 784, 1047]), 0),
             'fail': (chime([392, 311], 0.16, 0.4), 0), 'rain': (rain(), 1), 'city': (city(), 1),
-            'train': (train(), 1), 'thorn': (thorn(), 0), 'xbell': (xbell(), 1), 'thunder': (thunder(), 0)}       # цвіркуни прибрано (01.11.2026)
+            'train': (train(), 1), 'thorn': (thorn(), 0), 'xbell': (xbell(), 1), 'thunder': (thunder(), 0),
+            'ping': (chime([1319, 1760], 0.07, 0.22), 0)}       # 13.11.2026: сповіщення смартфона       # цвіркуни прибрано (01.11.2026)
 
 
 if __name__ == '__main__':
