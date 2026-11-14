@@ -212,12 +212,13 @@ for e in LM:
 open(os.path.join(OUT, 'assets.bin'), 'wb').write(blob)
 
 # ---- шрифт: Rubik (OFL), пропорційний, 1 біт; розміри для sc = 1..5 (висота великих літер ≈ 8*sc)
-cps = list(range(32, 127)) + [0xB7] + list(range(0x400, 0x460)) + [0x490, 0x491, 0x2014, 0x2019, 0x2116]
-FONT_PX = {1: 11, 2: 20, 3: 29, 4: 38, 5: 47}
+cps = sorted(list(range(32, 127)) + [0xA0, 0xB7] + list(range(0x400, 0x460)) + [0x490, 0x491, 0x2014, 0x2019, 0x2116, 0x20B4])
+FONT_PX = {0: 10, 1: 11, 2: 20, 3: 29, 4: 38, 5: 47}          # 0 — дрібний (смартфон, 14.11.2026)
 FD = os.path.join(HERE, 'fonts')
 font_bits = bytearray(); font_tabs = {}
 for sc, px in FONT_PX.items():
-    wgt = '500' if sc == 1 else '700'
+    wgt = '500' if sc <= 1 else '700'
+    fh = ImageFont.truetype(os.path.join(FD, 'DejaVuSans%s.ttf' % ('' if sc <= 1 else '-Bold')), px)   # ₴ — у Rubik немає
     fl = ImageFont.truetype(os.path.join(FD, 'rubik-latin-%s.ttf' % wgt), px)
     fc = ImageFont.truetype(os.path.join(FD, 'rubik-cyrillic-%s.ttf' % wgt), px)
     from fontTools.ttLib import TTFont
@@ -229,7 +230,7 @@ for sc, px in FONT_PX.items():
     ch_h = bottom - top + 1
     rows = []
     for c in cps:
-        f = fl if c in cml else (fc if c in cmc else None)
+        f = fh if c == 0x20B4 else (fl if c in cml else (fc if c in cmc else None))
         if f is None: continue
         pad = px
         im = Image.new('L', (px * 3, ch_h), 0); dd = ImageDraw.Draw(im); dd.fontmode = '1'
@@ -406,7 +407,7 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     for sc_, (hh, rows, _) in font_tabs.items():
         f.write('static const Glyph FG%d[] = {%s};\n' % (sc_, ','.join('{%d,%d,%d,%d,%d}' % r for r in rows)))
     f.write('typedef struct { const Glyph *g; int n, h, asc; } FontTab;\n')
-    f.write('static const FontTab FONTS[6] = {{0,0,0,0},%s};\n' % ','.join('{FG%d,%d,%d,%d}' % (k, len(font_tabs[k][1]), font_tabs[k][0], font_tabs[k][2]) for k in range(1, 6)))
+    f.write('static const FontTab FONTS[6] = {%s};\n' % ','.join('{FG%d,%d,%d,%d}' % (k, len(font_tabs[k][1]), font_tabs[k][0], font_tabs[k][2]) for k in range(0, 6)))
     f.write('static const uint32_t PALETTE[256] = {%s};\n' % ','.join('0x%08X' % v for v in pal32))
     f.write('static const uint8_t DARK[256] = {%s};\n' % ','.join(map(str, dark_lut())))
     # surface classes for driving: 1 = off-road (grass, dirt)
