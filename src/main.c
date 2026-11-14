@@ -2878,7 +2878,8 @@ static void weather_draw(void) {
     }
     if (wx_flash > 0.05f) gfx_rect(0, 0, SW, SH, 0x00FFF4F0 | ((uint32_t)(fminf(1, wx_flash) * 0.45f * 255) << 24));   /* блискавка */
 }
-static uint32_t __attribute__((aligned(16))) wat_tex[64 * 64], glint_tex[64 * 64];
+#define GL_T 128
+static uint32_t __attribute__((aligned(16))) wat_tex[64 * 64], glint_tex[GL_T * GL_T];
 static void water_tex_init(void) {
     for (int y = 0; y < 64; y++) for (int x = 0; x < 64; x++) {          /* туман: прозорий центр -> густий край */
         float dx = (x + 0.5f - 32) / 32, dy = (y + 0.5f - 32) / 32, r = sqrtf(dx * dx + dy * dy), t = (r - 0.12f) / 0.55f;
@@ -2889,11 +2890,21 @@ static void water_tex_init(void) {
         float u = x * 2 * PI_F / 64, v = y * 2 * PI_F / 64;
         float w = (sinf(u * 2 + v * 1) + sinf(u * 1 - v * 3 + 1.3f) * 0.8f + sinf(u * 5 + v * 2 + 2.1f) * 0.35f) / 2.15f;
         uint32_t a = w > 0 ? (uint32_t)(powf(w, 2.2f) * 110) : (uint32_t)(-w * 46);
-        glint_tex[y * 64 + x] = 0;
         wat_tex[y * 64 + x] = (a << 24) | (w > 0 ? 0xF4F0E8u : 0x402818u);
     }
-    for (int k = 0; k < 18; k++) { int x = (k * 37 + 11) % 64, y = (k * 23 + 5) % 64;   /* рідкі іскри сонця */
-        glint_tex[y * 64 + x] = 0xFFFFFFFFu; glint_tex[y * 64 + (x + 1) % 64] = 0x90FFFFFFu; glint_tex[((y + 1) % 64) * 64 + x] = 0x90FFFFFFu; }
+    /* іскри сонця (14.11.2026): випадкові місця й розміри на більшій плитці — без сітки */
+    memset(glint_tex, 0, sizeof glint_tex);
+    uint32_t sd = 0x9E3779B9u;
+    for (int k = 0; k < 46; k++) {
+        sd = sd * 1664525u + 1013904223u; int x = (sd >> 8) % GL_T;
+        sd = sd * 1664525u + 1013904223u; int y = (sd >> 8) % GL_T;
+        sd = sd * 1664525u + 1013904223u; int sz = (sd >> 12) % 7, al = 150 + (sd >> 20) % 106;
+        glint_tex[y * GL_T + x] = ((uint32_t)al << 24) | 0xFFFFFF;
+        if (sz >= 3) { uint32_t c2 = ((uint32_t)(al * 5 / 9) << 24) | 0xFFFFFF;           /* більші — хрестиком */
+            glint_tex[y * GL_T + (x + 1) % GL_T] = c2; glint_tex[y * GL_T + (x + GL_T - 1) % GL_T] = c2;
+            if (sz >= 5) { glint_tex[((y + 1) % GL_T) * GL_T + x] = c2; glint_tex[((y + GL_T - 1) % GL_T) * GL_T + x] = c2; } }
+        else if (sz == 2) glint_tex[y * GL_T + (x + 1) % GL_T] = ((uint32_t)(al / 2) << 24) | 0xFFFFFF;   /* відблиск-риска */
+    }
 }
 #define WR_MAX 1400
 static float wr_buf[WR_MAX * 8];
@@ -2902,10 +2913,12 @@ static void water_draw(void) {
     int cx0 = (int)viewx / CS - 1, cx1 = (int)(viewx + VW) / CS + 1, cy0 = (int)viewy / CS - 1, cy1 = (int)(viewy + VH) / CS + 1;
     if (cx0 < 0) cx0 = 0; if (cy0 < 0) cy0 = 0; if (cx1 >= NCX) cx1 = NCX - 1; if (cy1 >= NCY) cy1 = NCY - 1;
     float sun = (1 - night_k) * (1 - 0.8f * wx_cloud);
-    for (int layer = 0; layer < 3; layer++) {
+    for (int layer = 0; layer < 4; layer++) {
         int n = 0;
         float su = layer == 0 ? 0.55f : 0.9f, ou = layer == 0 ? wt * 0.11f : -wt * 0.07f, ov = layer == 0 ? wt * 0.05f : wt * 0.09f;
-        if (layer == 2) { su = 0.7f; ou = wt * 0.13f; ov = -wt * 0.04f; if (sun < 0.05f) break; }
+        if (layer >= 2 && sun < 0.05f) break;
+        if (layer == 2) { su = 1.0f; ou = wt * 0.13f + 17; ov = -wt * 0.04f + 41; }       /* два шари іскор з несумірним масштабом */
+        if (layer == 3) { su = 0.7071f; ou = -wt * 0.09f + 63; ov = wt * 0.06f + 5; }
         for (int cy = cy0; cy <= cy1; cy++) for (int cx = cx0; cx <= cx1; cx++) {
             int sl = slot_of[cy * NCX + cx]; if (sl < 0) continue;
             for (int i = 0; i < wsp_n[sl] && n < WR_MAX; i++) {
@@ -2916,7 +2929,10 @@ static void water_draw(void) {
             }
         }
         if (layer < 2) gfx_tiles(wat_tex, 64, 64, wr_buf, n, layer == 0 ? 0xFFFFFFFF : 0xA0FFFFFF);
-        else gfx_tiles(glint_tex, 64, 64, wr_buf, n, ((uint32_t)(sun * (0.5f + 0.5f * sinf(wt * 0.2f)) * 255) << 24) | 0xFFFFFF);
+        else {
+            float tw_ = layer == 2 ? 0.5f + 0.5f * sinf(wt * 0.17f) : 0.5f + 0.5f * sinf(wt * 0.11f + 2.3f);   /* мерехтять не разом */
+            gfx_tiles(glint_tex, GL_T, GL_T, wr_buf, n, ((uint32_t)(sun * 0.85f * tw_ * 255) << 24) | 0xFFFFFF);
+        }
     }
     int n = 0;                                                          /* піна біля берега: одним пакетом */
     for (int cy = cy0; cy <= cy1; cy++) for (int cx = cx0; cx <= cx1; cx++) {

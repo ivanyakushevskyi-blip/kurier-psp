@@ -630,40 +630,94 @@ def flowerbeds(c):
             cv2.circle(img, (int(x), int(y)), max(1, S // 4), FL[(x * 7 + y * 3) % len(FL)], -1)
 
 
+def _pg_item(img, c, kind, x, y, ux, uy):
+    """обладнання дитмайданчика СТРОГО ЗГОРИ, у власній системі осей (u — вздовж майданчика)"""
+    m = c.m; nx, ny = -uy, ux
+    def R(ox, oy, L, Wd, col, a=0):
+        cu, cv_ = (ux, uy) if not a else (nx, ny)
+        _rect(img, x + ux * ox + nx * oy, y + uy * ox + ny * oy, L, Wd, cu, cv_, col)
+    def sh(ox, oy, L, Wd, a=0): R(ox + 0.25 * m(1), oy + 0.3 * m(1), L, Wd, (100, 70, 56), a)      # тінь
+    if kind == 'slide':                                   # майданчик-вежа з дахом + жолоб, що виходить з нього
+        sh(0, 0, m(1.8), m(1.8)); sh(m(2.4), 0, m(3.2), m(0.9))
+        R(m(2.4), 0, m(3.2), m(0.9), (210, 56, 48)); R(m(2.5), 0, m(3.0), m(0.35), (236, 120, 100))
+        R(0, 0, m(1.8), m(1.8), (236, 196, 58)); R(0, 0, m(1.2), m(1.2), (214, 168, 40))
+    elif kind == 'swing':                                 # перекладина, на кінцях А-подібні опори, сидіння під перекладиною, витоптане місце
+        cv2.ellipse(img, (int(x), int(y)), (int(m(1.9)), int(m(1.6))), math.degrees(math.atan2(uy, ux)), 0, 360, (206, 170, 120), -1)
+        R(0, 0, m(4.0), m(0.3), (52, 82, 150))
+        for ex in (-2.0, 2.0): R(m(ex), 0, m(0.3), m(1.8), (52, 82, 150))
+        for sx in (-0.9, 0.9): R(m(sx), 0, m(0.7), m(0.45), (70, 46, 32))
+    elif kind == 'sand':
+        R(0, 0, m(3.0), m(3.0), (140, 96, 60)); R(0, 0, m(2.5), m(2.5), (228, 210, 160))
+    elif kind == 'climb':                                 # лазанка: рамка з ґраткою (вид згори)
+        sh(0, 0, m(2.6), m(2.6))
+        for o in (-1.2, -0.4, 0.4, 1.2):
+            R(m(o), 0, m(0.18), m(2.6), (60, 140, 90)); R(0, m(o), m(2.6), m(0.18), (60, 140, 90))
+    elif kind == 'carousel':
+        r = int(m(1.4)); cv2.circle(img, (int(x + m(0.25)), int(y + m(0.3))), r, (100, 70, 56), -1)
+        cv2.circle(img, (int(x), int(y)), r, (230, 200, 60), -1); cv2.circle(img, (int(x), int(y)), r, (190, 60, 50), max(1, int(m(0.2))))
+        for k in range(4):
+            a_ = math.atan2(uy, ux) + k * math.pi / 2
+            cv2.line(img, (int(x), int(y)), (int(x + r * math.cos(a_)), int(y + r * math.sin(a_))), (190, 60, 50), max(1, int(m(0.18))))
+    elif kind == 'bench':                                 # лавка згори: сидіння з дощок + тінь
+        sh(0, 0, m(1.8), m(0.6)); R(0, 0, m(1.8), m(0.6), (140, 96, 60)); R(0, -m(0.2), m(1.8), m(0.12), (110, 74, 46))
+
+
+PG_SIZE = {'slide': (5.2, 2.2), 'swing': (4.4, 3.4), 'sand': (3.2, 3.2), 'climb': (2.9, 2.9), 'carousel': (3.0, 3.0)}
+
+
+def _local_axis(c, x, y):
+    """головний напрям навколишньої геометрії (будинки, дороги) — структурний тензор у вікні ≈30 м"""
+    H, W = c.cls.shape; r = int(c.m(15)); xi, yi = int(x), int(y)
+    win = c.cls[max(0, yi - r):yi + r + 1, max(0, xi - r):xi + r + 1]
+    hard = (~np.isin(win, (1, 2, 9, 13, 14))).astype(np.float32)
+    if hard.size < 9 or hard.std() < 1e-3: return 1.0, 0.0
+    gx = cv2.Sobel(hard, cv2.CV_32F, 1, 0, ksize=3); gy = cv2.Sobel(hard, cv2.CV_32F, 0, 1, ksize=3)
+    a = 0.5 * math.atan2(2 * (gx * gy).sum(), ((gx * gx) - (gy * gy)).sum())      # напрям нормалі до країв
+    a += math.pi / 2
+    return math.cos(a), math.sin(a)
+
+
 def playgrounds(c):
-    """Дитмайданчик: м'яке покриття, гірка, гойдалки, пісочниця, лазанка."""
+    """Дитмайданчик з OSM: м'яке покриття, обладнання за осями самого майданчика (вид строго згори)."""
     img, cls = c.img, c.cls
     H, W = cls.shape
     for item in _node_pts(c, lambda t: t.get('leisure') == 'playground'):
         rs = _rng(*c.world(item[1]), 41)
+        m = np.zeros((H, W), np.uint8)
         if len(item) > 2:
-            P = item[2]
-            m = np.zeros((H, W), np.uint8); cv2.fillPoly(m, [np.round(P).astype(np.int32)], 1)
+            P = np.array(item[2], np.float32)
+            cv2.fillPoly(m, [np.round(P).astype(np.int32)], 1)
+            (cx, cy), (rw, rh), ang = cv2.minAreaRect(P)
+            a = math.radians(ang); ux, uy = math.cos(a), math.sin(a)
+            if rw < rh: ux, uy = -uy, ux
         else:
-            m = np.zeros((H, W), np.uint8); cv2.circle(m, (int(item[1][0]), int(item[1][1])), int(c.m(7)), 1, -1)
+            cx, cy = item[1]; ux, uy = _local_axis(c, cx, cy)
+            nx, ny = -uy, ux; L2, W2 = c.m(7), c.m(5)
+            box = np.array([[cx - ux * L2 - nx * W2, cy - uy * L2 - ny * W2], [cx + ux * L2 - nx * W2, cy + uy * L2 - ny * W2],
+                            [cx + ux * L2 + nx * W2, cy + uy * L2 + ny * W2], [cx - ux * L2 + nx * W2, cy - uy * L2 + ny * W2]])
+            cv2.fillPoly(m, [np.round(box).astype(np.int32)], 1)
         ys, xs = np.nonzero(m)
         if len(xs) < c.m(3) ** 2: continue
         surf = (196, 98, 72) if rs.random() < 0.6 else (214, 196, 150)
         img[ys, xs] = surf
         cv2.polylines(img, [cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0][0]], True, (150, 150, 146), max(1, int(c.m(0.2))))
-        inner = cv2.erode(m, np.ones((int(c.m(2.5)) | 1,) * 2, np.uint8))
-        iy, ix = np.nonzero(inner)
-        if len(ix) == 0: continue
-        for kind in rs.sample(['slide', 'swing', 'sand', 'climb', 'swing2'], 3):
-            j = rs.randrange(len(ix)); x, y = int(ix[j]), int(iy[j])
-            if kind == 'slide':
-                cv2.rectangle(img, (x, y), (x + int(c.m(1.0)), y + int(c.m(3.2))), (220, 60, 50), -1)
-                cv2.rectangle(img, (x - int(c.m(0.6)), y - int(c.m(1.4))), (x + int(c.m(1.6)), y), (240, 200, 60), -1)
-            elif kind in ('swing', 'swing2'):
-                cv2.line(img, (x - int(c.m(1.8)), y), (x + int(c.m(1.8)), y), (60, 90, 160), max(1, int(c.m(0.25))))
-                for dx in (-0.8, 0.8):
-                    cv2.rectangle(img, (x + int(c.m(dx - 0.3)), y + int(c.m(0.3))), (x + int(c.m(dx + 0.3)), y + int(c.m(0.7))), (90, 60, 40), -1)
-            elif kind == 'sand':
-                cv2.rectangle(img, (x, y), (x + int(c.m(3)), y + int(c.m(3))), (140, 96, 60), -1)
-                cv2.rectangle(img, (x + int(c.m(0.3)), y + int(c.m(0.3))), (x + int(c.m(2.7)), y + int(c.m(2.7))), (228, 210, 160), -1)
-            else:
-                cv2.rectangle(img, (x, y), (x + int(c.m(2.5)), y + int(c.m(2.5))), (60, 140, 90), max(1, int(c.m(0.25))))
-                cv2.line(img, (x, y), (x + int(c.m(2.5)), y + int(c.m(2.5))), (60, 140, 90), max(1, int(c.m(0.25))))
+        inner = cv2.erode(m, np.ones((int(c.m(1.0)) | 1,) * 2, np.uint8))
+        occ = np.zeros_like(m)
+        kinds = rs.sample(['slide', 'swing', 'sand', 'climb', 'carousel'], 4)
+        nx, ny = -uy, ux
+        for kind in kinds:
+            Lk, Wk = PG_SIZE[kind]
+            for _ in range(40):                          # місце всередині, вирівняне за осями майданчика, без накладання
+                j = rs.randrange(len(xs)); x, y = float(xs[j]), float(ys[j])
+                fp = np.zeros_like(m)
+                hl, hw = c.m(Lk) / 2 + c.m(0.4), c.m(Wk) / 2 + c.m(0.4)
+                q = np.array([[x - ux * hl - nx * hw, y - uy * hl - ny * hw], [x + ux * hl - nx * hw, y + uy * hl - ny * hw],
+                              [x + ux * hl + nx * hw, y + uy * hl + ny * hw], [x - ux * hl + nx * hw, y - uy * hl + ny * hw]])
+                cv2.fillPoly(fp, [np.round(q).astype(np.int32)], 1)
+                if (fp & (1 - inner)).any() or (fp & occ).any(): continue
+                occ |= fp
+                ox = -c.m(1.5) if kind == 'slide' else 0                # вежа гірки — не в центрі прямокутника
+                _pg_item(img, c, kind, x + ux * ox, y + uy * ox, ux, uy); break
 
 
 def benches(c):
@@ -951,12 +1005,11 @@ def _playground(img, c, x, y, ux, uy, rs):
     cv2.polylines(img, [P_(box)], True, (226, 226, 214), max(1, int(c.m(0.25))))
     def R(cx, cy, l, w, col): cv2.fillPoly(img, [P_([[cx - l / 2, cy - w / 2], [cx + l / 2, cy - w / 2], [cx + l / 2, cy + w / 2], [cx - l / 2, cy + w / 2]])], col)
     m = c.m
-    R(m(-3.2), m(-1.8), m(3.2), m(3.2), (140, 96, 60)); R(m(-3.2), m(-1.8), m(2.6), m(2.6), (228, 210, 160))         # пісочниця
-    R(m(2.2), m(-2.2), m(1.0), m(3.4), (220, 60, 50)); R(m(2.2), m(-4.0), m(2.0), m(1.4), (240, 200, 60))           # гірка
-    R(m(0.5), m(2.4), m(4.2), m(0.3), (60, 90, 160))                                                                # гойдалки
-    for dx in (-0.9, 1.0): R(m(0.5 + dx), m(2.9), m(0.7), m(0.5), (90, 60, 40))
-    R(m(4.2), m(2.2), m(2.4), m(2.4), (60, 140, 90)); R(m(4.2), m(2.2), m(1.8), m(1.8), surf)                       # лазанка
-
+    def at(ox, oy): return x + ux * ox + nx * oy, y + uy * ox + ny * oy
+    _pg_item(img, c, 'sand', *at(m(-3.4), m(-1.9)), ux, uy)
+    _pg_item(img, c, 'slide', *at(m(1.6), m(-2.4)), ux, uy)
+    _pg_item(img, c, 'swing', *at(m(-2.6), m(2.4)), ux, uy)
+    _pg_item(img, c, 'climb' if rs.random() < 0.5 else 'carousel', *at(m(3.6), m(2.2)), ux, uy)
 
 def yards(c, blds, trees):
     """Двори біля багатоквартирних (патерни, не з OSM): лавки біля довгої стіни, що дивиться на проїзд,

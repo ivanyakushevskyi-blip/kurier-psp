@@ -100,22 +100,43 @@ def build(D, g, W, H, play, solid, surf, trees, pois=(), seed=11):
     for t in trees: tg.setdefault((int(t[0]) // 64, int(t[1]) // 64), []).append((t[0], t[1]))
     out = []
     taken = {}                                    # сітка 4 м — не ставити машини одна на одну
+    def _hit(x, y, a, qx, qy, qa):
+        """перетин прямокутників машин (з запасом): теорема про розділову вісь"""
+        L2, W2 = M(4.7) / 2, M(2.1) / 2
+        dx, dy = qx - x, qy - y
+        if dx * dx + dy * dy > (2 * M(2.6)) ** 2: return False
+        ax = ((math.cos(a), math.sin(a)), (-math.sin(a), math.cos(a)))
+        bx = ((math.cos(qa), math.sin(qa)), (-math.sin(qa), math.cos(qa)))
+        for u in ax + bx:
+            ra = L2 * abs(u[0] * ax[0][0] + u[1] * ax[0][1]) + W2 * abs(u[0] * ax[1][0] + u[1] * ax[1][1])
+            rb = L2 * abs(u[0] * bx[0][0] + u[1] * bx[0][1]) + W2 * abs(u[0] * bx[1][0] + u[1] * bx[1][1])
+            if abs(dx * u[0] + dy * u[1]) > ra + rb: return False
+        return True
     def put(x, y, a, rmin=None):
-        rmin = M(5.8) if rmin is None else rmin                       # на дорозі — довжина машини; на паркуванні — ширина місця
         k = (int(x // M(4)), int(y // M(4)))
         for i in (-2, -1, 0, 1, 2):
             for j in (-2, -1, 0, 1, 2):
-                for (qx, qy) in taken.get((k[0] + i, k[1] + j), ()):
-                    if (qx - x) ** 2 + (qy - y) ** 2 < rmin ** 2: return False
-        taken.setdefault(k, []).append((x, y))
+                for (qx, qy, qa) in taken.get((k[0] + i, k[1] + j), ()):
+                    if _hit(x, y, a, qx, qy, qa): return False
+        taken.setdefault(k, []).append((x, y, a))
         out.append((int(round(x)), int(round(y)), int(round((a % (2 * math.pi)) / (2 * math.pi) * 256)) & 255, rs.randrange(8)))
         return True
+    # 14.11.2026: смуги руху трафіку (зокрема проїзди крізь паркування) — без запаркованих машин
+    import cv2
+    Q = 4; lanes = np.zeros((H // Q + 1, W // Q + 1), np.uint8)
+    for e in g['edges']:
+        if not e['traf']: continue
+        q = np.round(np.array(e['q']) / Q).astype(np.int32)
+        cv2.polylines(lanes, [q], False, 1, max(1, int(round((e['w'] + 2 * M(1.6)) / Q))))
+    def on_lane(x, y):
+        xi, yi = int(x) // Q, int(y) // Q
+        return 0 <= yi < lanes.shape[0] and 0 <= xi < lanes.shape[1] and lanes[yi, xi]
     # ---- паркування: ряди «ніс до носа» з проїздами (lot_slots — та сама розкладка, що й розмітка в mappatch), ~50% місць
     npark = 0
     for P in lots(D, W, H):
         occ = 0.25 * (0.5 + 0.5 * dens(*P.mean(0)))                      # удвічі менше, ніж було; в центрі більше
         for x, y, car_a, ok_in in lot_slots(P):
-            if not ok_in or rs.random() > occ: continue
+            if not ok_in or rs.random() > occ or on_lane(x, y): continue
             if _free(x, y, car_a, solid, surf, play, tg, W, H, (0, 1, 3, 4)) and put(x, y, car_a, M(2.6)): npark += 1
     # ---- уздовж доріг: широкі — біля бордюру на проїжджій частині поза смугами; вузькі — наполовину на тротуарі
     nroad = ncurb = 0
@@ -148,37 +169,7 @@ def build(D, g, W, H, play, solid, surf, trees, pois=(), seed=11):
                     if kind == 'road': nroad += 1
                     else: ncurb += 1
             s_ += M(5.6) + (M(4) if rs.random() < 0.3 else 0)
-    # ---- 14.11.2026: двори — уздовж проїздів (service) біля багатоквартирних, з боку двору, ~25%
-    from shapely.geometry import Polygon, Point
-    from shapely.strtree import STRtree
-    ap = []
-    for b in D['B']:
-        bt = b['t'].get('building', 'yes')
-        if (bt in ('apartments', 'residential', 'dormitory') and b.get('area', 0) >= 250) or (bt == 'yes' and b.get('area', 0) >= 400 and b.get('h', 0) >= 9):
-            try: ap.append(Polygon(np.array(b['q']) * CD.K).buffer(0))
-            except Exception: pass
-    tr = STRtree(ap) if ap else None
+    # 14.11.2026: машини у дворах уздовж проїздів прибрано (Іван: заважають руху)
     nyard = 0
-    for w in D['w']:
-        t = w['t']
-        if t.get('highway') != 'service' or t.get('service') in ('parking_aisle', 'drive-through') or not CD.drivable(t) or tr is None: continue
-        q = np.array(w['pts']) * CD.K
-        if len(q) < 2: continue
-        off = M(CD.ROAD_W['service'] / 2 + 1.05)
-        for i in range(len(q) - 1):
-            a, b2 = q[i], q[i + 1]; L = float(np.hypot(*(b2 - a)))
-            if L < M(8): continue
-            u = (b2 - a) / L; nv = np.array([-u[1], u[0]])
-            s_ = M(4)
-            while s_ < L - M(4):
-                p = a + u * s_
-                near = [int(j) for j in tr.query(Point(*p).buffer(M(35)))]
-                if near and min(ap[j].distance(Point(*p)) for j in near) < M(35):
-                    for sd in (1, -1):
-                        if rs.random() > 0.25: continue
-                        x, y = p + nv * sd * off
-                        ang = math.atan2(u[1], u[0]) + (0 if sd > 0 else math.pi)
-                        if _free(x, y, ang, solid, surf, play, tg, W, H, (0, 1, 3, 4)) and put(x, y, ang): nyard += 1
-                s_ += M(6.2)
     print('  запарковані машини: паркування %d, біля бордюру %d, на тротуарі %d, у дворах %d' % (npark, nroad, ncurb, nyard))
     return out

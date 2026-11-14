@@ -507,16 +507,34 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
     for h, pts, w in drive:
         for k, nid in enumerate(w['nds']): _deg[nid] = _deg.get(nid, 0) + (1 if k in (0, len(w['nds']) - 1) else 2)
     sv = Image.new('L', (WF, HF), 0); dsv = ImageDraw.Draw(sv)
+    # 14.11.2026 (2): спершу інші дороги — окрема маска; проїзд, що лише доходить до дороги (без спільного вузла), — не тупик
+    nm_ = Image.new('L', (WF, HF), 0); dnm = ImageDraw.Draw(nm_)
+    for h, pts, w in drive:
+        if not (h == 'service' and SERV2): line(pts, ROAD_W[h], G_ROAD); line(pts, ROAD_W[h], 1, dnm)
+    nmain = np.array(nm_) > 0
+    def _join(x, y, wp):
+        """точка дороги поруч з кінцем проїзду (до ~7 м) або None"""
+        r = int(7 / MF + wp / 2); xi, yi = int(round(x)), int(round(y))
+        x0_, y0_ = max(0, xi - r), max(0, yi - r); win = nmain[y0_:yi + r + 1, x0_:xi + r + 1]
+        if not win.any(): return None
+        ys_, xs_ = np.nonzero(win); d2 = (xs_ + x0_ - x) ** 2 + (ys_ + y0_ - y) ** 2; j = int(d2.argmin())
+        return (float(xs_[j] + x0_), float(ys_[j] + y0_))
     for h, pts, w in drive:
         if h == 'service' and SERV2:
             wp = max(1.0 * S, ROAD_W[h] / MF); n_ = len(pts)
+            ext = []
+            for k in (0, n_ - 1):
+                if _deg.get(w['nds'][k], 1) <= 1:
+                    j_ = _join(pts[k][0], pts[k][1], wp)
+                    if j_: ext.append((pts[k], j_))
+            joined = {e[0] for e in ext}
             for d_ in (dr, dsv):
                 d_.line(pts, fill=G_ROAD if d_ is dr else 1, width=int(round(wp)))
+                for p_, j_ in ext: d_.line([p_, j_], fill=G_ROAD if d_ is dr else 1, width=int(round(wp)))
                 for k, (x, y) in enumerate(pts):
-                    if k in (0, n_ - 1) and _deg.get(w['nds'][k], 1) <= 1: continue      # тупик — прямий край
+                    if k in (0, n_ - 1) and _deg.get(w['nds'][k], 1) <= 1 and (x, y) not in joined: continue      # тупик — прямий край
                     d_.ellipse([x - wp / 2, y - wp / 2, x + wp / 2, y + wp / 2], fill=G_ROAD if d_ is dr else 1)
-        else: line(pts, ROAD_W[h], G_ROAD)
-    servm = np.array(sv) > 0
+    servm = (np.array(sv) > 0) & ~nmain                      # світлий асфальт і бордюр — лише на самому проїзді
     cls = np.array(im)
     servm &= cls == G_ROAD
 
