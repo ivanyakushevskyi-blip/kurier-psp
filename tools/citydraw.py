@@ -465,6 +465,7 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None, props_out=None):
         ycls[(gn > 0.352) & (gn > rn) & (ycls == 3)] = 1
         ycls[(rn > 0.37) & (ch > 20) & (gn <= 0.352) & (ycls == 3)] = 2
     ycls[dark] = 0
+    ycls[sw.max(-1) < 1] = 1          # 15.11.2026: поза знімками — трава (раніше «найближчий клас» у вікні блоку давав шви)
     _bm = Image.new('L', (W, H), 0); _d = ImageDraw.Draw(_bm)
     for _, b in BL:
         P = [to(p) for p in b['q']]
@@ -838,7 +839,7 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None, props_out=None):
         s_ = int(np.clip(b['h'] * 0.22 * (0.5 / MPP), 1, 7 * (0.5 / MPP)) * S)
         P = np.round(np.array(ptf)).astype(np.int32)
         for k in range(1, s_ + 1, max(1, S // 2)): cv2.fillPoly(shadow, [P + [k, k]], 1)
-    for x, y, rr, _ in (trees if not os.environ.get('NOSHADOW') else []): cv2.circle(shadow, (int((x + 2.5) * S), int((y + 2.5) * S)), int(rr * S), 1, -1)
+    for x, y, rr, _ in (trees if not os.environ.get('NOSHADOW') and tree_out is None else []): cv2.circle(shadow, (int((x + 2.5) * S), int((y + 2.5) * S)), int(rr * S), 1, -1)
     shf = shadow.astype(np.float32)
     if S > 1:
         shf = cv2.GaussianBlur(shf, (0, 0), 1.0 * S)

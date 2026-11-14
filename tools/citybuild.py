@@ -140,6 +140,25 @@ def render_all(jobs, rgb, cls, nproc):
     roofm = open_memmap('build/roofmask_tmp.npy', 'w+', np.uint8, (H, W))
     for b in D['B'] + D.get('SAT', []):
         cv2.fillPoly(roofm, [np.round(np.array(b['q']) * K).astype(np.int32)], 1)
+    # 15.11.2026: тіні дерев — одним проходом за спільним списком дерев (у блоках вони різалися на межах)
+    if SS > 1 and not os.environ.get('NOSHADOW'):
+        RB = 1024; PADS = 40
+        tsort = sorted(trees, key=lambda t: t[1])
+        ys_ = np.array([t[1] for t in tsort]) if tsort else np.zeros(0)
+        for r0 in range(0, H, RB):
+            a0, a1 = max(0, r0 - PADS), min(H, r0 + RB + PADS)
+            i0, i1 = np.searchsorted(ys_, a0 - 60), np.searchsorted(ys_, a1 + 60)
+            if i1 <= i0: continue
+            sh = np.zeros(((a1 - a0) * SS, W * SS), np.uint8)
+            for x, y, rr, _ in tsort[i0:i1]:
+                cv2.circle(sh, (int((x + 2.5) * SS), int((y + 2.5 - a0) * SS)), int(rr * SS), 1, -1)
+            shf = cv2.GaussianBlur(sh.astype(np.float32), (0, 0), 1.0 * SS)
+            shf = cv2.resize(shf, (W, a1 - a0), interpolation=cv2.INTER_AREA)
+            shf[np.asarray(roofm[a0:a1]) > 0] = 0
+            o0 = r0 - a0; n_ = min(RB, H - r0)
+            blk = np.asarray(rgb[r0:r0 + n_]).astype(np.float32)
+            rgb[r0:r0 + n_] = (blk * (1 - 0.34 * shf[o0:o0 + n_, :, None])).astype(np.uint8)
+        print('tree shadows', len(trees), flush=True)
     crown = open_memmap('build/crown.npy', 'w+', np.uint8, (H, W))
     for x, y, rr, kind in sorted(trees, key=lambda t: (t[1], t[0])):
         if SS > 1: CD.draw_tree_aa(rgb, x, y, rr, kind, random.Random(x * 7919 + y), SS, roofm, crown)
