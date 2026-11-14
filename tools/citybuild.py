@@ -48,7 +48,15 @@ def arch_poly(Q, nmax=64):
         eps *= 1.4
 
 
-BLK = 'build/blocks_ss%d' % SS            # готові блоки (продовження після перерви)
+def _code_hash():
+    """15.11.2026: відбиток коду й даних карти — кеш блоків лише для ТОГО САМОГО коду (без змішування старих і нових блоків)"""
+    import hashlib, glob
+    h = hashlib.sha1()
+    for f in ['tools/%s.py' % m for m in ('citybuild', 'citydraw', 'citydetail', 'citygen', 'mapgen', 'pal', 'satclass', 'osmmp')] + ['build/buildings.json', 'build/ms_buildings.json', 'build/manual_buildings.json', 'build/sat_map.json'] + sorted(glob.glob('data/*.json')):
+        if os.path.exists(f): h.update(f.encode()); h.update(open(f, 'rb').read())
+    for f in sorted(glob.glob(CD.OSM_DIR + '/*.osm')): h.update(('%s %d' % (f, os.path.getsize(f))).encode())
+    return h.hexdigest()[:12]
+BLK = 'build/blocks_ss%d_%s' % (SS, _code_hash())   # готові блоки (продовження після перерви — лише з тим самим кодом)
 
 
 def render_block(args):
@@ -104,6 +112,9 @@ def invalidate_changed(jobs, D):
 
 
 def render_all(jobs, rgb, cls, nproc):
+    import shutil, glob
+    for d_ in glob.glob('build/blocks_ss*'):
+        if d_ != BLK and os.path.isdir(d_): shutil.rmtree(d_); print('  старий кеш блоків прибрано:', d_, flush=True)
     os.makedirs(BLK, exist_ok=True)
     trees = []
     cur = invalidate_changed(jobs, CD.data())    # кеш OSM/будинків до розгалуження процесів

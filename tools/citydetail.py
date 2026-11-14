@@ -1032,6 +1032,10 @@ def yards(c, blds, trees):
         if x - r < 0 or y - r < 0 or x + r >= W or y + r >= H: return False
         return free[y - r:y + r + 1, x - r:x + r + 1].all() and not occ[y - r:y + r + 1, x - r:x + r + 1].any()
     def take(x, y, r): cv2.circle(occ, (int(x), int(y)), int(r), 1, -1)
+    sv_ = np.zeros((H, W), np.uint8)
+    for h, ptf, w in _drive_ways(c):
+        if h in ('service', 'living_street'): cv2.polylines(sv_, [np.round(np.array(ptf)).astype(np.int32)], False, 1, max(1, int(c.m(4))))
+    dserv = cv2.distanceTransform(1 - sv_, cv2.DIST_L2, 5)
     nb = nbin = npg = 0
     for i, b, pts, ptf in blds:
         bt_ = b['t'].get('building', 'yes')
@@ -1044,12 +1048,17 @@ def yards(c, blds, trees):
         wx, wy = c.world((cx, cy)); rs = _rng(wx, wy, 77)
         # бік, ближчий до проїзду
         best = None
-        for sd in (1, -1):
-            px_, py_ = cx + nx * sd * (rh / 2 + c.m(6)), cy + ny * sd * (rh / 2 + c.m(6))
-            if 0 <= int(px_) < W and 0 <= int(py_) < H:
-                d_ = droad[int(py_), int(px_)]
-                if best is None or d_ < best[0]: best = (d_, sd)
+        for sd in (1, -1):                                   # 15.11.2026: під'їзди — з боку, де перед стіною (до 25 м) є внутрішньоквартальний проїзд
+            hits = 0
+            for t_ in (-0.35, 0.0, 0.35):
+                for v in np.arange(c.m(1), c.m(25), c.m(1)):
+                    px_, py_ = cx + ux * t_ * rw + nx * sd * (rh / 2 + v), cy + uy * t_ * rw + ny * sd * (rh / 2 + v)
+                    if not (0 <= int(px_) < W and 0 <= int(py_) < H): break
+                    if sv_[int(py_), int(px_)]: hits += 1; break
+                    if cls[int(py_), int(px_)] == G_ROAD or bm[int(py_), int(px_)]: break       # інша дорога чи будинок — далі не шукати
+            if best is None or hits > best[0]: best = (hits, sd)
         if best is None: continue
+        ent_ok = best[0] > 0
         sd = best[1]
         # прибудинкова територія з боку під'їздів: вимощення вздовж стіни, палісадники між під'їздами,
         # доріжки від кожного під'їзду до проїзду/тротуару, козирок над входом, лавки обабіч доріжки
@@ -1073,17 +1082,19 @@ def yards(c, blds, trees):
             if mm.any():
                 cv2.polylines(img, [g_], True, (150, 146, 136), max(1, int(c.m(0.18))))
                 take(*g_.mean(0), c.m(1.5))
-        for u in ent:
+        for u in (ent if ent_ok else []):
             # доріжка: від стіни назовні до найближчої дороги (не далі 25 м)
-            L_ = c.m(25)
-            for v in np.arange(c.m(4), c.m(25), c.m(0.5)):
+            # 15.11.2026: доріжка лише якщо за 15 м є проїзд/тротуар/доріжка (не в нікуди, не навхрест інших доріжок)
+            L_ = None
+            for v in np.arange(c.m(2), c.m(15), c.m(0.5)):
                 px_, py_ = cx + ux * u + nx * sd * (rh / 2 + v), cy + uy * u + ny * sd * (rh / 2 + v)
-                if not (0 <= int(px_) < W and 0 <= int(py_) < H): L_ = v; break
+                if not (0 <= int(px_) < W and 0 <= int(py_) < H): break
                 cl_ = cls[int(py_), int(px_)]
-                if cl_ in (4, 5, 7, 12): L_ = v; break                      # тротуар, дорога, пішохідна, паркування
-            mm = paint(quad(u - c.m(0.8), u + c.m(0.8), c.m(1.2), L_), (190, 188, 182))
-            ys_, xs_ = np.nonzero(mm)
-            if len(xs_): occ[ys_, xs_] = 1
+                if cl_ in (4, 5, 6, 7, 12): L_ = v; break                   # тротуар, дорога, доріжка, пішохідна, паркування
+            if L_ is not None:
+                mm = paint(quad(u - c.m(0.8), u + c.m(0.8), c.m(1.2), L_), (190, 188, 182))
+                ys_, xs_ = np.nonzero(mm)
+                if len(xs_): occ[ys_, xs_] = 1
             paint(quad(u - c.m(1.5), u + c.m(1.5), 0, c.m(1.4)), (150, 152, 156), only_free=False)     # козирок над входом
             paint(quad(u - c.m(1.5), u + c.m(1.5), c.m(1.4), c.m(1.7)), (92, 92, 94), only_free=False)   # його тінь
             for side in (-1, 1):

@@ -512,28 +512,31 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
     for h, pts, w in drive:
         if not (h == 'service' and SERV2): line(pts, ROAD_W[h], G_ROAD); line(pts, ROAD_W[h], 1, dnm)
     nmain = np.array(nm_) > 0
-    def _join(x, y, wp):
-        """точка дороги поруч з кінцем проїзду (до ~7 м) або None"""
-        r = int(7 / MF + wp / 2); xi, yi = int(round(x)), int(round(y))
-        x0_, y0_ = max(0, xi - r), max(0, yi - r); win = nmain[y0_:yi + r + 1, x0_:xi + r + 1]
-        if not win.any(): return None
-        ys_, xs_ = np.nonzero(win); d2 = (xs_ + x0_ - x) ** 2 + (ys_ + y0_ - y) ** 2; j = int(d2.argmin())
-        return (float(xs_[j] + x0_), float(ys_[j] + y0_))
+    def _join(pts, k, wp):
+        """15.11.2026: проїзд, що не доходить до дороги (до ~7 м), продовжується ВЗДОВЖ себе до дороги; навскіс — ніколи"""
+        n_ = len(pts); a, b_ = (pts[1], pts[0]) if k == 0 else (pts[n_ - 2], pts[n_ - 1])
+        L = math.hypot(b_[0] - a[0], b_[1] - a[1])
+        if L < 1e-6: return None
+        ux, uy = (b_[0] - a[0]) / L, (b_[1] - a[1]) / L
+        for s_ in np.arange(0, 7 / MF + wp / 2, max(1.0, S / 2)):
+            x, y = int(round(b_[0] + ux * s_)), int(round(b_[1] + uy * s_))
+            if not (0 <= x < WF and 0 <= y < HF): return None
+            if nmain[y, x]: return (b_[0] + ux * (s_ + wp / 2), b_[1] + uy * (s_ + wp / 2))
+        return None
     for h, pts, w in drive:
         if h == 'service' and SERV2:
             wp = max(1.0 * S, ROAD_W[h] / MF); n_ = len(pts)
             ext = []
             for k in (0, n_ - 1):
-                if _deg.get(w['nds'][k], 1) <= 1:
-                    j_ = _join(pts[k][0], pts[k][1], wp)
+                if _deg.get(w['nds'][k], 1) <= 1 and n_ >= 2:
+                    j_ = _join(pts, k, wp)
                     if j_: ext.append((pts[k], j_))
-            joined = {e[0] for e in ext}
             for d_ in (dr, dsv):
-                d_.line(pts, fill=G_ROAD if d_ is dr else 1, width=int(round(wp)))
-                for p_, j_ in ext: d_.line([p_, j_], fill=G_ROAD if d_ is dr else 1, width=int(round(wp)))
-                for k, (x, y) in enumerate(pts):
-                    if k in (0, n_ - 1) and _deg.get(w['nds'][k], 1) <= 1 and (x, y) not in joined: continue      # тупик — прямий край
-                    d_.ellipse([x - wp / 2, y - wp / 2, x + wp / 2, y + wp / 2], fill=G_ROAD if d_ is dr else 1)
+                f_ = G_ROAD if d_ is dr else 1
+                d_.line(pts, fill=f_, width=int(round(wp)))
+                for p_, j_ in ext: d_.line([p_, j_], fill=f_, width=int(round(wp)))
+                for x, y in pts:                                     # 15.11.2026: тупики й злами — округлі (Іван: рівний зріз виглядає обрізаним)
+                    d_.ellipse([x - wp / 2, y - wp / 2, x + wp / 2, y + wp / 2], fill=f_)
     servm = (np.array(sv) > 0) & ~nmain                      # світлий асфальт і бордюр — лише на самому проїзді
     cls = np.array(im)
     servm &= cls == G_ROAD
@@ -602,9 +605,7 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
     img[walk & cv2.dilate(soft.astype(np.uint8), k3).astype(bool)] = SIDE[0]
     if SERV2 and servm.any():
         # проїзди: світліший асфальт з латками; бордюр по краю, де поруч двір/газон/ґрунт (не тротуар, не інша дорога)
-        sa = img[servm].astype(np.int16) + 10
-        bl_ = blob[servm]                                         # латки й плями: м'які, неправильної форми
-        sa[bl_ > 0.66] -= 9; sa[(bl_ > 0.30) & (bl_ < 0.34)] += 6
+        sa = img[servm].astype(np.int16) + 6                      # 15.11.2026: без плям-латок (виглядали брудом)
         img[servm] = np.clip(sa, 0, 255).astype(np.uint8)
         side_ = np.isin(cls, (G_YARD, G_GRASS, G_DIRT, G_PAVED, G_WOOD))
         k5_ = np.ones((4 * S + 1, 4 * S + 1), np.uint8)              # бордюр ≈2 пікс гри
@@ -717,12 +718,17 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
     for w, pts, ptf in ways:
         if w['closed'] and w['t'].get('leisure') == 'pitch' and len(pts) >= 4:
             P = np.array(ptf, np.float32); rect = cv2.minAreaRect(P); bx = cv2.boxPoints(rect).astype(np.int32)
-            cv2.polylines(img, [bx], True, LINE, S)
-            (cx, cy), (rw, rh), ang = rect; a = math.radians(ang)
+            (cx, cy), (rw, rh), ang = rect
+            # 15.11.2026: розмітка лише для майже прямокутних полів і лише в межах контуру (Пилипчука: лінії вилазили на двір і дорогу)
+            if rw * rh <= 0 or cv2.contourArea(P) / (rw * rh) < 0.85: continue
+            lm = np.zeros((HF, WF, 3), np.uint8); a = math.radians(ang)
+            cv2.polylines(lm, [bx], True, (1, 1, 1), S)
             if rw >= rh: ux, uy = -math.sin(a), math.cos(a); half = rh / 2
             else: ux, uy = math.cos(a), math.sin(a); half = rw / 2
-            cv2.line(img, (int(cx - ux * half), int(cy - uy * half)), (int(cx + ux * half), int(cy + uy * half)), LINE, S)
-            cv2.circle(img, (int(cx), int(cy)), max(3 * S, int(min(rw, rh) * 0.12)), LINE, S)
+            cv2.line(lm, (int(cx - ux * half), int(cy - uy * half)), (int(cx + ux * half), int(cy + uy * half)), (1, 1, 1), S)
+            cv2.circle(lm, (int(cx), int(cy)), max(3 * S, int(min(rw, rh) * 0.12)), (1, 1, 1), S)
+            pm = np.zeros((HF, WF), np.uint8); cv2.fillPoly(pm, [np.round(P).astype(np.int32)], 1)
+            img[(lm[..., 0] > 0) & (pm > 0) & (cls == G_PITCH)] = LINE
         if w['closed'] and w['t'].get('leisure') == 'track' and len(pts) >= 4:
             P = np.round(np.array(ptf)).astype(np.int32)
             m = np.zeros((HF, WF), np.uint8); cv2.fillPoly(m, [P], 1)
