@@ -555,28 +555,30 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
         return (R_[i] * (1 - f) + R_[np.minimum(i + 1, n - 1)] * f).astype(np.uint8)
     def put(cid, arr):
         m = cls == cid; img[m] = arr[m]
+    def putp(cid, ramp, tf):                                     # 14.11.2026: лише пікселі класу (швидше в ~6 разів, той самий результат)
+        m = cls == cid
+        if m.any(): img[m] = pick(ramp, tf(m))
     spk = 0.25 if S == 1 else 0.12
     t_grass = 0.25 + 0.5 * blob + spk * (fine > 0.86) - 0.6 * spk * (fine < 0.08)
-    put(G_GRASS, pick(GRASS[1:], t_grass)); put(G_WOOD, pick(GRASS[:3], t_grass))
+    putp(G_GRASS, GRASS[1:], lambda m: t_grass[m]); putp(G_WOOD, GRASS[:3], lambda m: t_grass[m])
     dry = (cls == G_GRASS) & (smf[..., 0] > smf[..., 1] + 4)
-    img[dry] = pick(DRY, blob)[dry]
-    put(G_DIRT, pick(DIRT, 0.3 + 0.5 * blob + 0.2 * (fine > 0.9)))
-    put(G_PAVED, pick(PAVED, 0.35 + 0.3 * blob + 0.2 * (fine > 0.92)))
+    img[dry] = pick(DRY, blob[dry])
+    putp(G_DIRT, DIRT, lambda m: 0.3 + 0.5 * blob[m] + 0.2 * (fine[m] > 0.9))
+    putp(G_PAVED, PAVED, lambda m: 0.35 + 0.3 * blob[m] + 0.2 * (fine[m] > 0.92))
     tile4 = ((xx % 4 == 0) | (yy % 4 == 0))
     put(G_SIDE, np.where(tile4[..., None], np.array(SIDE[1], np.uint8), np.array(SIDE[2], np.uint8)))
     brick = (yy % 3 == 0) | (((xx + (yy // 3) % 2 * 3) % 6) == 0)
     put(G_PED, np.where(brick[..., None], np.array(SIDE[0], np.uint8), np.array(SIDE[2], np.uint8)))
     put(G_PATH, np.full((HF, WF, 3), SIDE[1], np.uint8))
-    asph = pick(ASPH, 0.35 + 0.35 * blob + 0.3 * (fine > 0.93))
-    put(G_ROAD, asph); put(G_PARK, pick(ASPH[1:], 0.4 + 0.4 * blob))
+    putp(G_ROAD, ASPH, lambda m: 0.35 + 0.35 * blob[m] + 0.3 * (fine[m] > 0.93)); putp(G_PARK, ASPH[1:], lambda m: 0.4 + 0.4 * blob[m])
     rip = (np.sin(xx * 0.5 + yy * 0.15 + blob * 4) > 0.85)
     if S > 1: rip = (fine > 0.975) & (np.sin(xx * 0.5 + yy * 0.15) > 0.3)      # рідкі відблиски, без смуг
-    put(G_WATER, np.where(rip[..., None], np.array(WATER[2], np.uint8), pick(WATER[:2], 0.3 + 0.5 * blob)))
-    put(G_RAIL, pick(BALLAST, fine))
+    putp(G_WATER, WATER[:2], lambda m: 0.3 + 0.5 * blob[m]); img[(cls == G_WATER) & rip] = WATER[2]
+    putp(G_RAIL, BALLAST, lambda m: fine[m])
     put(G_PITCH, np.where(((xx // 8) % 2 == 0)[..., None], np.array(PITCH[0], np.uint8), np.array(PITCH[1], np.uint8)))
     put(G_TRACK, np.full((HF, WF, 3), TRACK[1], np.uint8))
-    put(G_SAND, pick([(206, 186, 140), (218, 200, 154), (228, 212, 168)], 0.3 + 0.4 * blob + 0.3 * (fine > 0.9)))
-    put(G_YARD, pick(PAVED, 0.5 + 0.0 * blob))
+    putp(G_SAND, [(206, 186, 140), (218, 200, 154), (228, 212, 168)], lambda m: 0.3 + 0.4 * blob[m] + 0.3 * (fine[m] > 0.9))
+    putp(G_YARD, PAVED, lambda m: 0.5 + 0.0 * blob[m])
     if S > 1:
         # відтінок поверхні зі знімка: лише «зелено» і «буро» (без синього відтінку тіней), згладжено
         ssm = cv2.GaussianBlur(sw, (0, 0), 3.0)
