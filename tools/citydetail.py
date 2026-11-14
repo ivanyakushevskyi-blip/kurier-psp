@@ -998,15 +998,46 @@ def yards(c, blds, trees):
                 if best is None or d_ < best[0]: best = (d_, sd)
         if best is None: continue
         sd = best[1]
-        # лавки біля «під'їздів»: кожні ~16 м уздовж довгої стіни, 3 м від неї
+        # прибудинкова територія з боку під'їздів: вимощення вздовж стіни, палісадники між під'їздами,
+        # доріжки від кожного під'їзду до проїзду/тротуару, козирок над входом, лавки обабіч доріжки
+        def quad(u0, u1, v0, v1):                                       # u — уздовж стіни (від центру), v — від стіни назовні
+            pts = [(cx + ux * u + nx * sd * (rh / 2 + v), cy + uy * u + ny * sd * (rh / 2 + v)) for u, v in ((u0, v0), (u1, v0), (u1, v1), (u0, v1))]
+            return np.round(np.array(pts)).astype(np.int32)
+        def paint(poly, col, only_free=True):
+            mm = np.zeros((H, W), np.uint8); cv2.fillPoly(mm, [poly], 1)
+            if only_free: mm &= free
+            img[mm > 0] = col
+            return mm
+        paint(quad(-rw / 2, rw / 2, 0, c.m(1.2)), (176, 174, 168))
         n_ = max(1, int(rw / c.m(16)))
-        for k in range(n_):
-            t = (k + 0.5) / n_ - 0.5
-            bx, by = cx + ux * t * rw + nx * sd * (rh / 2 + c.m(3.0)), cy + uy * t * rw + ny * sd * (rh / 2 + c.m(3.0))
+        ent = [((k + 0.5) / n_ - 0.5) * rw for k in range(n_)]
+        for k in range(n_ + 1):                                        # палісадники між під'їздами
+            u0 = -rw / 2 if k == 0 else ent[k - 1] + c.m(2.2)
+            u1 = rw / 2 if k == n_ else ent[k] - c.m(2.2)
+            if u1 - u0 < c.m(3) or rs.random() < 0.3: continue
+            g_ = quad(u0 + c.m(0.4), u1 - c.m(0.4), c.m(1.5), c.m(4.0))
+            mm = paint(g_, (84, 128, 62))
+            if mm.any():
+                cv2.polylines(img, [g_], True, (150, 146, 136), max(1, int(c.m(0.18))))
+                take(*g_.mean(0), c.m(1.5))
+        for u in ent:
+            # доріжка: від стіни назовні до найближчої дороги (не далі 25 м)
+            L_ = c.m(25)
+            for v in np.arange(c.m(4), c.m(25), c.m(0.5)):
+                px_, py_ = cx + ux * u + nx * sd * (rh / 2 + v), cy + uy * u + ny * sd * (rh / 2 + v)
+                if not (0 <= int(px_) < W and 0 <= int(py_) < H): L_ = v; break
+                cl_ = cls[int(py_), int(px_)]
+                if cl_ in (4, 5, 7, 12): L_ = v; break                      # тротуар, дорога, пішохідна, паркування
+            mm = paint(quad(u - c.m(0.8), u + c.m(0.8), c.m(1.2), L_), (190, 188, 182))
+            ys_, xs_ = np.nonzero(mm)
+            if len(xs_): occ[ys_, xs_] = 1
+            paint(quad(u - c.m(1.5), u + c.m(1.5), 0, c.m(1.4)), (150, 152, 156), only_free=False)     # козирок над входом
+            paint(quad(u - c.m(1.5), u + c.m(1.5), c.m(1.4), c.m(1.7)), (92, 92, 94), only_free=False)   # його тінь
             for side in (-1, 1):
-                qx, qy = bx + ux * side * c.m(2.4), by + uy * side * c.m(2.4)
-                if rs.random() < 0.65 and fits(qx, qy, c.m(1.2)):
-                    _bench(img, c, qx, qy, ux, uy); take(qx, qy, c.m(1.3)); nb += 1
+                qx = cx + ux * (u + side * c.m(2.0)) + nx * sd * (rh / 2 + c.m(5.0))
+                qy = cy + uy * (u + side * c.m(2.0)) + ny * sd * (rh / 2 + c.m(5.0))
+                if rs.random() < 0.75 and fits(qx, qy, c.m(1.0)):
+                    _bench(img, c, qx, qy, nx * sd, ny * sd); take(qx, qy, c.m(1.2)); nb += 1
         # контейнери: біля торця, ближче до проїзду
         cand = [(ux * t_ * (rw / 2 + c.m(o_)) + nx * sd * (rh / 2 + c.m(q_)), uy * t_ * (rw / 2 + c.m(o_)) + ny * sd * (rh / 2 + c.m(q_)))
                 for q_ in (2.5, 4, 5.5, -2, -6) for t_ in (1.0, -1.0, 0.7, -0.7, 0.35, -0.35) for o_ in (4,)]
