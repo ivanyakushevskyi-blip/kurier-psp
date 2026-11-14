@@ -34,7 +34,7 @@ def _barrier(img, c, x, y, L):
 
 
 def _draw(kind, var, bg):
-    N = 512
+    N = 1024
     img = np.zeros((N, N, 3), np.uint8); img[:] = bg
     c = CDt.Ctx(img=img, cls=None, S=SS, MF=CD.MPP / (TPX * SS), x0=0, y0=0, props=None)
     x = y = N / 2
@@ -48,7 +48,7 @@ def _draw(kind, var, bg):
     elif kind == 'pg_yard':
         CDt._playground(img, c, x, y, 1.0, 0.0, _RS([0.1 if var < 2 else 0.9, 0.1 if var % 2 == 0 else 0.9]))
     elif kind.startswith('pg_'): CDt._pg_item(img, c, kind[3:], x, y, 1.0, 0.0)
-    elif kind == 'barrier': _barrier(img, c, x, y, var / 4.0)
+    elif kind == 'barrier': _barrier(img, c, x, y, min(var / 4.0, 30.0))
     return img
 
 
@@ -63,6 +63,7 @@ def sprite(kind, var=0):
     r = int(max(abs(xs - N / 2).max(), abs(ys - N / 2).max())) + SS * 2 if len(xs) else SS * 4
     rx = int(max(abs(xs - N / 2).max(), 1)) + SS * 2 if len(xs) else r
     ry = int(max(abs(ys - N / 2).max(), 1)) + SS * 2 if len(xs) else r
+    rx, ry = min(rx, N // 2), min(ry, N // 2)
     crop = rgba[N // 2 - ry:N // 2 + ry, N // 2 - rx:N // 2 + rx]
     small = cv2.resize(crop, (crop.shape[1] // SS, crop.shape[0] // SS), interpolation=cv2.INTER_AREA)
     p2 = lambda n: 1 << max(3, (n - 1).bit_length())
