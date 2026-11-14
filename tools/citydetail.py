@@ -543,7 +543,12 @@ def markets(c, bmask):
         if len(item) < 3: continue
         P = item[2]
         m = np.zeros((H, W), np.uint8); cv2.fillPoly(m, [np.round(P).astype(np.int32)], 1)
-        m = m.astype(bool) & ~cv2.dilate(bmask.astype(np.uint8), np.ones((c.S * 2 + 1,) * 2, np.uint8)).astype(bool) & ~np.isin(cls, (5,))
+        import os as _os
+        mk2 = _os.environ.get('MKT2', '1') == '1'
+        if mk2:                                                      # 14.11.2026: є ряди кіосків з контурів — генеричний візерунок не потрібен
+            mb_ = m.astype(bool)
+            if mb_.sum() and (bmask.astype(bool) & mb_).sum() > 0.10 * mb_.sum(): continue
+        m = m.astype(bool) & ~cv2.dilate(bmask.astype(np.uint8), np.ones((c.S * 2 + 1,) * 2, np.uint8)).astype(bool) & ~np.isin(cls, (5, 12) if mk2 else (5,))
         if m.sum() < c.m(10) ** 2: continue
         (cx, cy), (rw, rh), a = cv2.minAreaRect(P.astype(np.float32))
         ang = math.radians(a) + (math.pi / 2 if rw < rh else 0)
@@ -555,7 +560,7 @@ def markets(c, bmask):
         ux, uy = math.cos(ang), math.sin(ang); nx, ny = -uy, ux
         yy, xx = np.nonzero(m)
         al = (xx - cx) * ux + (yy - cy) * uy; ac = (xx - cx) * nx + (yy - cy) * ny
-        depth, aisle, sec = c.m(3.2), c.m(3.6), c.m(5.5)
+        depth, aisle, sec = c.m(3.2), c.m(3.6), c.m(3.0 if mk2 else 5.5)
         period = 2 * depth + aisle
         ph = np.mod(ac, period)
         row = ph < 2 * depth
@@ -571,9 +576,23 @@ def markets(c, bmask):
         col *= (1.06 - 0.12 * inrow)[:, None]
         seam = (np.mod(al, sec) < c.S * 0.5) | (np.mod(ph, depth) < c.S * 0.4)
         col[seam] *= 0.8
+        if mk2:                                                      # навіс-козирок з боку проходу (як у рядів з контурів)
+            edge_ = row & (((side == 0) & (np.mod(ph, depth) < c.m(0.8))) | ((side == 1) & (np.mod(ph, depth) > depth - c.m(0.8))))
+            strp = np.floor(al / c.m(0.8)) % 2 == 0
+            acol = np.array(ACC, np.float32)[(rid // 2) % len(ACC)]
+            col[edge_] = np.where(strp[edge_][:, None], acol[edge_], np.array((232, 230, 222), np.float32))
         out = np.where(row[:, None], col, np.array((84, 86, 92), np.float32))
         shadow = (~row) & (ph < 2 * depth + c.S * 2.2)
         out[shadow] *= 0.7
+        if mk2:                                                      # лише цілі секції: ряд не обривається «заливкою»
+            key = rid.astype(np.int64) * 100003 + sid
+            uk, inv, cnt = np.unique(key, return_inverse=True, return_counts=True)
+            full = cnt >= 0.9 * depth * sec
+            keep = ~row | full[inv]
+            # проходи лише між рядами, що лишились
+            rk = np.unique(rid[row & keep])
+            keep &= row | np.isin(rid // 2 * 2, rk // 2 * 2)
+            yy, xx, out = yy[keep], xx[keep], out[keep]
         img[yy, xx] = np.clip(out, 0, 255).astype(np.uint8)
 
 
@@ -884,3 +903,126 @@ def cemetery(c):
                 _rect(img, x + c.m(0.2), y + c.m(0.25), c.m(1.6), c.m(0.75), nx, ny, (60, 66, 52))
                 _rect(img, x, y, c.m(1.6), c.m(0.75), nx, ny, col)
                 _rect(img, x - nx * c.m(0.75), y - ny * c.m(0.75), c.m(0.25), c.m(0.8), ux, uy, tuple(int(v * 0.8) for v in col))
+
+
+# ---------------------------------------------------------------- 14.11.2026: живі двори (патерни біля багатоквартирних)
+YARD_BT = ('apartments', 'residential', 'dormitory')
+
+
+def _bench(img, c, x, y, ux, uy):
+    """лавка 1,8 x 0,6 м: сидіння-дошки й тінь; урна поруч"""
+    nx, ny = -uy, ux
+    def R(L, Wd, ox, oy, col):
+        P = np.array([[-L / 2, -Wd / 2], [L / 2, -Wd / 2], [L / 2, Wd / 2], [-L / 2, Wd / 2]]) @ np.array([[ux, nx], [uy, ny]]).T
+        cv2.fillPoly(img, [np.round(P + [x + ox, y + oy]).astype(np.int32)], col)
+    R(c.m(1.9), c.m(0.7), c.m(0.25), c.m(0.3), (88, 88, 84))
+    R(c.m(1.8), c.m(0.6), 0, 0, (126, 84, 52))
+    R(c.m(1.8), c.m(0.12), nx * c.m(0.15), ny * c.m(0.15), (156, 108, 68))
+    bx, by = x + ux * c.m(1.5), y + uy * c.m(1.5)
+    cv2.circle(img, (int(bx), int(by)), max(1, int(c.m(0.3))), (60, 64, 66), -1)
+
+
+def _bins(img, c, x, y, ux, uy, rs):
+    """контейнерний майданчик: бетонна плита 4,5 x 2,4 м, 3 контейнери"""
+    nx, ny = -uy, ux
+    M_ = np.array([[ux, nx], [uy, ny]]).T
+    def R(L, Wd, ox, oy, col):
+        P = np.array([[-L / 2, -Wd / 2], [L / 2, -Wd / 2], [L / 2, Wd / 2], [-L / 2, Wd / 2]]) @ M_
+        o = np.array([ox, oy]) @ M_
+        cv2.fillPoly(img, [np.round(P + [x + o[0], y + o[1]]).astype(np.int32)], col)
+    R(c.m(4.8), c.m(2.6), c.m(0.3), c.m(0.3), (96, 96, 92))
+    R(c.m(4.6), c.m(2.4), 0, 0, (176, 174, 168))
+    cols = [(46, 108, 70), (52, 84, 140), (96, 100, 104), (46, 108, 70), (176, 120, 40)]
+    for k in range(3):
+        col = cols[rs.randrange(len(cols))]
+        R(c.m(1.3), c.m(1.0), c.m(-1.45 + k * 1.45), 0, col)
+        R(c.m(1.3), c.m(0.25), c.m(-1.45 + k * 1.45), c.m(-0.38), tuple(int(v * 0.7) for v in col))
+
+
+def _playground(img, c, x, y, ux, uy, rs):
+    """дитмайданчик 12 x 9 м (патерн): м'яке покриття, бортик, гірка, гойдалки, пісочниця, лавки"""
+    nx, ny = -uy, ux
+    M_ = np.array([[ux, nx], [uy, ny]]).T
+    def P_(pts): return np.round(np.array(pts) @ M_ + [x, y]).astype(np.int32)
+    L, Wd = c.m(12), c.m(9)
+    box = [[-L / 2, -Wd / 2], [L / 2, -Wd / 2], [L / 2, Wd / 2], [-L / 2, Wd / 2]]
+    surf = (196, 98, 72) if rs.random() < 0.6 else (64, 132, 92)
+    cv2.fillPoly(img, [P_(box)], surf)
+    cv2.polylines(img, [P_(box)], True, (226, 226, 214), max(1, int(c.m(0.25))))
+    def R(cx, cy, l, w, col): cv2.fillPoly(img, [P_([[cx - l / 2, cy - w / 2], [cx + l / 2, cy - w / 2], [cx + l / 2, cy + w / 2], [cx - l / 2, cy + w / 2]])], col)
+    m = c.m
+    R(m(-3.2), m(-1.8), m(3.2), m(3.2), (140, 96, 60)); R(m(-3.2), m(-1.8), m(2.6), m(2.6), (228, 210, 160))         # пісочниця
+    R(m(2.2), m(-2.2), m(1.0), m(3.4), (220, 60, 50)); R(m(2.2), m(-4.0), m(2.0), m(1.4), (240, 200, 60))           # гірка
+    R(m(0.5), m(2.4), m(4.2), m(0.3), (60, 90, 160))                                                                # гойдалки
+    for dx in (-0.9, 1.0): R(m(0.5 + dx), m(2.9), m(0.7), m(0.5), (90, 60, 40))
+    R(m(4.2), m(2.2), m(2.4), m(2.4), (60, 140, 90)); R(m(4.2), m(2.2), m(1.8), m(1.8), surf)                       # лазанка
+
+
+def yards(c, blds, trees):
+    """Двори біля багатоквартирних (патерни, не з OSM): лавки біля довгої стіни, що дивиться на проїзд,
+    контейнерний майданчик біля проїзду, дитмайданчик у великому вільному дворі. Не на дорогах, будинках, деревах."""
+    img, cls, S = c.img, c.cls, c.S
+    H, W = cls.shape
+    import citydraw as CD
+    G_YARD, G_GRASS, G_ROAD, G_DIRT, G_PAVED = 1, 2, 5, 9, 13          # як у citydraw.render
+    free = np.isin(cls, (G_YARD, G_PAVED, G_GRASS, G_DIRT)).astype(np.uint8)
+    bm = np.zeros((H, W), np.uint8)
+    for i, b, pts, ptf in blds: cv2.fillPoly(bm, [np.round(np.array(ptf)).astype(np.int32)], 1)
+    tm = np.zeros((H, W), np.uint8)
+    for tx, ty, tr, _ in trees: cv2.circle(tm, (int(tx * S), int(ty * S)), int(tr * S * 0.4), 1, -1)
+    free &= (bm == 0) & (tm == 0)
+    road = (cls == G_ROAD).astype(np.uint8)
+    droad = cv2.distanceTransform(1 - road, cv2.DIST_L2, 5)
+    occ = np.zeros((H, W), np.uint8)
+    def fits(x, y, r):
+        x, y, r = int(x), int(y), int(r)
+        if x - r < 0 or y - r < 0 or x + r >= W or y + r >= H: return False
+        return free[y - r:y + r + 1, x - r:x + r + 1].all() and not occ[y - r:y + r + 1, x - r:x + r + 1].any()
+    def take(x, y, r): cv2.circle(occ, (int(x), int(y)), int(r), 1, -1)
+    nb = nbin = npg = 0
+    for i, b, pts, ptf in blds:
+        bt_ = b['t'].get('building', 'yes')
+        if not (bt_ in YARD_BT and b.get('area', 0) >= 250 or bt_ == 'yes' and b.get('area', 0) >= 400 and b.get('h', 0) >= 9): continue
+        P = np.array(ptf, np.float32)
+        (cx, cy), (rw, rh), ang = cv2.minAreaRect(P)
+        a = math.radians(ang); ux, uy = math.cos(a), math.sin(a)
+        if rw < rh: ux, uy = -uy, ux; rw, rh = rh, rw
+        nx, ny = -uy, ux
+        wx, wy = c.world((cx, cy)); rs = _rng(wx, wy, 77)
+        # бік, ближчий до проїзду
+        best = None
+        for sd in (1, -1):
+            px_, py_ = cx + nx * sd * (rh / 2 + c.m(6)), cy + ny * sd * (rh / 2 + c.m(6))
+            if 0 <= int(px_) < W and 0 <= int(py_) < H:
+                d_ = droad[int(py_), int(px_)]
+                if best is None or d_ < best[0]: best = (d_, sd)
+        if best is None: continue
+        sd = best[1]
+        # лавки біля «під'їздів»: кожні ~16 м уздовж довгої стіни, 3 м від неї
+        n_ = max(1, int(rw / c.m(16)))
+        for k in range(n_):
+            t = (k + 0.5) / n_ - 0.5
+            bx, by = cx + ux * t * rw + nx * sd * (rh / 2 + c.m(3.0)), cy + uy * t * rw + ny * sd * (rh / 2 + c.m(3.0))
+            for side in (-1, 1):
+                qx, qy = bx + ux * side * c.m(2.4), by + uy * side * c.m(2.4)
+                if rs.random() < 0.65 and fits(qx, qy, c.m(1.2)):
+                    _bench(img, c, qx, qy, ux, uy); take(qx, qy, c.m(1.3)); nb += 1
+        # контейнери: біля торця, ближче до проїзду
+        cand = [(ux * t_ * (rw / 2 + c.m(o_)) + nx * sd * (rh / 2 + c.m(q_)), uy * t_ * (rw / 2 + c.m(o_)) + ny * sd * (rh / 2 + c.m(q_)))
+                for q_ in (2.5, 4, 5.5, -2, -6) for t_ in (1.0, -1.0, 0.7, -0.7, 0.35, -0.35) for o_ in (4,)]
+        for dx_, dy_ in cand:
+            bx, by = cx + dx_, cy + dy_
+            if 0 <= int(bx) < W and 0 <= int(by) < H and fits(bx, by, c.m(2.6)) and droad[int(by), int(bx)] < c.m(12):
+                _bins(img, c, bx, by, ux, uy, rs); take(bx, by, c.m(3.0)); nbin += 1; break
+        # дитмайданчик: з іншого боку двору / подалі від проїзду, якщо вміщується
+        if b.get('area', 0) >= 600 and rs.random() < 0.7:
+            for dist_m, s2 in ((10, -sd), (14, -sd), (18, -sd), (24, -sd), (12, sd), (17, sd), (22, sd), (30, -sd)):
+                for t in (0.0, -0.3, 0.3, -0.45, 0.45):
+                    bx, by = cx + ux * t * rw + nx * s2 * (rh / 2 + c.m(dist_m)), cy + uy * t * rw + ny * s2 * (rh / 2 + c.m(dist_m))
+                    if 0 <= int(bx) < W and 0 <= int(by) < H and fits(bx, by, c.m(6.5)) and droad[int(by), int(bx)] > c.m(6.5):
+                        _playground(img, c, bx, by, ux, uy, rs); take(bx, by, c.m(9)); npg += 1; break
+                else: continue
+                break
+    if __import__('os').environ.get('YDBG'):
+        print('yards', nb, nbin, npg, len(blds), 'free%%%.0f' % (100 * free.mean()), np.bincount(cls.ravel(), minlength=16)[:16] * 100 // cls.size)
+    return nb, nbin, npg

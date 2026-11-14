@@ -611,7 +611,14 @@ def market_solid(D, rgb, solid):
         for a in ((62, 104, 172), (166, 66, 54), (52, 122, 76), (214, 170, 52)):
             for f in (0.75, 0.85, 0.95, 1.05):
                 acc |= np.abs(img - np.array(a) * f).sum(-1) < 36
-        kiosk = mk.astype(bool) & (roof | acc)
+        rdm = np.zeros(mk.shape, np.uint8)                             # 14.11.2026: дороги через ринок (Львівське шосе) — не кіоски
+        for w2 in D['w']:
+            h2 = w2['t'].get('highway')
+            if h2 in CD.ROAD_W and CD.drivable(w2['t']) and len(w2['pts']) > 1:
+                Q = np.array(w2['pts']) * K - [x0, y0]
+                if (Q[:, 0].max() < 0) or (Q[:, 1].max() < 0) or Q[:, 0].min() > mk.shape[1] or Q[:, 1].min() > mk.shape[0]: continue
+                cv2.polylines(rdm, [np.round(Q).astype(np.int32)], False, 1, int(CD.ROAD_W[h2] / MPP) + 6)
+        kiosk = mk.astype(bool) & (roof | acc) & (rdm == 0)
         kiosk = cv2.morphologyEx(kiosk.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)).astype(bool)
         s = np.asarray(solid[y0:y1, x0:x1]).copy(); s |= kiosk
         solid[y0:y1, x0:x1] = s

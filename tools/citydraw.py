@@ -19,6 +19,9 @@ ASPH = [(64, 68, 76), (74, 78, 86), (82, 86, 94)]
 MARK = (226, 226, 214)
 SIDE = [(150, 148, 144), (166, 164, 158), (178, 176, 170)]
 CURB = (196, 194, 188)
+SERV2 = os.environ.get('SERV2', '1') == '1'
+YARD2 = os.environ.get('YARD2', '1') == '1'
+MKT2 = os.environ.get('MKT2', '1') == '1'            # 14.11.2026: ринки — ряди кіосків з контурів, не поверх доріг/паркувань          # 14.11.2026: лавки, контейнери, дитмайданчики у дворах          # 14.11.2026: проїзди з бордюрами й рівними кінцями
 PAVED = [(132, 132, 130), (146, 146, 142), (158, 158, 154)]
 GRASS = [(74, 122, 50), (92, 142, 58), (110, 160, 68), (132, 176, 80)]
 DRY = [(128, 132, 70), (148, 150, 84)]
@@ -103,6 +106,7 @@ def data():
         for b in _CACHE['B'] + _CACHE['SAT']:
             a = np.array(b['q'], np.float32); b['bb'] = (a[:, 0].min(), a[:, 1].min(), a[:, 0].max(), a[:, 1].max())
         _unify_roofs(_CACHE)
+        if MKT2: _market_rows(_CACHE); _ms_on_parking(_CACHE)
         _drop_on_roads(_CACHE, GW, GH)
     return _CACHE
 
@@ -124,6 +128,56 @@ def _near_fuel(b, R=30.0):
     if not len(F_): return False
     c = np.array(b['q'], np.float32).mean(0)
     return float(np.hypot(*(F_ - c).T).min()) < R / SRC
+
+
+def _ms_on_parking(C):
+    """14.11.2026 (Агора): контури Microsoft, що лягли на відкрите паркування (машини на знімку прийняло за дах), — прибрати"""
+    from shapely.geometry import Polygon
+    from shapely.strtree import STRtree
+    pk = []
+    for w in C['w']:
+        t = w['t']
+        if w.get('closed') and t.get('amenity') == 'parking' and t.get('parking') in (None, 'surface') and len(w['pts']) >= 4:
+            try: pk.append(Polygon(w['pts']).buffer(0))
+            except Exception: pass
+    if not pk: return
+    tr = STRtree(pk); n = 0
+    for key in ('B', 'SAT'):
+        keep = []
+        for b in C.get(key, []):
+            if b['t'].get('src') == 'ms' and len(b['q']) >= 3:
+                try: P = Polygon(b['q']).buffer(0)
+                except Exception: keep.append(b); continue
+                ov = sum(P.intersection(pk[int(j)]).area for j in tr.query(P))
+                if P.area > 0 and ov > 0.4 * P.area: n += 1; continue
+            keep.append(b)
+        C[key] = keep
+    print('  контури MS на паркуваннях прибрано: %d' % n)
+
+
+def _market_rows(C):
+    """14.11.2026: будинки всередині ринків (amenity=marketplace), вузькі (коротший бік < 14 м) — це ряди кіосків зі знімка:
+    малюються як ряди павільйонів (секції з навісами), а не як будинки; генеричний візерунок ринку там, де є ряди, не малюється."""
+    from shapely.geometry import Polygon
+    from shapely.strtree import STRtree
+    mk = []
+    for w in C['w']:
+        if w.get('closed') and w['t'].get('amenity') == 'marketplace' and len(w['pts']) >= 4:
+            try: mk.append(Polygon(w['pts']).buffer(0))
+            except Exception: pass
+    if not mk: return
+    tr = STRtree(mk); n = 0
+    for b in C['B'] + C.get('SAT', []):
+        q = np.array(b['q'], np.float32)
+        if len(q) < 3: continue
+        c_ = q.mean(0)
+        from shapely.geometry import Point
+        hit = [int(j) for j in tr.query(Point(*c_)) if mk[int(j)].contains(Point(*c_))]
+        if not hit: continue
+        (_, _), (rw, rh), _ = cv2.minAreaRect(q)
+        if min(rw, rh) * SRC < 14 and b['t'].get('building', 'yes') in ('yes', 'retail', 'kiosk', 'roof', 'commercial', 'service', 'industrial'):
+            b['kiosk_row'] = True; n += 1
+    print('  ринки: рядів кіосків з контурів %d' % n)
 
 
 def _unify_roofs(C):
@@ -448,8 +502,23 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
         if h in SIDE_W and w['t'].get('sidewalk') != 'no': line(pts, ROAD_W[h] + 2 * SIDE_W[h], G_SIDE)
     for h, pts, w in foot:
         line(pts, 8 if h == 'pedestrian' else 2.0, G_PED if h == 'pedestrian' else G_PATH)
-    for h, pts, w in drive: line(pts, ROAD_W[h], G_ROAD)
+    # 14.11.2026: проїзди (service) — рівні кінці в тупиках (без «ковбаски»), окрема маска для бордюру й латок
+    _deg = {}
+    for h, pts, w in drive:
+        for k, nid in enumerate(w['nds']): _deg[nid] = _deg.get(nid, 0) + (1 if k in (0, len(w['nds']) - 1) else 2)
+    sv = Image.new('L', (WF, HF), 0); dsv = ImageDraw.Draw(sv)
+    for h, pts, w in drive:
+        if h == 'service' and SERV2:
+            wp = max(1.0 * S, ROAD_W[h] / MF); n_ = len(pts)
+            for d_ in (dr, dsv):
+                d_.line(pts, fill=G_ROAD if d_ is dr else 1, width=int(round(wp)))
+                for k, (x, y) in enumerate(pts):
+                    if k in (0, n_ - 1) and _deg.get(w['nds'][k], 1) <= 1: continue      # тупик — прямий край
+                    d_.ellipse([x - wp / 2, y - wp / 2, x + wp / 2, y + wp / 2], fill=G_ROAD if d_ is dr else 1)
+        else: line(pts, ROAD_W[h], G_ROAD)
+    servm = np.array(sv) > 0
     cls = np.array(im)
+    servm &= cls == G_ROAD
 
     # ---------- текстури землі (візерунки — у сітці гри)
     img = np.zeros((HF, WF, 3), np.uint8)
@@ -511,6 +580,18 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
     img[walk & cv2.dilate(road.astype(np.uint8), k3).astype(bool)] = CURB
     soft = np.isin(cls, (G_GRASS, G_WOOD, G_DIRT))
     img[walk & cv2.dilate(soft.astype(np.uint8), k3).astype(bool)] = SIDE[0]
+    if SERV2 and servm.any():
+        # проїзди: світліший асфальт з латками; бордюр по краю, де поруч двір/газон/ґрунт (не тротуар, не інша дорога)
+        sa = img[servm].astype(np.int16) + 10
+        bl_ = blob[servm]                                         # латки й плями: м'які, неправильної форми
+        sa[bl_ > 0.66] -= 9; sa[(bl_ > 0.30) & (bl_ < 0.34)] += 6
+        img[servm] = np.clip(sa, 0, 255).astype(np.uint8)
+        side_ = np.isin(cls, (G_YARD, G_GRASS, G_DIRT, G_PAVED, G_WOOD))
+        k5_ = np.ones((4 * S + 1, 4 * S + 1), np.uint8)              # бордюр ≈2 пікс гри
+        edge = servm & cv2.dilate(side_.astype(np.uint8), k5_).astype(bool) & ~cv2.dilate((road & ~servm).astype(np.uint8), k3).astype(bool)
+        img[edge] = CURB
+        edge2 = servm & ~edge & cv2.dilate(edge.astype(np.uint8), k3).astype(bool)      # тінь бордюру
+        img[edge2] = np.clip(img[edge2].astype(np.int16) - 12, 0, 255).astype(np.uint8)
     # рейки
     ov = Image.new('L', (WF, HF), 0); do = ImageDraw.Draw(ov)
     for pts in rails:
@@ -745,6 +826,7 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None):
         CDt.plots(ctx, blds, park, bmask, solid_out)
         CDt.playgrounds(ctx); CDt.benches(ctx); CDt.markets(ctx, bmaskf); CDt.fountains(ctx)
         CDt.park_furniture(ctx, park); CDt.planters(ctx); CDt.kiosks(ctx, solid_out)
+        if YARD2: CDt.yards(ctx, blds, trees)
 
     # ---------- пляж: парасольки-«грибки» рядами вздовж води малює mappatch.beach (31.10.2026)
     # ---------- дахи
@@ -801,6 +883,8 @@ def draw_roof(img, b, pts, rs, ss=1):
     yy, xx = np.mgrid[0:h, 0:w]
     d = cv2.distanceTransform(m, cv2.DIST_L2, 3) / S_            # у пікселях гри
     typ, gxy = 'flat', None
+    if b.get('kiosk_row') and S_ > 1:
+        return _kiosk_row(img, b, P, bx0, by0, m, F, d, rs, S_)
     if circ > 0.9 and area > 250:                       # купол / кругла будівля
         cx, cy = (P - [bx0, by0]).mean(0)
         ang = np.degrees(np.arctan2(yy - cy, xx - cx)) % 360
@@ -867,6 +951,46 @@ def draw_roof(img, b, pts, rs, ss=1):
     Fs = F[oy:oy + dst.shape[0], ox:ox + dst.shape[1]]; Os = ol[oy:oy + dst.shape[0], ox:ox + dst.shape[1]]
     dst[Fs] = out[oy:oy + dst.shape[0], ox:ox + dst.shape[1]][Fs]
     dst[Os] = OUT if S_ == 1 else (S[0].astype(np.float32) * 0.55).astype(np.uint8)
+
+
+KIOSK_ROOF = [(196, 200, 206), (178, 184, 192), (214, 216, 220), (160, 166, 174), (202, 204, 206), (186, 190, 194)]
+KIOSK_ACC = [(62, 104, 172), (166, 66, 54), (52, 122, 76), (214, 170, 52), (90, 90, 96)]
+
+
+def _kiosk_row(img, b, P, bx0, by0, m, F, d, rs, S_):
+    """ряд павільйонів ринку: секції ≈3 м поперек ряду (різні дахи, шви, тінь між секціями), навіс-козирок уздовж одного боку"""
+    H, W = img.shape[:2]; h, w = m.shape
+    (cx, cy), (rw, rh), a = cv2.minAreaRect((P - [bx0, by0]).astype(np.float32))
+    a = math.radians(a)
+    ux, uy = (math.cos(a), math.sin(a)) if rw >= rh else (-math.sin(a), math.cos(a))
+    nx, ny = -uy, ux
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    al = (xx - cx) * ux + (yy - cy) * uy; ac = (xx - cx) * nx + (yy - cy) * ny
+    sec = 3.0 / MPP * S_
+    sid = np.floor(al / sec).astype(np.int64)
+    wx, wy = int(b['q'][0][0]), int(b['q'][0][1])
+    hsh = (sid * 73856093 ^ (wx * 19349663) ^ (wy * 83492791)) & 0xFFFF
+    col = np.array(KIOSK_ROOF, np.float32)[hsh % len(KIOSK_ROOF)]
+    acc = (hsh % 9) == 0
+    col[acc] = np.array(KIOSK_ACC, np.float32)[(hsh[acc] // 9) % len(KIOSK_ACC)]
+    half = (min(rw, rh)) / 2
+    col *= (1.05 - 0.1 * np.clip((ac + half) / max(1, 2 * half), 0, 1))[..., None]           # світло з північного заходу
+    seam = np.mod(al, sec) < S_ * 0.6
+    col[seam] *= 0.72
+    awn = ac > half - 0.9 / MPP * S_                                                       # козирок уздовж південного боку
+    stripe = (np.floor(al / (0.8 / MPP * S_)) % 2 == 0)
+    acol = np.array(KIOSK_ACC[int(hsh.flat[0]) % 4], np.float32)
+    col[awn] = np.where(stripe[awn][:, None], acol, np.array((232, 230, 222), np.float32))
+    col[(d < 1.01)] *= 0.8
+    out = np.clip(col, 0, 255).astype(np.uint8)
+    dst = img[max(0, by0):min(H, by0 + h), max(0, bx0):min(W, bx0 + w)]
+    oy, ox = max(0, by0) - by0, max(0, bx0) - bx0
+    Fs = F[oy:oy + dst.shape[0], ox:ox + dst.shape[1]]
+    dst[Fs] = out[oy:oy + dst.shape[0], ox:ox + dst.shape[1]][Fs]
+    ko = S_ + 1
+    ol = cv2.dilate(m, np.ones((ko, ko), np.uint8)).astype(bool) & ~F
+    Os = ol[oy:oy + dst.shape[0], ox:ox + dst.shape[1]]
+    dst[Os] = (60, 60, 64)
 
 
 def _tree_v3(img, x, y, rr, kind, rs, ss):
