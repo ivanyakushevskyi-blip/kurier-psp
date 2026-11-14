@@ -20,6 +20,7 @@ MARK = (226, 226, 214)
 SIDE = [(150, 148, 144), (166, 164, 158), (178, 176, 170)]
 CURB = (196, 194, 188)
 SERV2 = os.environ.get('SERV2', '1') == '1'
+YARD2 = os.environ.get('YARD2', '1') == '1'          # 15.11.2026: двори — газон за замовчуванням, сірим лише явне покриття
 ROAD3 = os.environ.get('ROAD3', '1') == '1'          # 15.11.2026: дороги однією фігурою — заокруглені примикання, рівні бордюри й тротуари
 YARD2 = os.environ.get('YARD2', '1') == '1'
 MKT2 = os.environ.get('MKT2', '1') == '1'            # 14.11.2026: ринки — ряди кіосків з контурів, не поверх доріг/паркувань          # 14.11.2026: лавки, контейнери, дитмайданчики у дворах          # 14.11.2026: проїзди з бордюрами й рівними кінцями
@@ -351,6 +352,9 @@ ROAD_W = {'primary': 13, 'secondary': 11, 'tertiary': 9.5, 'residential': 7, 'un
           'primary_link': 7, 'secondary_link': 6.5, 'tertiary_link': 6.5, 'service': 4.5, 'track': 3.5}
 SIDE_W = {'primary': 3.0, 'secondary': 3.0, 'tertiary': 2.6, 'residential': 2.0, 'unclassified': 1.8, 'living_street': 1.6,
           'primary_link': 2.0, 'secondary_link': 2.0, 'tertiary_link': 2.0}
+if os.environ.get('SIDE2', '1') == '1':                # 15.11.2026 (Іван): тротуари ширші
+    SIDE_W = {'primary': 4.0, 'secondary': 4.0, 'tertiary': 3.5, 'residential': 2.8, 'unclassified': 2.5, 'living_street': 2.0,
+              'primary_link': 2.5, 'secondary_link': 2.5, 'tertiary_link': 2.5}
 
 
 def _road_shape(cls, base, drive, joins, svm, nmain, S, MF, G_ROAD, G_SIDE, G_PATH, G_PED):
@@ -529,7 +533,13 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None, props_out=None):
     if S > 1:                                                     # частки кольору: працює і в тіні, і восени
         ycls[(gn > 0.352) & (gn > rn) & (ycls == 3)] = 1
         ycls[(rn > 0.37) & (ch > 20) & (gn <= 0.352) & (ycls == 3)] = 2
-    ycls[dark] = 0
+    if YARD2:
+        # 15.11.2026 (Іван: «чому так багато сірого»): знімки осінні, з довгими тінями — «не зелене» ≠ асфальт.
+        # Сірим лишаємо лише явне покриття: рівне, світле, без кольору; решта двору — газон (буре — ґрунт)
+        hard = (ch < 20) & (mx > 95) & (mx < 215) & (tex < 3.2)
+        ycls[(ycls == 3) & ~hard] = 1
+        ycls[dark] = 1
+    else: ycls[dark] = 0
     ycls[sw.max(-1) < 1] = 1          # 15.11.2026: поза знімками — трава (раніше «найближчий клас» у вікні блоку давав шви)
     _bm = Image.new('L', (W, H), 0); _d = ImageDraw.Draw(_bm)
     for _, b in BL:
