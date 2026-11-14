@@ -20,6 +20,7 @@ MARK = (226, 226, 214)
 SIDE = [(150, 148, 144), (166, 164, 158), (178, 176, 170)]
 CURB = (196, 194, 188)
 SERV2 = os.environ.get('SERV2', '1') == '1'
+ROAD3 = os.environ.get('ROAD3', '1') == '1'          # 15.11.2026: дороги однією фігурою — заокруглені примикання, рівні бордюри й тротуари
 YARD2 = os.environ.get('YARD2', '1') == '1'
 MKT2 = os.environ.get('MKT2', '1') == '1'            # 14.11.2026: ринки — ряди кіосків з контурів, не поверх доріг/паркувань          # 14.11.2026: лавки, контейнери, дитмайданчики у дворах          # 14.11.2026: проїзди з бордюрами й рівними кінцями
 PAVED = [(132, 132, 130), (146, 146, 142), (158, 158, 154)]
@@ -352,6 +353,70 @@ SIDE_W = {'primary': 3.0, 'secondary': 3.0, 'tertiary': 2.6, 'residential': 2.0,
           'primary_link': 2.0, 'secondary_link': 2.0, 'tertiary_link': 2.0}
 
 
+def _road_shape(cls, base, drive, joins, svm, nmain, S, MF, G_ROAD, G_SIDE, G_PATH, G_PED):
+    """15.11.2026 (Іван: «дорога з рівними бордюрами і плавним примиканням»).
+    1) на кожному перехресті / стику різних ширин — заокруглення внутрішніх кутів (локальне замикання лише доріг цього вузла);
+    2) край дороги згладжено (без сходинок від ламаних);
+    3) тротуар — рівна смуга заданої ширини від краю готової фігури (кути тротуару повторюють заокруглення)."""
+    HF, WF = cls.shape
+    R = cls == G_ROAD; R0 = R.copy()
+    # вузли й дороги в них
+    nodes = {}
+    for i, (h, pts, w) in enumerate(drive):
+        for k, nid in enumerate(w['nds']):
+            e = nodes.setdefault(nid, [pts[k], [], 0]); e[1].append(i); e[2] += 1 if k in (0, len(w['nds']) - 1) else 2
+    def dist_out(m):                                                  # відстань до маски (для пікселів поза нею)
+        return cv2.distanceTransform((~m).astype(np.uint8), cv2.DIST_L2, 5)
+    def close_local(cx, cy, mfun, r, rad):
+        x0, y0 = int(cx - rad - r - 4), int(cy - rad - r - 4); x1, y1 = int(cx + rad + r + 5), int(cy + rad + r + 5)
+        xa, ya, xb, yb = max(0, x0), max(0, y0), min(WF, x1), min(HF, y1)
+        if xb - xa < 4 or yb - ya < 4: return
+        m = mfun(xa, ya, xb, yb)
+        if not m.any(): return
+        dil = dist_out(m) <= r                                         # замикання = розширення, потім звуження на r
+        clo = cv2.distanceTransform(dil.astype(np.uint8), cv2.DIST_L2, 5) > r
+        yy_, xx_ = np.mgrid[ya:yb, xa:xb]
+        disc = (xx_ - cx) ** 2 + (yy_ - cy) ** 2 <= rad * rad
+        R[ya:yb, xa:xb] |= clo & disc
+    def ways_mask(ids):
+        def f(xa, ya, xb, yb):
+            im = Image.new('L', (xb - xa, yb - ya), 0); d = ImageDraw.Draw(im)
+            for i in ids:
+                h, pts, w = drive[i]; wp = max(1.0 * S, ROAD_W[h] / MF)
+                P = [(x - xa, y - ya) for x, y in pts]
+                if len(P) >= 2: d.line(P, fill=1, width=int(round(wp)), joint='curve')
+                for x, y in (P[0], P[-1]): d.ellipse([x - wp / 2, y - wp / 2, x + wp / 2, y + wp / 2], fill=1)
+            return np.array(im) > 0
+        return f
+    for nid, (p, ids, deg) in nodes.items():
+        ids = sorted(set(ids))
+        if len(ids) < 2 and deg < 3: continue
+        ws = [ROAD_W[drive[i][0]] for i in ids]
+        if deg < 3 and len(set(ws)) < 2: continue                    # пряме продовження тієї ж ширини
+        x, y = p
+        if not (-200 <= x < WF + 200 and -200 <= y < HF + 200): continue
+        r = min(9.0, max(3.0, 0.8 * min(ws))) / MF                    # радіус бордюру на розі
+        close_local(x, y, ways_mask(ids), r, max(ws) / MF / 2 + 1.6 * r)
+    for (x, y) in joins:                                              # проїзд, що впирається в дорогу без спільного вузла
+        r = 3.0 / MF
+        close_local(x, y, lambda xa, ya, xb, yb: R[ya:yb, xa:xb].copy(), r, 4.5 / MF + 1.6 * r)
+    R = cv2.GaussianBlur(R.astype(np.float32), (0, 0), 0.9 * S) > 0.5   # рівний край без сходинок
+    # тротуари: ширина з дороги, від якої відкладаємо
+    swm = Image.new('L', (WF, HF), 0); d = ImageDraw.Draw(swm)
+    for h, pts, w in sorted(drive, key=lambda t: SIDE_W.get(t[0], 0)):
+        if h not in SIDE_W or w['t'].get('sidewalk') == 'no' or len(pts) < 2: continue
+        sp = int(round(SIDE_W[h] / MF)); wp = max(1.0 * S, ROAD_W[h] / MF)
+        d.line(pts, fill=sp, width=int(round(wp)) + 2 * S, joint='curve')
+        for x, y in (pts[0], pts[-1]): rr = wp / 2 + S; d.ellipse([x - rr, y - rr, x + rr, y + rr], fill=sp)
+    swm = np.array(swm)
+    dist, (iy, ix) = ndi.distance_transform_edt(~R, return_indices=True)
+    side = (~R) & (dist <= swm[iy, ix].astype(np.float32) + 0.5) & (swm[iy, ix] > 0) & ~np.isin(base, (G_PATH, G_PED))
+    out = base.copy()
+    out[side] = G_SIDE
+    out[R] = G_ROAD
+    return out, R & ~R0
+
+
 def _hash(ix, iy, seed):
     h = (ix.astype(np.int64) * 73856093) ^ (iy.astype(np.int64) * 19349663) ^ (seed * 83492791)
     h = (h ^ (h >> 13)) * 1274126177
@@ -500,6 +565,7 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None, props_out=None):
             if h in ROAD_W: drive.append((h, ptf, w))
             elif h in ('footway', 'path', 'cycleway', 'steps', 'pedestrian', 'bridleway'): foot.append((h, ptf, w))
     for h, pts, w in drive:
+        if ROAD3: break                                               # 15.11.2026: тротуари — рівною смугою від готової дорожньої фігури (нижче)
         if h in SIDE_W and w['t'].get('sidewalk') != 'no': line(pts, ROAD_W[h] + 2 * SIDE_W[h], G_SIDE)
     for h, pts, w in foot:
         line(pts, 8 if h == 'pedestrian' else 2.0, G_PED if h == 'pedestrian' else G_PATH)
@@ -510,9 +576,22 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None, props_out=None):
     sv = Image.new('L', (WF, HF), 0); dsv = ImageDraw.Draw(sv)
     # 14.11.2026 (2): спершу інші дороги — окрема маска; проїзд, що лише доходить до дороги (без спільного вузла), — не тупик
     nm_ = Image.new('L', (WF, HF), 0); dnm = ImageDraw.Draw(nm_)
+    cls_base = np.array(im) if ROAD3 else None                      # підґрунтя без доріг і тротуарів
+    _wn = {}                                                         # вузол -> ширини доріг, що в ньому сходяться
     for h, pts, w in drive:
-        if not (h == 'service' and SERV2): line(pts, ROAD_W[h], G_ROAD); line(pts, ROAD_W[h], 1, dnm)
+        for nid in w['nds']: _wn.setdefault(nid, set()).add(ROAD_W[h])
+    for h, pts, w in drive:
+        if h == 'service' and SERV2: continue
+        if not ROAD3: line(pts, ROAD_W[h], G_ROAD); line(pts, ROAD_W[h], 1, dnm); continue
+        # 15.11.2026: суцільна лінія з плавними зламами; кінці — заокруглення не ширше за сусідню дорогу (без «горбів» на стиках)
+        wp = max(1.0 * S, ROAD_W[h] / MF)
+        for d_, f_ in ((dr, G_ROAD), (dnm, 1)):
+            if len(pts) >= 2: d_.line(pts, fill=f_, width=int(round(wp)), joint='curve')
+            for k in (0, len(pts) - 1):
+                ws = _wn.get(w['nds'][k], {ROAD_W[h]}); rr = min(ws) / MF / 2 if len(ws) > 1 else wp / 2
+                x, y = pts[k]; d_.ellipse([x - rr, y - rr, x + rr, y + rr], fill=f_)
     nmain = np.array(nm_) > 0
+    ways_ext = []                                                    # точки, де проїзд доходить до дороги без спільного вузла
     def _join(pts, k, wp):
         """15.11.2026: проїзд, що не доходить до дороги (до ~7 м), продовжується ВЗДОВЖ себе до дороги; навскіс — ніколи"""
         n_ = len(pts); a, b_ = (pts[1], pts[0]) if k == 0 else (pts[n_ - 2], pts[n_ - 1])
@@ -531,15 +610,18 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None, props_out=None):
             for k in (0, n_ - 1):
                 if _deg.get(w['nds'][k], 1) <= 1 and n_ >= 2:
                     j_ = _join(pts, k, wp)
-                    if j_: ext.append((pts[k], j_))
+                    if j_: ext.append((pts[k], j_)); ways_ext.append(j_)
             for d_ in (dr, dsv):
                 f_ = G_ROAD if d_ is dr else 1
                 d_.line(pts, fill=f_, width=int(round(wp)))
                 for p_, j_ in ext: d_.line([p_, j_], fill=f_, width=int(round(wp)))
                 for x, y in pts:                                     # 15.11.2026: тупики й злами — округлі (Іван: рівний зріз виглядає обрізаним)
                     d_.ellipse([x - wp / 2, y - wp / 2, x + wp / 2, y + wp / 2], fill=f_)
-    servm = (np.array(sv) > 0) & ~nmain                      # світлий асфальт і бордюр — лише на самому проїзді
     cls = np.array(im)
+    if ROAD3:
+        cls, _fil = _road_shape(cls, cls_base, drive, ways_ext, np.array(sv) > 0, nmain, S, MF, G_ROAD, G_SIDE, G_PATH, G_PED)
+        nmain = nmain | cv2.dilate(_fil.astype(np.uint8), np.ones((6 * S + 1, 6 * S + 1), np.uint8)).astype(bool)   # бордюр проїзду не заходить у заокруглення
+    servm = (np.array(sv) > 0) & ~nmain                      # світлий асфальт і бордюр — лише на самому проїзді
     servm &= cls == G_ROAD
 
     # ---------- текстури землі (візерунки — у сітці гри)
@@ -604,6 +686,9 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None, props_out=None):
     img[walk & cv2.dilate(road.astype(np.uint8), k3).astype(bool)] = CURB
     soft = np.isin(cls, (G_GRASS, G_WOOD, G_DIRT))
     img[walk & cv2.dilate(soft.astype(np.uint8), k3).astype(bool)] = SIDE[0]
+    if ROAD3:                                                        # 15.11.2026: бордюр і там, де дорога межує з двором/газоном без тротуару
+        open_ = np.isin(cls, (G_YARD, G_GRASS, G_WOOD, G_DIRT, G_PAVED, G_SAND))
+        img[open_ & cv2.dilate(road.astype(np.uint8), k3).astype(bool)] = CURB
     if SERV2 and servm.any():
         # проїзди: світліший асфальт з латками; бордюр по краю, де поруч двір/газон/ґрунт (не тротуар, не інша дорога)
         sa = img[servm].astype(np.int16) + 6                      # 15.11.2026: без плям-латок (виглядали брудом)
