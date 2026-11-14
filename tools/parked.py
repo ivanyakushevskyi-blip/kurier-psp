@@ -148,5 +148,37 @@ def build(D, g, W, H, play, solid, surf, trees, pois=(), seed=11):
                     if kind == 'road': nroad += 1
                     else: ncurb += 1
             s_ += M(5.6) + (M(4) if rs.random() < 0.3 else 0)
-    print('  запарковані машини: паркування %d, біля бордюру %d, на тротуарі %d' % (npark, nroad, ncurb))
+    # ---- 14.11.2026: двори — уздовж проїздів (service) біля багатоквартирних, з боку двору, ~25%
+    from shapely.geometry import Polygon, Point
+    from shapely.strtree import STRtree
+    ap = []
+    for b in D['B']:
+        bt = b['t'].get('building', 'yes')
+        if (bt in ('apartments', 'residential', 'dormitory') and b.get('area', 0) >= 250) or (bt == 'yes' and b.get('area', 0) >= 400 and b.get('h', 0) >= 9):
+            try: ap.append(Polygon(np.array(b['q']) * CD.K).buffer(0))
+            except Exception: pass
+    tr = STRtree(ap) if ap else None
+    nyard = 0
+    for w in D['w']:
+        t = w['t']
+        if t.get('highway') != 'service' or t.get('service') in ('parking_aisle', 'drive-through') or not CD.drivable(t) or tr is None: continue
+        q = np.array(w['pts']) * CD.K
+        if len(q) < 2: continue
+        off = M(CD.ROAD_W['service'] / 2 + 1.05)
+        for i in range(len(q) - 1):
+            a, b2 = q[i], q[i + 1]; L = float(np.hypot(*(b2 - a)))
+            if L < M(8): continue
+            u = (b2 - a) / L; nv = np.array([-u[1], u[0]])
+            s_ = M(4)
+            while s_ < L - M(4):
+                p = a + u * s_
+                near = [int(j) for j in tr.query(Point(*p).buffer(M(35)))]
+                if near and min(ap[j].distance(Point(*p)) for j in near) < M(35):
+                    for sd in (1, -1):
+                        if rs.random() > 0.25: continue
+                        x, y = p + nv * sd * off
+                        ang = math.atan2(u[1], u[0]) + (0 if sd > 0 else math.pi)
+                        if _free(x, y, ang, solid, surf, play, tg, W, H, (0, 1, 3, 4)) and put(x, y, ang): nyard += 1
+                s_ += M(6.2)
+    print('  запарковані машини: паркування %d, біля бордюру %d, на тротуарі %d, у дворах %d' % (npark, nroad, ncurb, nyard))
     return out

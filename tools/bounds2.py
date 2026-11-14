@@ -54,6 +54,37 @@ def snap_roads(play, d, W, H):
     return out
 
 
+def border_on_roads(play, W, H):
+    """14.11.2026 (Іван): межа — по межовій дорозі. Тонкі смуги зони за великими дорогами (tertiary і вище), що торкаються
+    краю зони (ширина < 90 м), відрізаються; сама дорога з тротуарами лишається."""
+    import satmosaic as S
+    from PIL import Image, ImageDraw
+    ways = S.load_osm('data/osm_v3')
+    ox, oy = (26.995 - LON0) * MLON, (LAT1 - 49.422) * MLAT
+    gp = lambda pts: [((x + ox) / G, (y + oy) / G) for x, y in pts]
+    im = Image.new('L', (W, H), 0); d_ = ImageDraw.Draw(im)
+    for p, t in ways:
+        h = t.get('highway')
+        if h in ('primary', 'trunk', 'secondary', 'tertiary', 'primary_link', 'secondary_link', 'tertiary_link') and len(p) > 1 and t.get('area') != 'yes':
+            d_.line(gp(p), fill=1, width=int(round(16 / G)))
+    band = np.array(im, bool)
+    inner = play & ~band
+    lab, n = ndi.label(inner)
+    if n == 0: return play
+    thick = ndi.maximum(ndi.distance_transform_edt(inner) * G, lab, index=np.arange(1, n + 1))
+    outer = ndi.binary_dilation(~play, iterations=2)
+    touch = ndi.maximum(outer.astype(np.uint8), lab, index=np.arange(1, n + 1))
+    cut = np.zeros(n + 1, bool); cut[1:] = (thick < 45) & (touch > 0)
+    city = inner & ~cut[lab]
+    keep_band = band & play & ndi.binary_dilation(city, iterations=int(10 / G))
+    out = ndi.binary_fill_holes(city | keep_band)
+    lab2, n2 = ndi.label(out)
+    if n2 > 1:
+        sz = ndi.sum(np.ones_like(lab2), lab2, index=np.arange(1, n2 + 1)); out = lab2 == (1 + int(np.argmax(sz)))
+    print('  межа по дорогах: відрізано %.2f км²' % ((play & ~out).sum() * G * G / 1e6))
+    return out
+
+
 def main(src='data/bounds_v4.json', out='build/bounds.npz'):
     W = int((LON1 - LON0) * MLON / G); H = int((LAT1 - LAT_0) * MLAT / G)
     poly = np.array([((lo - LON0) * MLON / G, (LAT1 - la) * MLAT / G) for lo, la in json.load(open(src))], np.float32)
@@ -62,6 +93,7 @@ def main(src='data/bounds_v4.json', out='build/bounds.npz'):
     d = ndi.distance_transform_edt(m == 0) * G
     play = d <= GROW_M
     play = snap_roads(play, d, W, H)
+    play = border_on_roads(play, W, H)
     margin = ndi.distance_transform_edt(~play) * G <= MARGIN_M
     np.savez_compressed(out, play=play, margin=margin, G=G, lon0=LON0, lat1=LAT1, mlon=MLON, mlat=MLAT)
     print('ігрова зона %.2f км², з запасом %.2f км²' % (play.sum() * G * G / 1e6, margin.sum() * G * G / 1e6))

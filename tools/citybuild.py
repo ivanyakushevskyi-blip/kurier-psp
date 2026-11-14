@@ -137,7 +137,39 @@ ARCH_ROOFS = []
 BAR_RED, BAR_WHITE = (200, 56, 44), (236, 236, 230)
 
 
-def barriers(rgb, cls, play):
+MAINX = ('primary', 'trunk', 'secondary', 'tertiary', 'primary_link', 'secondary_link', 'tertiary_link', 'trunk_link')
+
+
+def main_roads_mask():
+    """14.11.2026: маска великих доріг (виїзди з міста) — лише на них ставляться блоки на межі"""
+    D = CD.data()
+    mm = open_memmap('build/mainx_tmp.npy', 'w+', np.uint8, (H, W))
+    for w in D['w']:
+        t = w['t']
+        if t.get('highway') in MAINX and CD.drivable(t) and len(w['pts']) > 1:
+            cv2.polylines(mm, [np.round(np.array(w['pts']) * K).astype(np.int32)], False, 1, int(CD.ROAD_W.get(t['highway'], 9) / CD.MPP) + 4)
+    mm.flush(); return mm
+
+
+def road_stubs(cls, play, mainx):
+    """бічні вулиці за межею: проїжджі (не стіна), темні, до ~120 м; далі — стіна"""
+    st = open_memmap('build/stubs.npy', 'w+', np.bool_, (H, W))
+    R = 1024; PAD = int(130 / CD.MPP); n = 0
+    for r0 in range(0, H, R):
+        a0, a1 = max(0, r0 - PAD), min(H, r0 + R + PAD)
+        pl = np.asarray(play[a0:a1]).astype(np.uint8)
+        dist = cv2.distanceTransform(1 - pl, cv2.DIST_L2, 3) * CD.MPP
+        rd = (np.asarray(cls[a0:a1]) == G_ROAD) & (np.asarray(mainx[a0:a1]) == 0)
+        m = rd & (dist > 0) & (dist <= 120)
+        lab_n, lab = cv2.connectedComponents(((m | (pl > 0)) & (rd | (pl > 0))).astype(np.uint8), connectivity=8)
+        keep = np.zeros(lab_n, bool); keep[np.unique(lab[pl > 0])] = True; keep[0] = False
+        m &= keep[lab]
+        k0 = r0 - a0; st[r0:r0 + min(R, H - r0)] = m[k0:k0 + min(R, H - r0)]; n += int(m[k0:k0 + min(R, H - r0)].sum())
+    st.flush(); print('road stubs (вулиці в затемнення) %.2f км²' % (n * CD.MPP ** 2 / 1e6), flush=True)
+    return st
+
+
+def barriers(rgb, cls, play, mainx=None):
     """Межа зони на дорогах: червоно-білий бетонний блок поперек проїзду (смуга ≈2,5 м уздовж межі).
     Лише там, де дорога перетинає межу; де дорога йде вздовж межі — нічого (довгі смуги відкидаються). Смугами рядків."""
     R = 1024; PAD = int(60 * FS); n_ok = 0
@@ -146,7 +178,9 @@ def barriers(rgb, cls, play):
         a0, a1 = max(0, r0 - PAD), min(H, r0 + R + PAD)
         pl = np.asarray(play[a0:a1]).astype(np.uint8)
         dist = cv2.distanceTransform(pl, cv2.DIST_L2, 3)
-        road = cv2.dilate((np.asarray(cls[a0:a1]) == G_ROAD).astype(np.uint8), np.ones((k5, k5), np.uint8))
+        rd_ = np.asarray(cls[a0:a1]) == G_ROAD
+        if mainx is not None: rd_ &= np.asarray(mainx[a0:a1]) > 0                # 14.11.2026: блоки лише на великих виїздах
+        road = cv2.dilate(rd_.astype(np.uint8), np.ones((k5, k5), np.uint8))
         band = (road > 0) & (dist > 0) & (dist <= w6)
         n, lab, st, _ = cv2.connectedComponentsWithStats(band.astype(np.uint8), connectivity=8)
         ok = np.zeros(n, bool)
@@ -208,7 +242,9 @@ def main(nproc=2):
     for r0 in range(0, H, 1024):
         blk = np.asarray(rgb[r0:r0 + 1024]).copy(); blk[~np.asarray(margin[r0:r0 + 1024])] = CD.OUT; out[r0:r0 + 1024] = blk
     rgb = out
-    barriers(rgb, cls, play)
+    mainx = main_roads_mask()
+    barriers(rgb, cls, play, mainx)
+    stubs = road_stubs(cls, play, mainx)
     # ---- зіткнення: будинки OSM + MS + ручні, вода; поза ігровою зоною — стіна
     D = CD.data()
     solid = open_memmap('build/solid.npy', 'w+', np.uint8, (H, W))
@@ -240,7 +276,7 @@ def main(nproc=2):
     print('extra solids', len(seen), flush=True)
     solid.flush()
     sb = open_memmap('build/solid_b.npy', 'w+', np.bool_, (H, W))
-    for r0 in range(0, H, 1024): sb[r0:r0 + 1024] = (np.asarray(solid[r0:r0 + 1024]) > 0) | ~np.asarray(play[r0:r0 + 1024])
+    for r0 in range(0, H, 1024): sb[r0:r0 + 1024] = (np.asarray(solid[r0:r0 + 1024]) > 0) | ~(np.asarray(play[r0:r0 + 1024]) | np.asarray(stubs[r0:r0 + 1024]))
     sb.flush(); del sb, solid
     os.replace('build/solid_b.npy', 'build/solid.npy')
     solid = np.load('build/solid.npy', mmap_mode='r')
