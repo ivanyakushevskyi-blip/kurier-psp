@@ -603,7 +603,9 @@ static int lm_count;
 /* стани: сховано / сповіщення (визирає трохи) / навігатор (на 2/3) / повністю відкритий (меню). */
 enum { APP_HOME, APP_ORDERS, APP_NAV, APP_WALLET, APP_RATING, APP_SET, APP_LOOK, NAPP };
 static const char *APP_NAME[NAPP] = { "", "ЗАМОВЛЕННЯ", "НАВІГАТОР", "ГАМАНЕЦЬ", "РЕЙТИНГ", "НАЛАШТУВАННЯ", "ОГЛЯД МІСТА" };
-static int ph_full, ph_app, ph_sel, show_fps, ph_hide, want_freecam, o_hold, o_used;
+static int ph_full, ph_app, ph_sel, show_fps, ph_hide, want_freecam, o_hold, o_used, x_hold;
+#define HOLD_X 22                                                    /* затиснути ✕, щоб дістати телефон */
+#define HOLD_O 36                                                    /* затиснути ○, щоб вийти з навігації */
 static float ph_y = SH + 8;                                      /* верх телефона на екрані (анімація) */
 static int nav_on, nav_kind;                                     /* маршрут: 0 — до замовлення, 1 — АЗС, 2 — СТО */
 /* сповіщення: черга */
@@ -775,17 +777,24 @@ static int app_items(void) {
 }
 static int offer_at(int i) { for (int k = 0, n = 0; k < NOFF; k++) if (offers[k].ttl > 0) { if (n == i) return k; n++; } return -1; }
 static int ph_peek(void);
+static void phone_input2(unsigned pressed, unsigned btn);
 static void phone_input(unsigned pressed, unsigned btn) {
+    int was = ph_full;
+    phone_input2(pressed, btn);
+    if (was && !ph_full) x_hold = -100000;                          /* ✕, яким закрили меню, ще затиснуто — не відкривати знову */
+}
+static void phone_input2(unsigned pressed, unsigned btn) {
     if (!ph_full) {
         /* ○: коротко — сховати телефон; затиснути — вимкнути маршрут */
         if (pressed & BTN_BACK) { o_hold = 0; o_used = 0; }
         if (btn & BTN_BACK) {
-            if (++o_hold == 36 && nav_on) { nav_on = 0; o_used = 1; notify("", "МАРШРУТ ВИМКНЕНО", C_white_0, 90, -1); }
+            if (++o_hold == HOLD_O && nav_on && !o_used) { nav_on = 0; o_used = 1; notify("", "МАРШРУТ ВИМКНЕНО", C_white_0, 90, -1); }
         } else if (o_hold > 0) {
-            if (!o_used && o_hold < 36) { ph_hide = 1; if (notes_n) note_t = 1; }
+            if (!o_used && o_hold < HOLD_O) { ph_hide = 1; if (notes_n) note_t = 1; }
             o_hold = 0;
         }
-        if (pressed & BTN_OK) {
+        if (!(btn & BTN_OK)) { x_hold = 0; return; }
+        if (++x_hold == HOLD_X) {                                     /* затиснути ✕ — дістати телефон */
             audio_play(SND_TICK, 0.5f, 1, 0);
             int note_offer = notes_n && note_t > 0 && notes_q[0].offer >= 0 && offers[notes_q[0].offer].ttl > 0;
             if (ph_hide && ph_peek() && !note_offer) { ph_hide = 0; return; }     /* сховане — повернути як було (навігатор/замовлення) */
@@ -1827,6 +1836,7 @@ static void update_player(unsigned btn, int lx) {
         steer = (lx > 128 ? 1 : -1) * powf(a, 1.35f);
     }
     if (steer > 1) steer = 1; if (steer < -1) steer = -1;
+    if (!ph_full) { if (btn & PSP_CTRL_LEFT) steer = -1; if (btn & PSP_CTRL_RIGHT) steer = 1; }   /* стрілки — кермо, поки меню закрите */
     int gas = (btn & BTN_GAS) != 0;
     int brake = (btn & BTN_BRAKE) != 0;
     int hand = (btn & BTN_HAND) != 0;
@@ -2573,8 +2583,8 @@ static int text_wrap(int x, int y, int maxw, u8 col, const char *s, int maxl) {
     }
     return nl;
 }
-#define PW 150
-#define PH 236
+#define PW 136
+#define PH 212
 #define PX 6
 static void phone_bar(int sx, int sy, int sw) {                       /* рядок стану: годинник, гроші, рейтинг */
     char b[24]; int m_ = tod_clock(); snprintf(b, sizeof b, "%02d:%02d", m_ / 60, m_ % 60);
@@ -2604,11 +2614,11 @@ static void phone_full_draw(int sx, int sy, int sw, int sh) {
         for (int i = 1; i < NAPP; i++) {
             int yy = y + (i - 1) * 24, sel = ph_sel == i - 1;
             if (sel) rect(sx + 2, yy, sw - 4, 22, C_panel_1);
-            rect(sx + 6, yy + 4, 14, 14, IC[i]);
-            if (i == APP_ORDERS && n_offers) { snprintf(b, sizeof b, "%d", n_offers); rect(sx + 6, yy + 4, 14, 14, C_red_2); text8(sx + 13 - tw8(b, 1) / 2, yy + 5, 1, C_white_2, b); }
-            text8(sx + 26, yy + 5, 1, sel ? C_white_2 : C_white_1, APP_NAME[i]);
+            rect(sx + 4, yy + 4, 13, 14, IC[i]);
+            if (i == APP_ORDERS && n_offers) { snprintf(b, sizeof b, "%d", n_offers); rect(sx + 4, yy + 4, 13, 14, C_red_2); text8(sx + 11 - tw8(b, 1) / 2, yy + 5, 1, C_white_2, b); }
+            text8(sx + 21, yy + 5, 1, sel ? C_white_2 : C_white_1, APP_NAME[i]);
         }
-        text8(sx + 4, sy + sh - 13, 1, C_white_0, BT_X " ВИБІР  " BT_CIR " СХОВАТИ");
+        text8(sx + 4, sy + sh - 13, 1, C_white_0, BT_X " ОК   " BT_CIR " НАЗАД");
         return;
     }
     app_title(sx, y, sw, APP_NAME[ph_app]); y += 18;
@@ -2632,7 +2642,7 @@ static void phone_full_draw(int sx, int sy, int sw, int sh) {
                 else text8(sx + 6, y, 1, C_red_3, "ВІДМОВИТИСЯ");
                 y += 17;
             }
-            if (n_offers) { snprintf(b, sizeof b, "НОВИХ ЗАМОВЛЕНЬ: %d", n_offers); text8(sx + 4, y + 4, 1, C_white_0, b); }
+            if (n_offers) { snprintf(b, sizeof b, "НОВИХ: %d", n_offers); text8(sx + 4, y + 4, 1, C_white_0, b); }
         } else if (!n_offers) {
             text_wrap(sx + 6, y + 40, sw - 12, C_white_1, "ПОКИ ТИХО...|ПОКАТАЙСЯ МІСТОМ,|ЗАМОВЛЕННЯ ПРИЙДЕ", 3);
         } else {
@@ -2702,7 +2712,7 @@ static void target_arrow(float cx, float cy, float tx, float ty, u8 c) {   /* с
     tri(cx + ux * 7, cy + uy * 7, cx - ux * 5 + nx * 5.5f, cy - uy * 5 + ny * 5.5f, cx - ux * 5 - nx * 5.5f, cy - uy * 5 - ny * 5.5f, C_ink_0);
     tri(cx + ux * 5.5f, cy + uy * 5.5f, cx - ux * 3.5f + nx * 4, cy - uy * 3.5f + ny * 4, cx - ux * 3.5f - nx * 4, cy - uy * 3.5f - ny * 4, c);
 }
-#define NAV_MAP_H 104                                                  /* карта навігатора ≈ 4:3 */
+#define NAV_MAP_H 92                                                  /* карта навігатора ≈ 4:3 */
 static void draw_phone(void) {
     int peek = ph_hide ? 0 : ph_peek(), note = notes_n && note_t > 0;
     /* висота, на яку визирає (від низу екрана): рамка 12 + рядок стану 14 + вміст */
@@ -2740,9 +2750,26 @@ static void draw_phone(void) {
             text8(sx + 20, cy + 13, 1, C_box_3, kb);
         }
         rect(sx, cy + 25, sw, 1, C_ink_2);
-        if (peek == 2) phone_map(sx, cy + 26, sw, NAV_MAP_H, sx + sw / 2, cy + 26 + NAV_MAP_H * 0.55f);
+        if (peek == 2) {
+            phone_map(sx, cy + 26, sw, NAV_MAP_H, sx + sw / 2, cy + 26 + NAV_MAP_H * 0.5f);
+            int hy = cy + 26 + NAV_MAP_H - 13;                          /* «вийти з навігації»: смужка заповнюється, поки ○ затиснуто */
+            rect(sx, hy, sw, 13, C_panel_0);
+            int fw = o_hold > 0 && !o_used ? (sw - 4) * (o_hold > HOLD_O ? HOLD_O : o_hold) / HOLD_O : 0;
+            rect(sx + 2, hy + 11, sw - 4, 1, C_ink_2); if (fw) rect(sx + 2, hy + 10, fw, 3, C_red_3);
+            text8(sx + 4, hy + 1, 1, C_white_1, BT_CIR " ВИЙТИ");
+        }
     }
     if (note) note_card(sx + 3, cy + (peek ? 28 : 2), sw - 6, &notes_q[0]);
+}
+/* піктограма «дістати телефон»: у краю екрана, кнопка ✕ і смужка, що заповнюється, поки ✕ затиснуто */
+static void draw_phone_hint(void) {
+    if (ph_full || freecam || state != S_PLAY) return;
+    int visible = ph_y < SH - 4;
+    int x = visible ? PX + PW + 5 : 6, y = SH - 24;
+    rect(x - 1, y - 1, 14, 22, C_ink_0); rect(x, y, 12, 20, C_white_0); rect(x + 2, y + 3, 8, 13, x_hold > 0 ? C_box_3 : C_panel_0);
+    if (x_hold > 0) { int fh = 13 * (x_hold > HOLD_X ? HOLD_X : x_hold) / HOLD_X; rect(x + 2, y + 3, 8, 13 - fh, C_panel_0); }
+    rect(x + 5, y + 17, 2, 1, C_ink_1);
+    otext8(x + 15, y + 5, 1, C_white_2, C_ink_0, BT_X);
 }
 
 static void draw_hud(void) {
@@ -2764,6 +2791,7 @@ static void draw_hud(void) {
     if (fuel <= 0 && fabsf(vel) < 0.05f && !evac) otext8_c(SW / 2, 172, 1, C_red_3, C_ink_0, "ПАЛЬНЕ СКІНЧИЛОСЯ.  " BT_X " ЕВАКУАТОР ДО АЗС (300 ГРН)");
     draw_speedo();
     draw_phone();
+    draw_phone_hint();
 }
 
 static void update_particles(void) {
@@ -3575,7 +3603,7 @@ int main(int argc, char **argv) {
         unsigned btn = 0; int lx = 128;
         if (ostate == O_NONE && n_offers) {
             static int shot_off; if (!shot_off++) { draw_frame(); snprintf(nm, sizeof nm, "%s/f_offers.ppm", dir); dump(nm); }
-            game_update(0, BTN_OK, 128, 128);                 /* △ — дістати телефон */
+            for (int h = 0; h < HOLD_X; h++) game_update(BTN_OK, h ? 0 : BTN_OK, 128, 128);   /* затиснути ✕ — дістати телефон */
             if (shot_off == 1) { draw_frame(); snprintf(nm, sizeof nm, "%s/f_note.ppm", dir); dump(nm); }
             if (ph_app != APP_ORDERS) { ph_app = APP_ORDERS; ph_sel = 0; }
             game_update(0, BTN_OK, 128, 128);                 /* △ — взяти */
@@ -3597,7 +3625,7 @@ int main(int argc, char **argv) {
             stop_car(); stuck = 0;
         }
         if (f == 400 && ostate != O_NONE) {
-            game_update(0, BTN_OK, 128, 128); ph_full = 1; ph_app = APP_ORDERS; ph_sel = 0; for (int i = 0; i < 20; i++) draw_frame(); snprintf(nm, sizeof nm, "%s/f_note_task.ppm", dir); dump(nm);
+            ph_full = 1; ph_app = APP_ORDERS; ph_sel = 0; for (int i = 0; i < 20; i++) draw_frame(); snprintf(nm, sizeof nm, "%s/f_note_task.ppm", dir); dump(nm);
             ph_full = 0;
         }
         game_update(btn, 0, lx, 128);
