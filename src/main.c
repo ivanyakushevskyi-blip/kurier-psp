@@ -70,6 +70,7 @@ static uint16_t __attribute__((aligned(16))) wbuf_[2][WW * WH];     /* карт�
 static uint16_t __attribute__((aligned(16))) warch_[2][WW * WH];    /* крони й будинки над арками, 5551 */
 static u8 __attribute__((aligned(16))) wover_[2][WW * WH];          /* бульбашки (індекси палітри, 0 — прозоро) */
 static uint16_t *wbuf = wbuf_[0], *warch = warch_[0]; static u8 *wover = wover_[0];
+static uint16_t *wbuf_vram;                                        /* PSP: шар карти у відеопам'яті (його пише й читає лише чип) */
 #define MAXRV 12000
 static float roofv[MAXRV * 4]; static int nroofv;               /* трикутники дахів: u, v (тексель шару карти), зсув x, y */
 static float darkv[MAXRV * 2]; static int ndarkv;               /* трикутники темної плями під дахами: x, y у шарі карти */
@@ -79,7 +80,7 @@ static int wa_bb[2][4] = { { 0, 0, WW - 1, WH - 1 }, { 0, 0, WW - 1, WH - 1 } };
 #define WA_MARK(x, y) { int *b_ = wa_bb[buf_cur]; if ((x) < b_[0]) b_[0] = (x); if ((x) > b_[2]) b_[2] = (x); if ((y) < b_[1]) b_[1] = (y); if ((y) > b_[3]) b_[3] = (y); }
 static void swap_bufs(void) {
     arch_used_s[buf_cur] = arch_used; buf_cur ^= 1; arch_used = arch_used_s[buf_cur];
-    fb = fb_[buf_cur]; wbuf = wbuf_[buf_cur]; warch = warch_[buf_cur]; wover = wover_[buf_cur];
+    fb = fb_[buf_cur]; wbuf = wbuf_vram ? wbuf_vram : wbuf_[buf_cur]; warch = warch_[buf_cur]; wover = wover_[buf_cur];
 }
 static u8 *tg = fb_[0]; static int tgw = SW, tgh = SH;   /* куди малюють примітиви */
 static void target(u8 *b, int w, int h) { tg = b; tgw = w; tgh = h; }
@@ -3597,6 +3598,25 @@ static void snd_init(void) {
     audio_init(snd_ptr, snd_len, NSND, SND_RATE);
 }
 static void *cur_target;
+/* 15.11.2026 (швидкодія чипа): прозорий 8-бітний шар малюється лише смугами, де щось намальовано (брудні рядки),
+   а не на весь екран */
+static void layer8_dirty(const u8 *b, int stride, int h, float sx, float sy, float scale, int linear) {
+    int k = drt_id(b); if (k < 0) { gfx_layer8(b, stride, stride, h, sx, sy, scale, 1, linear); return; }
+    int y = 0;
+    while (y < h) {
+        if (drt_hi[k][y] < drt_lo[k][y]) { y++; continue; }
+        int y0 = y, lo = drt_lo[k][y], hi = drt_hi[k][y], gap = 0;
+        while (y < h) {
+            if (drt_hi[k][y] >= drt_lo[k][y]) { if (drt_lo[k][y] < lo) lo = drt_lo[k][y]; if (drt_hi[k][y] > hi) hi = drt_hi[k][y]; gap = 0; }
+            else if (++gap > 6) break;
+            y++;
+        }
+        int y1 = y - gap; if (y1 <= y0) y1 = y0 + 1;
+        int xa = (lo - (linear ? 2 : 0)) & ~63; if (xa < 0) xa = 0;
+        int xb = hi + 1 + (linear ? 2 : 0); if (xb > stride) xb = stride;
+        gfx_layer8(b + y0 * stride + xa, stride, xb - xa, y1 - y0, sx + xa * scale, sy + y0 * scale, scale, 1, linear);
+    }
+}
 static void render(void *target_buf) {
     if (!world_mode) {
         gfx_begin(target_buf);
@@ -3730,7 +3750,7 @@ static void render(void *target_buf) {
         }
     }
     if (arch_used) gfx_layer16(warch, WW, WW, WH, sx, sy, ZOOM, 1, 1, ZOOM != 1.0f);
-    if (over_used) gfx_layer8(wover, WW, WW, WH, sx, sy, ZOOM, 1, ZOOM != 1.0f);
+    if (over_used) layer8_dirty(wover, WW, WH, sx, sy, ZOOM, ZOOM != 1.0f);
     render_particles();
     float sdx, sdy, sk = (world_mode && !freecam) ? sun_shadow(&sdx, &sdy) : 0;
     float wk = 1 - 0.13f * wx_cloud - 0.12f * wx_rain - 0.12f * wx_storm - 0.05f * wx_snow;   /* хмари, дощ, гроза — темніше */
@@ -3783,7 +3803,7 @@ static void render(void *target_buf) {
     }
     if (world_mode) weather_draw();
     for (int i = 0; i < ndim; i++) gfx_rect(dimr[i][0], dimr[i][1], dimr[i][2], dimr[i][3], dimc[i]);
-    gfx_layer8(fb, SW, SW, SH, 0, 0, 1, 1, 0);
+    layer8_dirty(fb, SW, SH, 0, 0, 1, 0);
     gfx_end();
 }
 static void pal16_init(void) {
@@ -3813,6 +3833,7 @@ int main(int argc, char **argv) {
     u8 *vbase = (u8 *)sceGeEdramGetAddr();
     vw[0] = (u32 *)((uintptr_t)vbase | 0x40000000); vw[1] = (u32 *)((uintptr_t)(vbase + BUFSZ) | 0x40000000);
     vp[0] = (void *)vbase; vp[1] = (void *)(vbase + BUFSZ);
+    wbuf_vram = (uint16_t *)(vbase + 3 * BUFSZ); wbuf = wbuf_vram;   /* 15.11.2026: за двома кадрами й шаром світла (0,29 МБ із вільних 0,42) */
     for (int i = 0; i < STRIDE * SH; i++) { vw[0][i] = 0xFF000000; vw[1][i] = 0xFF000000; }
     sceDisplaySetFrameBuf((void *)vw[0], STRIDE, PSP_DISPLAY_PIXEL_FORMAT_8888, PSP_DISPLAY_SETBUF_NEXTFRAME);
     sceDisplayWaitVblankStart(); sceDisplayWaitVblankStart(); sceDisplayWaitVblankStart();
