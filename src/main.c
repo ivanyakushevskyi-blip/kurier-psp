@@ -3882,6 +3882,15 @@ static void render(void *target_buf) {
         }
         gfx_light_end(cur_target);
         if (nroofv) gfx_tris16(wbuf, WW, WW, WH, 1, vv, nroofv, lcol(ar, ag, ab, 1));   /* дахи — лише темрява ночі: світло з вікон і ліхтарів падає на землю, не на дах */
+        if (arch_used) {                                                /* 15.11.2026: арки, навіси й крони над машинами — теж без світла фар/ліхтарів */
+            static float av[WA_MAXR * 6 * 4]; int na = 0;
+            for (int k = 0; k < wa_n[buf_cur]; k++) {
+                short *r = wa_r[buf_cur][k]; float u0 = r[0], v0 = r[1], u1 = r[2] + 1, v1 = r[3] + 1;
+                float Q[6][2] = { { u0, v0 }, { u1, v0 }, { u1, v1 }, { u0, v0 }, { u1, v1 }, { u0, v1 } };
+                for (int q = 0; q < 6; q++) { float *o = av + 4 * na++; o[0] = Q[q][0]; o[1] = Q[q][1]; o[2] = sx + Q[q][0] * ZOOM; o[3] = sy + Q[q][1] * ZOOM; }
+            }
+            if (na) gfx_tris16(warch, WW, WW, WH, 1, av, na, lcol(ar, ag, ab, 1));
+        }
     }
     if (world_mode) weather_draw();
     for (int i = 0; i < ndim; i++) gfx_rect(dimr[i][0], dimr[i][1], dimr[i][2], dimr[i][3], dimc[i]);
