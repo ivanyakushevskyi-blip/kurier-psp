@@ -1,6 +1,7 @@
 #include "gfx.h"
 #include <math.h>
 #include <string.h>
+#include "fastmath.h"
 
 static uint32_t __attribute__((aligned(16))) clut[256];
 
