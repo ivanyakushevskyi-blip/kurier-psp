@@ -1304,18 +1304,21 @@ static int traf_lvl[NTRAF];                                         /* 15.11.202
 #endif
 #define TR_NS 9                                                      /* точки шляху через 5 м: 0..40 м */
 static float tr_sx[TR_NS], tr_sy[TR_NS], tr_tx[TR_NS], tr_ty[TR_NS], tr_ds;
-static void tr_samples(int i) {
+static int tr_samples(int i, int per) {
     /* 15.11.2026 (швидкодія): точки шляху 5..40 м — раз на 3 кадри (кожна машина у свій кадр), між ними — з кешу
        з поправкою на пройдене (tr_ds); точка 0 — щокадру (по ній просування вздовж маршруту) */
     static float cx_[NTRAF][TR_NS], cy_[NTRAF][TR_NS], ctx_[NTRAF][TR_NS], cty_[NTRAF][TR_NS], cs_[NTRAF]; static int ce_[NTRAF], cn_[NTRAF], cinit_;
     if (!cinit_) { cinit_ = 1; for (int q = 0; q < NTRAF; q++) ce_[q] = -1; }
     tr_path(i, 0, &tr_sx[0], &tr_sy[0], &tr_tx[0], &tr_ty[0]);
-    if (ce_[i] != traf[i].e * 2 + traf[i].dir || cn_[i] != traf[i].nx || (tick + i) % TRC == 0 || traf[i].s < cs_[i]) {
+    int fresh = 0;
+    if (ce_[i] != traf[i].e * 2 + traf[i].dir || cn_[i] != traf[i].nx || (tick + i) % per == 0 || traf[i].s < cs_[i]) {
+        fresh = 1;
         for (int k = 1; k < TR_NS; k++) tr_path(i, TM(5.0f * k), &cx_[i][k], &cy_[i][k], &ctx_[i][k], &cty_[i][k]);
         ce_[i] = traf[i].e * 2 + traf[i].dir; cn_[i] = traf[i].nx; cs_[i] = traf[i].s;
     }
     tr_ds = traf[i].s - cs_[i];
     for (int k = 1; k < TR_NS; k++) { tr_sx[k] = cx_[i][k]; tr_sy[k] = cy_[i][k]; tr_tx[k] = ctx_[i][k]; tr_ty[k] = cty_[i][k]; }
+    return fresh;
 }
 static float tr_leader(int i, int lv, float *lv_ms) {                /* шлях — у tr_sx/tr_sy (tr_samples) */
     float best = 1e9f; *lv_ms = 0; tr_lead_j = -2;
@@ -1426,7 +1429,9 @@ static void traffic_update(void) {
         traf[i].blink = bl;
         /* ---- бажана швидкість: обмеження, повороти й вигини попереду (бічне прискорення ≤ 2 м/с²) */
         float v0 = tv_ms(traf[i].vmax), vlim = v0;
-        tr_samples(i);
+        static float vcurv[NTRAF];                                         /* 15.11.2026: обмеження з вигинів — лише при оновленні точок */
+        if (tr_samples(i, seen ? TRC : 2 * TRC)) {
+        vcurv[i] = 1e9f;
         for (int k = 1; k + 2 < TR_NS; k++) {                              /* вигин на 10 м: між точками k і k+2 */
             float d = 5.0f * k, t1x = tr_tx[k], t1y = tr_ty[k], t2x = tr_tx[k + 2], t2y = tr_ty[k + 2];
             float cr = t1x * t2y - t1y * t2x, dt = t1x * t2x + t1y * t2y;
@@ -1434,8 +1439,10 @@ static void traffic_update(void) {
             float dth = fabsf(atan2f(cr, dt));
             float R = 10.0f / dth, vc = sqrtf(1.8f * R); if (vc < 2.0f) vc = 2.0f;
             float va = sqrtf(vc * vc + 2 * 2.0f * fmaxf(0, d - 3));
-            if (va < vlim) vlim = va;
+            if (va < vcurv[i]) vcurv[i] = va;
         }
+        }
+        if (vcurv[i] < vlim) vlim = vcurv[i];
         int exitn = traf[i].nx < 0 && (RG_NODE_X[nd] || traf[i].route >= 0);   /* кінець шматка маршруту тролейбуса — теж згасає */
         if (traf[i].nx < 0 && !exitn) { float va = sqrtf(2 * 2.5f * fmaxf(0, left * MPP - 3)); if (va < vlim) vlim = va; }
         traf[i].fade = exitn ? fminf(1, fmaxf(0, (left - TM(4)) / TM(30))) : fminf(1, traf[i].fade + 0.02f);   /* у темряву за межею — згасає */
@@ -2453,7 +2460,6 @@ static void weather_update(void) {
 }
 /* ---- тіні від сонця (07.11.2026): опівдні немає, вранці на північний захід, увечері на північний схід; довжина <= пів висоти */
 #define MAXSV 12000
-static float shv[MAXSV * 2]; static int nshv;
 static float sun_shadow(float *dx, float *dy) {                      /* зсув тіні на 1 м висоти (пікс) і сила 0..1 */
     float h = tod_clock() / 60.0f, f = (h - 12.0f) / 6.0f;
     if (f < -1) f = -1; if (f > 1) f = 1;
@@ -2464,11 +2470,19 @@ static float sun_shadow(float *dx, float *dy) {                      /* зсув
     if (h < 7.5f || h > 19.5f) k = 0;
     return k;
 }
+/* 15.11.2026 (швидкодія): тіні й контури дахів — у цілих світових координатах і з кешу; перебудова лише коли
+   змінився набір блоків навколо камери або сонце зсунулось помітно (кожен кадр — лише зсув на камеру в чипі) */
+static int16_t shw[MAXSV * 2], ftw[MAXSV * 2]; static int nshv, nfoot;
+static int sh_key[4] = { -1, -1, -1, -1 }, ft_key[4] = { -1, -1, -1, -1 }; static float sh_sdx = 1e9f, sh_sdy = 1e9f;
 static void build_shadows(float vx, float vy, float sdx, float sdy) {
-    nshv = 0;
     int m = (int)(TM(16)), cx0 = ((int)vx - m) / CS - 1, cx1 = ((int)(vx + VW) + m) / CS + 1, cy0 = ((int)vy - m) / CS - 1, cy1 = ((int)(vy + VH) + m) / CS + 1;
     if (cx0 < 0) cx0 = 0; if (cy0 < 0) cy0 = 0; if (cx1 >= NCX) cx1 = NCX - 1; if (cy1 >= NCY) cy1 = NCY - 1;
-    #define SV(px, py) { shv[2 * nshv] = ((px) - vx) * ZOOM; shv[2 * nshv + 1] = ((py) - vy) * ZOOM; nshv++; }
+    cx0 = cx0 & ~1; cy0 = cy0 & ~1; cx1 = cx1 | 1; cy1 = cy1 | 1;              /* з запасом по 2 блоки — рідше перебудова */
+    if (cx1 >= NCX) cx1 = NCX - 1; if (cy1 >= NCY) cy1 = NCY - 1;
+    if (sh_key[0] == cx0 && sh_key[1] == cy0 && sh_key[2] == cx1 && sh_key[3] == cy1 && fabsf(sdx - sh_sdx) < 0.004f && fabsf(sdy - sh_sdy) < 0.004f) return;
+    sh_key[0] = cx0; sh_key[1] = cy0; sh_key[2] = cx1; sh_key[3] = cy1; sh_sdx = sdx; sh_sdy = sdy;
+    nshv = 0;
+    #define SV(px, py) { shw[2 * nshv] = (int16_t)lrintf(px); shw[2 * nshv + 1] = (int16_t)lrintf(py); nshv++; }
     for (int gy = cy0; gy <= cy1; gy++) for (int gx = cx0; gx <= cx1; gx++) {                       /* будинки: контур, зсунутий контур і бічні стінки */
         uint32_t k0 = BLD_CELL(gy * NCX + gx), k1 = BLD_CELL(gy * NCX + gx + 1);
         for (uint32_t k = k0; k < k1; k++) {
@@ -2487,18 +2501,21 @@ static void build_shadows(float vx, float vy, float sdx, float sdy) {
     }
     #undef SV
 }
-static int nfoot; static float footv[MAXSV * 2];
 static void build_footprints(float vx, float vy) {                   /* дахи — без тіні: контури будинків кольором «світла» */
-    nfoot = 0;
     int cx0 = (int)vx / CS - 1, cx1 = (int)(vx + VW) / CS + 1, cy0 = (int)vy / CS - 1, cy1 = (int)(vy + VH) / CS + 1;
     if (cx0 < 0) cx0 = 0; if (cy0 < 0) cy0 = 0; if (cx1 >= NCX) cx1 = NCX - 1; if (cy1 >= NCY) cy1 = NCY - 1;
+    cx0 = cx0 & ~1; cy0 = cy0 & ~1; cx1 = cx1 | 1; cy1 = cy1 | 1;
+    if (cx1 >= NCX) cx1 = NCX - 1; if (cy1 >= NCY) cy1 = NCY - 1;
+    if (ft_key[0] == cx0 && ft_key[1] == cy0 && ft_key[2] == cx1 && ft_key[3] == cy1) return;
+    ft_key[0] = cx0; ft_key[1] = cy0; ft_key[2] = cx1; ft_key[3] = cy1;
+    nfoot = 0;
     for (int gy = cy0; gy <= cy1; gy++) for (int gx = cx0; gx <= cx1; gx++) {
         uint32_t k0 = BLD_CELL(gy * NCX + gx), k1 = BLD_CELL(gy * NCX + gx + 1);
         for (uint32_t k = k0; k < k1; k++) {
             uint32_t p0 = BLD_PO(k), o0 = BLD_OO(k), o1 = BLD_OO(k + 1);
             if (nfoot + (int)(o1 - o0) * 3 > MAXSV) return;
             for (uint32_t t = o0; t < o1; t++) { const uint8_t *T = BLD_OT(t);
-                for (int q = 0; q < 3; q++) { const int16_t *P = BLD_PT(p0 + T[q]); footv[2 * nfoot] = (P[0] - vx) * ZOOM; footv[2 * nfoot + 1] = (P[1] - vy) * ZOOM; nfoot++; } }
+                for (int q = 0; q < 3; q++) { const int16_t *P = BLD_PT(p0 + T[q]); ftw[2 * nfoot] = P[0]; ftw[2 * nfoot + 1] = P[1]; nfoot++; } }
         }
     }
 }
@@ -3733,6 +3750,7 @@ static void render(void *target_buf) {
     if (world_mode && NPARKED > 0) {                                     /* запарковані машини */
         float k = CAR_LPX / CARTEX_LEN * ZOOM, hx = CARTEX_W / 2 * k, hy = CARTEX_H / 2 * k;
         int gx0 = (int)(viewx - OP(12)) / PK_G, gy0 = (int)(viewy - OP(12)) / PK_G, gx1 = (int)(viewx + VW + OP(12)) / PK_G, gy1 = (int)(viewy + VH + OP(12)) / PK_G;
+        for (int pass = 0; pass < 2; pass++)                              /* 15.11.2026: спершу всі тіні (одна текстура), потім машини */
         for (int cy = gy0; cy <= gy1; cy++) for (int cx = gx0; cx <= gx1; cx++) {
             if (cx < 0 || cy < 0 || cx >= PK_GW || cy >= PK_GH) continue;
             int c = cy * PK_GW + cx;
@@ -3740,8 +3758,8 @@ static void render(void *target_buf) {
                 const Parked *P = &PARKED[q];
                 float x = (P->x - viewx) * ZOOM, y = (P->y - viewy) * ZOOM, a = PK_ANG(P->a);
                 if (x < -20 || x > SW + 20 || y < -20 || y > SH + 20) continue;
-                gfx_quad((const uint32_t *)(assets_bin + CARTEX_SHD), CARTEX_W, CARTEX_H, x + 0.6f * ZOOM, y + 0.9f * ZOOM, a, hx, hy * 1.06f, 0xFFFFFFFF);
-                gfx_quad((const uint32_t *)(assets_bin + TRAFTEX_OFF + (P->m % NTRAFMODEL) * 2 * CARTEX_W * CARTEX_H * 4), CARTEX_W, CARTEX_H, x, y, a, hx, hy, 0xFFFFFFFF);
+                if (!pass) gfx_quad((const uint32_t *)(assets_bin + CARTEX_SHD), CARTEX_W, CARTEX_H, x + 0.6f * ZOOM, y + 0.9f * ZOOM, a, hx, hy * 1.06f, 0xFFFFFFFF);
+                else gfx_quad((const uint32_t *)(assets_bin + TRAFTEX_OFF + (P->m % NTRAFMODEL) * 2 * CARTEX_W * CARTEX_H * 4), CARTEX_W, CARTEX_H, x, y, a, hx, hy, 0xFFFFFFFF);
             }
         }
     }
@@ -3822,9 +3840,9 @@ static void render(void *target_buf) {
         if (sk > 0.02f) {                                               /* тіні від сонця; дахи — без тіні */
             build_shadows(viewx, viewy, sdx, sdy);
             float d = 1 - 0.26f * sk;
-            gfx_light_shade(shv, nshv, lcol(ar * d, ag * d, ab * (d + 0.04f * sk), 1));
+            gfx_light_shade16(shw, nshv, lcol(ar * d, ag * d, ab * (d + 0.04f * sk), 1), (int)viewx, (int)viewy);
             build_footprints(viewx, viewy);
-            gfx_light_shade(footv, nfoot, lcol(ar, ag, ab, 1));
+            gfx_light_shade16(ftw, nfoot, lcol(ar, ag, ab, 1), (int)viewx, (int)viewy);
         }
         float on = night_k < 0.25f ? 0 : fminf(1, (night_k - 0.25f) / 0.35f);    /* ліхтарі й вікна вмикаються в сутінках */
         if (on > 0) {
@@ -4175,11 +4193,11 @@ int main(int argc, char **argv) {
                     fabsf(((traf[j].x - traf[i].x) * cosf(traf[i].a) + (traf[j].y - traf[i].y) * sinf(traf[i].a))) < (traf[i].hl + traf[j].hl) * 0.72f &&
                     fabsf((-(traf[j].x - traf[i].x) * sinf(traf[i].a) + (traf[j].y - traf[i].y) * cosf(traf[i].a))) < TM(1.45f)) {   /* габарит 4,7 м */
                     overl++;
-                    if (printed < 8 && f % 30 == 0) { printed++; { float lv1, lv2; tr_samples(i); float g1 = tr_leader(i, -1, &lv1); { int c_ = i, last_ = i; for (int st_ = 0; st_ < 14 && c_ >= 0; st_++) { last_ = c_; float lq_; tr_samples(c_); tr_leader(c_, -1, &lq_); int nj_ = tr_lead_j;
+                    if (printed < 8 && f % 30 == 0) { printed++; { float lv1, lv2; tr_samples(i, 1); float g1 = tr_leader(i, -1, &lv1); { int c_ = i, last_ = i; for (int st_ = 0; st_ < 14 && c_ >= 0; st_++) { last_ = c_; float lq_; tr_samples(c_, 1); tr_leader(c_, -1, &lq_); int nj_ = tr_lead_j;
   printf("      chain %d: pos %.0f,%.0f a %.2f e %d s %.0f/%d spd %.2f wait %d held %d lead %d\n", c_, traf[c_].x, traf[c_].y, traf[c_].a, traf[c_].e, traf[c_].s, RG_EDGE[traf[c_].e].len, traf[c_].spd, traf[c_].wait, traf[c_].held, nj_);
   if (nj_ == c_) break; c_ = nj_; } printf("      player %.0f,%.0f\n", px_, py_);
   c_ = last_; if (c_ >= 0) { int nd_ = rg_end_node(traf[c_].e, traf[c_].dir); printf("      head %d end node %d hold %x light %d\n", c_, nd_, node_hold[nd_], rg_light_green(traf[c_].e, traf[c_].dir));
-    for (int q = 0; q < NTRAF; q++) if (node_hold[nd_] & (1u << q)) printf("        holder %d pos %.0f,%.0f e %d s %.0f/%d spd %.2f wait %d hold_t %d nx %d\n", q, traf[q].x, traf[q].y, traf[q].e, traf[q].s, RG_EDGE[traf[q].e].len, traf[q].spd, traf[q].wait, traf[q].hold_t, traf[q].nx); } } tr_samples(j); float g2 = tr_leader(j, -1, &lv2); float q1x, q1y, q2x, q2y, tt1, tt2; tr_path(i, 0, &q1x, &q1y, &tt1, &tt2); tr_path(j, 0, &q2x, &q2y, &tt1, &tt2); printf("      path pts %.0f,%.0f / %.0f,%.0f  pos %.0f,%.0f / %.0f,%.0f\n", q1x, q1y, q2x, q2y, traf[i].x, traf[i].y, traf[j].x, traf[j].y);
+    for (int q = 0; q < NTRAF; q++) if (node_hold[nd_] & (1u << q)) printf("        holder %d pos %.0f,%.0f e %d s %.0f/%d spd %.2f wait %d hold_t %d nx %d\n", q, traf[q].x, traf[q].y, traf[q].e, traf[q].s, RG_EDGE[traf[q].e].len, traf[q].spd, traf[q].wait, traf[q].hold_t, traf[q].nx); } } tr_samples(j, 1); float g2 = tr_leader(j, -1, &lv2); float q1x, q1y, q2x, q2y, tt1, tt2; tr_path(i, 0, &q1x, &q1y, &tt1, &tt2); tr_path(j, 0, &q2x, &q2y, &tt1, &tt2); printf("      path pts %.0f,%.0f / %.0f,%.0f  pos %.0f,%.0f / %.0f,%.0f\n", q1x, q1y, q2x, q2y, traf[i].x, traf[i].y, traf[j].x, traf[j].y);
                       printf("    overlap %d/%d at %d %d: e %d/%d dir %d/%d len %d/%d s %.0f/%.0f nx %d/%d held %d/%d end %d/%d a %.2f/%.2f spd %.2f/%.2f wait %d/%d gap %.0f/%.0f\n", i, j, (int)traf[i].x, (int)traf[i].y, traf[i].e, traf[j].e, traf[i].dir, traf[j].dir, RG_EDGE[traf[i].e].len, RG_EDGE[traf[j].e].len, traf[i].s, traf[j].s, traf[i].nx, traf[j].nx, traf[i].held, traf[j].held, rg_end_node(traf[i].e, traf[i].dir), rg_end_node(traf[j].e, traf[j].dir), traf[i].a, traf[j].a, traf[i].spd, traf[j].spd, traf[i].wait, traf[j].wait, g1, g2); } }
                 }
             }
