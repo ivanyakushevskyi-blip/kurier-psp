@@ -331,7 +331,6 @@ static int roofs_parallax(int ox, int oy, float ccx, float ccy) {
         for (uint32_t k = k0; k < k1 && nv < 600; k++) {
             const int16_t *B = BLD(k);
             float f = B[2] * KPAR, dx = (B[0] - ccx) * f, dy = (B[1] - ccy) * f, l = dx * dx + dy * dy;
-            if (l < 0.12f * 0.12f) continue;
             if (l > 25) { l = 5 / sqrtf(l); dx *= l; dy *= l; }
             vis[nv] = (int16_t)k; vsh[nv][0] = dx; vsh[nv][1] = dy; nv++;
         }
@@ -598,7 +597,7 @@ static char save_path[512] = "save.dat";
 static u8 lm_found[NLM > 0 ? NLM : 1], lm_lab[NLM > 0 ? NLM : 1];
 static int lm_count;
 /* 15.11.2026 (Іван): «пам'ятка поруч» — сповіщення на телефоні; ✕ — відстежити (стрілка на телефоні); список у телефоні по районах */
-static int lm_note_i = -1, lm_note_t, lm_track = -1, lm_dist;
+static int lm_note_i = -1, lm_note_t, lm_track = -1, lm_dist, lm_hide0;
 static u8 lm_seen[NLM > 0 ? NLM : 1];
 #define LM_NEAR_M 300.0f
 #define LM_REWARD 50
@@ -608,6 +607,7 @@ static u8 lm_seen[NLM > 0 ? NLM : 1];
 enum { APP_HOME, APP_ORDERS, APP_NAV, APP_WALLET, APP_RATING, APP_LM, APP_SET, APP_LOOK, NAPP };
 static const char *APP_NAME[NAPP] = { "", "ЗАМОВЛЕННЯ", "НАВІГАТОР", "ГАМАНЕЦЬ", "РЕЙТИНГ", "ПАМ'ЯТКИ", "НАЛАШТУВАННЯ", "ОГЛЯД МІСТА" };
 static int ph_full, ph_app, ph_sel, show_fps, ph_hide, want_freecam, o_hold, o_used, x_hold;
+static void lm_untrack(void) { if (lm_track >= 0) { lm_track = -1; ph_hide = lm_hide0; } }   /* стеження скінчилось — телефон як був до нього */
 #define HOLD_X 22                                                    /* затиснути ✕, щоб дістати телефон */
 #define HOLD_O 36                                                    /* затиснути ○, щоб вийти з навігації */
 static float ph_y = SH + 8;                                      /* верх телефона на екрані (анімація) */
@@ -800,15 +800,18 @@ static void phone_input(unsigned pressed, unsigned btn) {
 }
 static void phone_input2(unsigned pressed, unsigned btn) {
     if (!ph_full && (pressed & BTN_OK) && lm_note_t > 0 && lm_note_i >= 0) {   /* ✕ на «пам'ятка поруч» — відстежити */
-        lm_track = lm_note_i; lm_note_t = 0; ph_hide = 0; x_hold = -100000; audio_play(SND_TICK, 0.5f, 1, 0); return;
+        lm_hide0 = ph_hide; lm_track = lm_note_i; lm_note_t = 0; ph_hide = 0; x_hold = -100000; audio_play(SND_TICK, 0.5f, 1, 0); return;
     }
     if (!ph_full) {
         /* ○: коротко — сховати телефон; затиснути — вимкнути маршрут */
         if (pressed & BTN_BACK) { o_hold = 0; o_used = 0; }
         if (btn & BTN_BACK) {
-            if (++o_hold == HOLD_O && (nav_on || lm_track >= 0) && !o_used) { if (nav_on) nav_on = 0; else lm_track = -1; o_used = 1; }
+            if (++o_hold == HOLD_O && nav_on && !o_used) { nav_on = 0; o_used = 1; }
         } else if (o_hold > 0) {
-            if (!o_used && o_hold < HOLD_O) { ph_hide = 1; if (notes_n) note_t = 1; lm_note_t = 0; }
+            if (!o_used && o_hold < HOLD_O) {                   /* 15.11.2026: коротко ○ під час стеження пам'ятки — скасувати стеження */
+                if (lm_track >= 0) { lm_untrack(); audio_play(SND_TICK, 0.5f, 1, 0); }
+                else { ph_hide = 1; if (notes_n) note_t = 1; lm_note_t = 0; }
+            }
             o_hold = 0;
         }
         if (!(btn & BTN_OK)) { x_hold = 0; return; }
@@ -2141,13 +2144,13 @@ static void update_landmarks(void) {
             else if (d < LM_NEAR_M && !lm_seen[i] && d < bd) { bd = d; bi = i; }
         }
         if (bi >= 0 && lm_track < 0) { lm_seen[bi] = 1; lm_note_i = bi; lm_note_t = 60 * 8; audio_play(SND_PING, 0.4f, 1, 0); }
-        if (lm_track >= 0 && dist(px_, py_, LMS[lm_track].x, LMS[lm_track].y) * MPP > LM_NEAR_M * 2.5f) lm_track = -1;
+        if (lm_track >= 0 && dist(px_, py_, LMS[lm_track].x, LMS[lm_track].y) * MPP > LM_NEAR_M * 2.5f) lm_untrack();
     }
     for (int i = 0; i < NLM; i++) {
         float d = dist(qx, qy, LMS[i].x, LMS[i].y);
         int near = d < LMS[i].r;
         if (near && !freecam && !lm_found[i]) {
-            if (lm_track == i) lm_track = -1;
+            if (lm_track == i) lm_untrack();
             if (lm_note_i == i) lm_note_t = 0;
             lm_found[i] = 1; lm_count++; money += LM_REWARD; wallet(LM_REWARD, "ПАМ'ЯТКА");
             char b[48]; snprintf(b, sizeof b, "ПАМ'ЯТКА %d/%d  +%d ₴", lm_count, NLM, LM_REWARD);
@@ -2857,6 +2860,7 @@ static void draw_phone(void) {
         target_arrow(sx + 9, cy + 12, LMS[i].x, LMS[i].y, C_blue_3);
         text8(sx + 20, cy + 1, PF, C_white_2, "ПАМ'ЯТКА ПОРУЧ");
         text8(sx + 20, cy + 13, PF, C_box_3, kb);
+        text8(sx + sw - 4 - tw8(BT_CIR " СКАСУВАТИ", PF), cy + 13, PF, C_white_0, BT_CIR " СКАСУВАТИ");
         rect(sx, cy + 25, sw, 1, C_ink_2);
     } else if (peek) {                                                       /* плашка поточної цілі зі стрілкою-радаром */
         float tx, ty; int nk = peek == 2 ? nav_kind : 0;
@@ -3850,6 +3854,7 @@ int main(int argc, char **argv) {
               for (int i = 0; i < 25; i++) draw_frame(); snprintf(nm, sizeof nm, "%s/f_lm_note.ppm", dir); dump(nm);
               phone_input(BTN_OK, BTN_OK); printf("lm track: %d\n", lm_track);
               for (int i = 0; i < 25; i++) draw_frame(); snprintf(nm, sizeof nm, "%s/f_lm_track.ppm", dir); dump(nm);
+              { int h0 = ph_hide; phone_input(BTN_BACK, BTN_BACK); phone_input(0, 0); printf("lm cancel: track %d hide %d (was %d)\n", lm_track, ph_hide, h0); }
               lm_track = -1;
           }
           for (int i = 0; i < NLM; i++) lm_found[i] = sv[i]; }
