@@ -406,6 +406,12 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('static const int16_t LANES[][6] = {%s};\n' % (','.join('{%d,%d,%d,%d,%d,%d}' % tuple(l) for l in lanes) or '{0}'))
     f.write('static const uint32_t LANE_CELL[] = {%s};\n' % ','.join(map(str, starts)))
     f.write('static const uint16_t LANE_IDX[] = {%s};\n' % (','.join(map(str, idx)) or '0'))
+    # 15.11.2026: ігрова зона для гри (бітова сітка 32 пікс ≈ 8,9 м) — виїхав за межу -> повернення в зону
+    _zg = 32
+    _zc = np.ascontiguousarray(_pl[_zg // 2::_zg, _zg // 2::_zg]).astype(np.uint8)
+    _zb = np.packbits(_zc, axis=1, bitorder='little')
+    f.write('#define PZ_G %d\n#define PZ_W %d\n#define PZ_H %d\n#define PZ_RB %d\n' % (_zg, _zc.shape[1], _zc.shape[0], _zb.shape[1]))
+    f.write('static const uint8_t PLAYZ[] = {%s};\n' % ','.join(map(str, _zb.ravel().tolist())))
     # замовлення не далі від центру, ніж ~200 м до межі зони (31.10.2026, Іван: на краю міста адресу важко знайти)
     EDGE_M = float(os.environ.get('POI_EDGE_M', '200'))
     _g = 8

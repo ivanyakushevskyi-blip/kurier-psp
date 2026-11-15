@@ -238,6 +238,28 @@ def barriers(rgb, cls, play, mainx=None):
     print('barriers', n_ok, flush=True)
 
 
+
+GROW_PLAY_M = 60
+FADE_M = 110
+
+
+def grow_play(play):
+    """15.11.2026 (Іван): межа далі — зона розширена на 60 м назовні, щоб крайові вулиці були вільні цілком.
+    Межа видна лише затемненням; стін і шлагбаумів немає — машину, що виїхала, гра повертає в зону."""
+    st = 8
+    pc = np.asarray(play[::st, ::st]).astype(np.uint8)
+    dc = cv2.distanceTransform(1 - pc, cv2.DIST_L2, 5) * st * CD.MPP
+    gz = (dc <= GROW_PLAY_M).astype(np.uint8)
+    add = 0
+    for r0 in range(0, H, 1024):
+        r1 = min(H, r0 + 1024)
+        rows = np.minimum(np.arange(r0, r1) // st, gz.shape[0] - 1); cols = np.minimum(np.arange(W) // st, gz.shape[1] - 1)
+        g = gz[rows[:, None], cols[None, :]] > 0
+        blk = np.asarray(play[r0:r1]); add += int((g & ~blk).sum()); play[r0:r1] = blk | g
+    play.flush()
+    print('зона розширена на %d м: +%.2f км²' % (GROW_PLAY_M, add * CD.MPP ** 2 / 1e6), flush=True)
+
+
 def fade_edge(rgb, play):
     """За межею зони — м'який перехід у темне: ≈180 м (смугами; відстань рахується на грубій сітці 4 м)."""
     st = max(1, int(round(4 / CD.MPP)))
@@ -248,7 +270,7 @@ def fade_edge(rgb, play):
         rows = np.clip((np.arange(r0, r1) + 0.5) / st - 0.5, 0, dc.shape[0] - 1).astype(np.float32)
         cols = np.clip((np.arange(W) + 0.5) / st - 0.5, 0, dc.shape[1] - 1).astype(np.float32)
         d = cv2.remap(dc, np.tile(cols, (len(rows), 1)), np.repeat(rows[:, None], W, 1), cv2.INTER_LINEAR)
-        t = np.clip(d / 180.0, 0, 1); t = t * t * (3 - 2 * t)
+        t = np.clip(d / FADE_M, 0, 1); t = t * t * (3 - 2 * t)
         k = 1 - 0.88 * t
         k[np.asarray(play[r0:r1])] = 1
         blk = np.asarray(rgb[r0:r1]).astype(np.float32) * k[..., None] + np.array(CD.OUT, np.float32) * (1 - k[..., None]) * 0.6
@@ -268,6 +290,7 @@ def main(nproc=2):
     play = open_memmap('build/play.npy', 'w+', np.bool_, (H, W)); margin = open_memmap('build/margin.npy', 'w+', np.bool_, (H, W))
     for r0 in range(0, H, 1024):
         play[r0:r0 + 1024] = zone('play', r0, min(H, r0 + 1024)); margin[r0:r0 + 1024] = zone('margin', r0, min(H, r0 + 1024))
+    grow_play(play)
     if os.environ.get('REUSE') == '1' and os.path.exists('build/rgb_cache.npy') and os.path.exists('build/rgb_cache_ss%d' % SS):
         rgb = np.load('build/rgb_cache.npy', mmap_mode='r+'); cls = np.load('build/cls_cache.npy', mmap_mode='r+')
     else:
@@ -283,7 +306,7 @@ def main(nproc=2):
         blk = np.asarray(rgb[r0:r0 + 1024]).copy(); blk[~np.asarray(margin[r0:r0 + 1024])] = CD.OUT; out[r0:r0 + 1024] = blk
     rgb = out
     mainx = main_roads_mask()
-    barriers(rgb, cls, play, mainx)
+    # 15.11.2026: шлагбаумів немає (Іван) — barriers() не викликається
     pm_ = json.load(open('build/props_map.json')) if os.path.exists('build/props_map.json') else []
     json.dump(pm_ + BARRIERS, open('build/props.json', 'w'))
     stubs = road_stubs(cls, play, mainx)
@@ -318,7 +341,7 @@ def main(nproc=2):
     print('extra solids', len(seen), flush=True)
     solid.flush()
     sb = open_memmap('build/solid_b.npy', 'w+', np.bool_, (H, W))
-    for r0 in range(0, H, 1024): sb[r0:r0 + 1024] = (np.asarray(solid[r0:r0 + 1024]) > 0) | ~(np.asarray(play[r0:r0 + 1024]) | np.asarray(stubs[r0:r0 + 1024]))
+    for r0 in range(0, H, 1024): sb[r0:r0 + 1024] = np.asarray(solid[r0:r0 + 1024]) > 0     # 15.11.2026: поза зоною стіни немає — гра повертає машину в зону
     sb.flush(); del sb, solid
     os.replace('build/solid_b.npy', 'build/solid.npy')
     solid = np.load('build/solid.npy', mmap_mode='r')

@@ -613,16 +613,21 @@ typedef struct { char t[48], s[96]; u8 c; int life, offer; } Note;
 #define NNOTE 4
 static Note notes_q[NNOTE]; static int notes_n, note_t;
 static void notify(const char *title, const char *text, u8 c, int life, int offer) {
+    /* 15.11.2026 (Іван): спливаючих сповіщень на телефоні й «пілікання» немає. Нові замовлення — цифра на піктограмі
+       телефона; важливе — коротким написом угорі екрана (say). Черга лишається для автотесту кадрів. */
+#ifndef HOST
+    (void)title; (void)text; (void)c; (void)life; (void)offer; return;
+#endif
     if (notes_n == NNOTE) { for (int i = 1; i < NNOTE; i++) notes_q[i - 1] = notes_q[i]; notes_n--; }
     Note *n = &notes_q[notes_n++];
     strncpy(n->t, title, 47); n->t[47] = 0; strncpy(n->s, text, 95); n->s[95] = 0; n->c = c; n->life = life < 120 ? 120 : life; n->offer = offer;
-    if (notes_n == 1) { note_t = n->life; audio_play(SND_PING, 0.55f, 1, 0); }
+    if (notes_n == 1) note_t = n->life;
 }
 static void notes_tick(void) {
     if (!notes_n) return;
     if (--note_t > 0) return;
     for (int i = 1; i < notes_n; i++) notes_q[i - 1] = notes_q[i];
-    if (--notes_n > 0) { note_t = notes_q[0].life; audio_play(SND_PING, 0.45f, 1, 0); }
+    if (--notes_n > 0) note_t = notes_q[0].life;
 }
 /* гаманець: останні операції */
 typedef struct { int v; char s[32]; } Tx;
@@ -635,7 +640,7 @@ static void wallet(int v, const char *s) {
 
 static int bump;
 static void puff(float x, float y, float dx, float dy, int life, u8 kind);
-static void say(const char *t, u8 c, int life) { strncpy(toast, t, 95); toast[95] = 0; toast_t = life; toast_c = c; notify("", t, c, life, -1); }
+static void say(const char *t, u8 c, int life) { strncpy(toast, t, 95); toast[95] = 0; toast_t = life; toast_c = c; }
 static float dist(float ax, float ay, float bx, float by) { float dx = ax - bx, dy = ay - by; return sqrtf(dx * dx + dy * dy); }
 
 static void load_save(void) {
@@ -862,8 +867,7 @@ static void update_orders(unsigned pressed) {
     if (ostate == O_DROP) {
         if (--otimer <= 0) { fail_order("ЗАПІЗНИВСЯ. ЗАМОВЛЕННЯ СКАСОВАНО"); return; }
         if (!nav_on && (otimer == 60 * 60 || otimer == 15 * 60)) {         /* без навігатора телефон сам нагадує про час */
-            char b[96]; snprintf(b, sizeof b, "ЛИШИЛОСЬ %s|%s", otimer == 3600 ? "1:00" : "0:15", ADDRS[addr_i].name);
-            notify("ЧАС ДОСТАВКИ", b, otimer == 3600 ? C_yellow_3 : C_red_3, 240, -1);
+            say(otimer == 3600 ? "ДО ДОСТАВКИ ЛИШИЛАСЬ 1 ХВ" : "ДО ДОСТАВКИ ЛИШИЛОСЬ 15 С", otimer == 3600 ? C_yellow_3 : C_red_3, 180);
         }
         if (dist(px_, py_, ADDRS[addr_i].x, ADDRS[addr_i].y) < OP(24) && fabsf(vel) < OP(0.45f)) {
             int bonus = otimer / 60 / 3;
@@ -1829,6 +1833,40 @@ static float lane_steer2(void) {
 static int on_water(float x, float y) { return surf((int)x, (int)y) == 2; }
 
 static float snd_rpm = 850, snd_gas, snd_skid;
+/* ---- 15.11.2026 (Іван): межа ігрової зони — лише затемнення; виїхав за неї — повернення в зону з повідомленням */
+static int in_zone(float x, float y) {
+    int gx = (int)x / PZ_G, gy = (int)y / PZ_G;
+    if (gx < 0 || gy < 0 || gx >= PZ_W || gy >= PZ_H) return 0;
+    return (PLAYZ[gy * PZ_RB + (gx >> 3)] >> (gx & 7)) & 1;
+}
+#define ZH_N 16
+static float zh_x[ZH_N], zh_y[ZH_N], zh_a[ZH_N];
+static int zh_n, zh_t, zg_n;
+static void zone_guard(void) {
+    if (in_zone(px_, py_)) {                                   /* кожні 0,25 с — точка в зоні, де машина вже була */
+        if (zh_n > 0 && fabsf(px_ - zh_x[zh_n - 1]) + fabsf(py_ - zh_y[zh_n - 1]) > 300) zh_n = 0;   /* машину перенесли — стара історія не годиться */
+        if (++zh_t >= 15) { zh_t = 0; if (zh_n == ZH_N) { memmove(zh_x, zh_x + 1, sizeof(float) * (ZH_N - 1)); memmove(zh_y, zh_y + 1, sizeof(float) * (ZH_N - 1)); memmove(zh_a, zh_a + 1, sizeof(float) * (ZH_N - 1)); zh_n--; }
+            zh_x[zh_n] = px_; zh_y[zh_n] = py_; zh_a[zh_n] = ang; zh_n++; }
+        return;
+    }
+    if (zh_n > 0) {                                            /* назад приблизно на 1 с — далі від межі; носом у зону */
+        int k = zh_n > 4 ? zh_n - 4 : 0;
+        px_ = zh_x[k]; py_ = zh_y[k]; ang = zh_a[k] + 3.14159265f; zh_n = k;
+    } else {                                                   /* немає історії — найближча клітинка зони */
+        int bx = -1, by = -1; float bd = 1e18f; int cx = (int)px_ / PZ_G, cy = (int)py_ / PZ_G;
+        for (int r = 1; r < 64 && bx < 0; r++)
+            for (int y = cy - r; y <= cy + r; y++) for (int x = cx - r; x <= cx + r; x++) {
+                if (x < 0 || y < 0 || x >= PZ_W || y >= PZ_H || !((PLAYZ[y * PZ_RB + (x >> 3)] >> (x & 7)) & 1)) continue;
+                float d = (float)(x - cx) * (x - cx) + (float)(y - cy) * (y - cy); if (d < bd) { bd = d; bx = x; by = y; }
+            }
+        if (bx < 0) return;
+        px_ = bx * PZ_G + PZ_G / 2; py_ = by * PZ_G + PZ_G / 2;
+    }
+    while (ang > 3.14159265f) ang -= 6.2831853f;
+    vx_ = vy_ = 0; vel = 0; zh_t = 0; zg_n++;
+    say("ВИХІД З ІГРОВОЇ ЗОНИ", C_yellow_3, 120);
+}
+
 static void update_player(unsigned btn, int lx) {
     float steer = 0;
     if (abs(lx - 128) > 20) {                                   /* стік: м'яка крива — малі відхилення дають тонке підрулювання */
@@ -1972,6 +2010,7 @@ static void update_player(unsigned btn, int lx) {
     } else { win_t = 0; wx = px_; wy = py_; }
     br_update(ox_, oy_);
     unstick();
+    zone_guard();
     /* вода: машина тоне; розбита: евакуація */
     if (on_water(px_, py_) && on_water(px_ + fx * CP(6), py_ + fy * CP(6))) { evac = EV_DROWN; evac_t = 0; say("МАШИНА ТОНЕ!", C_red_3, 120); }
     else if (health <= 0) { health = 0; evac = EV_WRECK; evac_t = 0; say("АВТО РОЗБИТЕ!", C_red_3, 120); }
@@ -2780,9 +2819,20 @@ static void draw_phone_hint(void) {
     if (x_hold > 0) { int fh = 13 * (x_hold > HOLD_X ? HOLD_X : x_hold) / HOLD_X; rect(x + 2, y + 3, 8, 13 - fh, C_panel_0); }
     rect(x + 5, y + 17, 2, 1, C_ink_1);
     otext8(x + 15, y + 5, PF, C_white_2, C_ink_0, BT_X);
+    if (n_offers > 0) {                      /* 15.11.2026: нові замовлення — цифра на піктограмі (як на смартфоні) */
+        char b[8]; snprintf(b, sizeof b, "%d", n_offers); int w = tw8(b, PF) + 6; if (w < 12) w = 12;
+        int bx = x + 8, by = y - 7;
+        rect(bx + 1, by, w - 2, 12, C_red_2); rect(bx, by + 1, w, 10, C_red_2);
+        text8(bx + w / 2 - tw8(b, PF) / 2, by + 2, PF, C_white_2, b);
+    }
 }
 
+static void draw_top_text(void) {                                  /* 15.11.2026: назва вулиці угорі й під нею короткий напис гри */
+    if (street_i >= 0) otext8_c(244, 10, 1, C_white_2, C_ink_0, STREETS[street_i]);
+    if (toast_t > 0) otext8_c(SW / 2, 26, 1, toast_c, C_ink_0, toast);
+}
 static void draw_hud(void) {
+    draw_top_text();
     if (show_fps) {
         char f_[64]; snprintf(f_, sizeof f_, "%d FPS  CPU %d.%d  GPU %d.%d", fps_shown, cpu_ms10 / 10, cpu_ms10 % 10, gpu_ms10 / 10, gpu_ms10 % 10);
         otext8(4, 4, 1, fps_shown >= 55 ? C_green_3 : C_red_3, C_ink_0, f_);
@@ -3199,18 +3249,24 @@ static void game_init(void) {
     /* 08.11.2026: старт — біля випадкового закладу відкритого району (на першому етапі — Озерна) */
     float cx0 = SPAWN1_X, cy0 = SPAWN1_Y;
     if (dstage > 1) { int k = any_shop(); cx0 = SHOPS[k].x; cy0 = SHOPS[k].y; }
-    /* старт у випадковому місці міста: середина випадкового відрізка звичайної дороги */
-    for (int t = 0; t < 4000 && NLANE > 0; t++) {
-        const int16_t *L = LANES[rand() % NLANE];
-        if (L[4] < 3) continue;
-        float x = (L[0] + L[2]) * 0.5f, y = (L[1] + L[3]) * 0.5f, a = atan2f(L[3] - L[1], L[2] - L[0]);
+    /* 15.11.2026 (Іван): старт лише на головній вулиці (primary/secondary/tertiary), у правій смузі, у зоні — не у дворі */
+    for (int t = 0; t < 6000; t++) {
+        int e = rand() % RG_NE; const REdge *E = &RG_EDGE[e];
+        if (E->cls > 2 || E->len < OP(60)) continue;
+        float x, y, tx, ty; int dir = E->one ? 0 : rand() & 1;
+        rg_at(e, dir, rg_len(e) * 0.5f, &x, &y, &tx, &ty);
+        if (!E->one) { x += -ty * E->w2 * 0.25f; y += tx * E->w2 * 0.25f; }
 #ifndef HOST
-        if (dist(x, y, cx0, cy0) > OP(1200) && t < 3600) continue;
+        if (dist(x, y, cx0, cy0) > OP(1200) && t < 5000) continue;
 #endif
-        if (!hit(x, y, a) && !on_water(x, y)) { px_ = x; py_ = y; ang = a; break; }
+        float a = atan2f(ty, tx);
+        if (in_zone(x, y) && !hit(x, y, a) && !on_water(x, y)) { px_ = x; py_ = y; ang = a; break; }
     }
     for (int r = 0; r < 200 && hit(px_, py_, ang); r += 2) { px_ += 2; }
     update_camera(1);
+#ifdef HOST
+    printf("spawn %d %d ang %.2f cam %d %d\n", (int)px_, (int)py_, ang, (int)camx, (int)camy);
+#endif
 }
 
 /* ---- звук кадру: двигун за обертами й газом, шини, сигнал (стрілка вгору), найближча машина трафіку, фон міста й ночі */
@@ -3684,6 +3740,7 @@ int main(int argc, char **argv) {
             snprintf(nm, sizeof nm, "%s/f_play%d.ppm", dir, shots++); dump(nm);
         }
     }
+    printf("delivery run: deliveries %d, ostate %d, money %d, zone exits %d\n", deliveries, ostate, money, zg_n);
     /* 13.11.2026: кадри смартфона — усі програми, навігатор, сповіщення */
     {
         if (ostate == O_NONE) { make_offer(0); offers_count(); accept_offer(0); }
@@ -3935,7 +3992,7 @@ prof_only:
         printf("return to road: %d/%d placed, farthest %.0f m\n", ok, n, worst);
         state = S_PLAY; update_camera(1); draw_frame(); draw_frame(); snprintf(nm, sizeof nm, "%s/f_return.ppm", dir); dump(nm);
     }
-    printf("money=%d deliveries=%d late=%d shots=%d cache=%d\n", money, deliveries, late, shots, NCACHE);
+    printf("money=%d deliveries=%d late=%d shots=%d cache=%d zone_exits=%d\n", money, deliveries, late, shots, NCACHE, zg_n);
     return 0;
 }
 #endif
