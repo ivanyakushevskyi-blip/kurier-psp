@@ -12,6 +12,7 @@ static uint32_t __attribute__((aligned(16))) clut[256];
 
 static unsigned int __attribute__((aligned(16))) dlists[2][1024 * 1024 / 4];     /* 07.11.2026: 1 МБ (тіні, вода, погода) */
 static int dl_cur;
+static const void *q_last;                                /* 15.11.2026: стан чипа для gfx_quad з тією самою текстурою не перевстановлюється */
 
 typedef struct { float u, v; float x, y, z; } VT;
 typedef struct { float u, v; uint32_t c; float x, y, z; } VCT;
@@ -20,6 +21,7 @@ typedef struct { uint32_t c; float x, y, z; } VC;
 static int pow2(int n) { int p = 1; while (p < n) p <<= 1; return p; }
 
 void gfx_init(const uint32_t *pal) {
+    q_last = 0;
     memcpy(clut, pal, sizeof clut);
     clut[0] = 0;                                         /* індекс 0 — прозорий */
     sceKernelDcacheWritebackRange(clut, sizeof clut);
@@ -42,6 +44,7 @@ void gfx_init(const uint32_t *pal) {
 }
 
 void gfx_begin(void *target) {
+    q_last = 0;
     sceKernelDcacheWritebackAll();                        /* текстури, які щойно намалював процесор */
     dl_cur ^= 1;
     sceGuStart(GU_DIRECT, dlists[dl_cur]);
@@ -54,6 +57,7 @@ void gfx_begin(void *target) {
 }
 
 void gfx_layer8(const uint8_t *tex, int stride, int w, int h, float sx, float sy, float scale, int alpha, int linear) {
+    q_last = 0;
     sceGuEnable(GU_TEXTURE_2D);
     if (alpha) sceGuEnable(GU_BLEND); else sceGuDisable(GU_BLEND);
     sceGuTexMode(GU_PSM_T8, 0, 0, 0);
@@ -73,6 +77,7 @@ void gfx_layer8(const uint8_t *tex, int stride, int w, int h, float sx, float sy
 }
 
 void gfx_layer16(const uint16_t *tex, int stride, int w, int h, float sx, float sy, float scale, int fmt, int alpha, int linear) {
+    q_last = 0;
     sceGuEnable(GU_TEXTURE_2D);
     if (alpha) sceGuEnable(GU_BLEND); else sceGuDisable(GU_BLEND);
     sceGuTexMode(fmt ? GU_PSM_5551 : GU_PSM_5650, 0, 0, 0);
@@ -91,13 +96,18 @@ void gfx_layer16(const uint16_t *tex, int stride, int w, int h, float sx, float 
 }
 
 void gfx_quad(const uint32_t *tex, int tw, int th, float cx, float cy, float ang, float hx, float hy, uint32_t col) {
-    sceGuEnable(GU_TEXTURE_2D);
-    sceGuEnable(GU_BLEND);
-    sceGuTexMode(GU_PSM_8888, 0, 0, 0);
-    sceGuTexImage(0, tw, th, tw, tex);
-    sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
-    sceGuTexFilter(GU_LINEAR, GU_LINEAR);
-    sceGuTexFlush();
+    if (q_last != tex) {
+        if (!q_last) {
+            sceGuEnable(GU_TEXTURE_2D);
+            sceGuEnable(GU_BLEND);
+            sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+            sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+            sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+        }
+        sceGuTexImage(0, tw, th, tw, tex);
+        sceGuTexFlush();
+        q_last = tex;
+    }
     float c = cosf(ang), s = sinf(ang);
     VCT *v = (VCT *)sceGuGetMemory(4 * sizeof(VCT));
     static const float K[4][2] = { { -1, -1 }, { 1, -1 }, { -1, 1 }, { 1, 1 } };
@@ -109,7 +119,8 @@ void gfx_quad(const uint32_t *tex, int tw, int th, float cx, float cy, float ang
     sceGuDrawArray(GU_TRIANGLE_STRIP, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 4, 0, v);
 }
 
-void gfx_tiles(const uint32_t *tex, int tw, int th, const float *r, int n, uint32_t col) {   /* смуги з текстурою, що повторюється */
+void gfx_tiles(const uint32_t *tex, int tw, int th, const float *r, int n, uint32_t col) {
+    q_last = 0;   /* смуги з текстурою, що повторюється */
     if (n <= 0) return;
     sceGuEnable(GU_TEXTURE_2D);
     sceGuEnable(GU_BLEND);
@@ -130,6 +141,7 @@ void gfx_tiles(const uint32_t *tex, int tw, int th, const float *r, int n, uint3
 }
 
 void gfx_rect(float x, float y, float w, float h, uint32_t col) {
+    q_last = 0;
     sceGuDisable(GU_TEXTURE_2D);
     sceGuEnable(GU_BLEND);
     VC *v = (VC *)sceGuGetMemory(2 * sizeof(VC));
@@ -139,6 +151,7 @@ void gfx_rect(float x, float y, float w, float h, uint32_t col) {
 }
 
 void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const float *uvxy, int nv, uint32_t col) {
+    q_last = 0;
     if (nv < 3) return;
     sceGuEnable(GU_TEXTURE_2D);
     sceGuEnable(GU_BLEND);
@@ -206,6 +219,7 @@ void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const fl
 }
 
 void gfx_tris_flat(const float *xy, int nv, uint32_t col) {
+    q_last = 0;
     if (nv < 3) return;
     sceGuDisable(GU_TEXTURE_2D);
     sceGuEnable(GU_BLEND);
@@ -214,8 +228,29 @@ void gfx_tris_flat(const float *xy, int nv, uint32_t col) {
     sceGuDrawArray(GU_TRIANGLES, GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, nv, 0, v);
 }
 
+void gfx_copy16(const uint16_t *src, int srcw, int sx, int sy, int w, int h, uint16_t *dst, int dstw, int dx, int dy) {
+    q_last = 0;
+    sceGuCopyImage(GU_PSM_5551, sx, sy, w, h, srcw, (void *)src, dx, dy, dstw, dst);
+}
+void gfx_copy_done(void) {
+    q_last = 0; sceGuTexSync(); sceGuTexFlush(); }
+void gfx_rects(const float *r, int n, uint32_t col) {
+    q_last = 0;
+    if (n <= 0) return;
+    sceGuDisable(GU_TEXTURE_2D);
+    sceGuEnable(GU_BLEND);
+    VC *v = (VC *)sceGuGetMemory(2 * n * sizeof(VC));
+    for (int i = 0; i < n; i++) {
+        const float *q = r + 4 * i;
+        v[2 * i].c = col; v[2 * i].x = q[0]; v[2 * i].y = q[1]; v[2 * i].z = 0;
+        v[2 * i + 1].c = col; v[2 * i + 1].x = q[0] + q[2]; v[2 * i + 1].y = q[1] + q[3]; v[2 * i + 1].z = 0;
+    }
+    sceGuDrawArray(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2 * n, 0, v);
+}
+
 #define LIGHT_OFF (2 * 512 * 272 * 4)          /* шар світла — у VRAM одразу за двома кадрами */
-void gfx_light_shade(const float *xy, int nv, uint32_t col) {          /* тінь у шарі світла: заміна кольору (без накопичення) */
+void gfx_light_shade(const float *xy, int nv, uint32_t col) {
+    q_last = 0;          /* тінь у шарі світла: заміна кольору (без накопичення) */
     if (nv < 3) return;
     sceGuDisable(GU_TEXTURE_2D);
     sceGuDisable(GU_BLEND);
@@ -226,12 +261,14 @@ void gfx_light_shade(const float *xy, int nv, uint32_t col) {          /* тін
     sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFFFF, 0xFFFFFFFF);
 }
 void gfx_light_begin(uint32_t amb) {
+    q_last = 0;
     sceGuDrawBufferList(GU_PSM_8888, (void *)LIGHT_OFF, 512);
     sceGuClearColor(amb | 0xFF000000);
     sceGuClear(GU_COLOR_BUFFER_BIT);
     sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFFFF, 0xFFFFFFFF);   /* світло складається */
 }
 void gfx_light_end(void *target) {
+    q_last = 0;
     sceGuDrawBufferList(GU_PSM_8888, target, 512);
     sceGuEnable(GU_TEXTURE_2D);
     sceGuEnable(GU_BLEND);
@@ -247,8 +284,10 @@ void gfx_light_end(void *target) {
     sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, 0, v);
     sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
 }
-void gfx_end(void) { sceGuFinish(); }
-void gfx_sync(void) { sceGuSync(0, 0); }
+void gfx_end(void) {
+    q_last = 0; sceGuFinish(); }
+void gfx_sync(void) {
+    q_last = 0; sceGuSync(0, 0); }
 
 #else
 /* ================= ПК: програмна копія ================= */
@@ -438,6 +477,11 @@ void gfx_light_shade(const float *xy, int nv, uint32_t col) {
         }
     }
 }
+void gfx_copy16(const uint16_t *src, int srcw, int sx, int sy, int w, int h, uint16_t *dst, int dstw, int dx, int dy) {
+    for (int y = 0; y < h; y++) memcpy(dst + (dy + y) * dstw + dx, src + (sy + y) * srcw + sx, (size_t)w * 2);
+}
+void gfx_copy_done(void) {}
+void gfx_rects(const float *r, int n, uint32_t col) { for (int i = 0; i < n; i++) gfx_rect(r[4 * i], r[4 * i + 1], r[4 * i + 2], r[4 * i + 3], col); }
 void gfx_end(void) {}
 void gfx_sync(void) {}
 #endif

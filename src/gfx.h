@@ -26,6 +26,11 @@ void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const fl
 void gfx_light_begin(uint32_t amb);
 void gfx_light_end(void *target);
 void gfx_light_shade(const float *xy, int nv, uint32_t col);   /* тіні: трикутники кольору col у шарі світла (заміна) */
+/* 15.11.2026: копія прямокутника 16-бітних пікселів силами чипа (карта з кешу блоків у шар світу без процесора).
+   Після всіх копій — gfx_copy_done() (чекати кінця пересилань перед використанням як текстури). */
+void gfx_copy16(const uint16_t *src, int srcw, int sx, int sy, int w, int h, uint16_t *dst, int dstw, int dx, int dy);
+void gfx_copy_done(void);
+void gfx_rects(const float *xywh, int n, uint32_t col);   /* n одноколірних прямокутників одним викликом (по 4 числа) */
 void gfx_end(void);                     /* PSP: кадр відданий чипу, не чекаємо */
 void gfx_sync(void);                    /* дочекатися, поки чип домалює попередній кадр */
 
