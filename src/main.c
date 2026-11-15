@@ -76,8 +76,19 @@ static float roofv[MAXRV * 4]; static int nroofv;               /* трикут�
 static float darkv[MAXRV * 2]; static int ndarkv;               /* трикутники темної плями під дахами: x, y у шарі карти */
 static uint16_t PAL16[256];                                      /* палітра спрайтів -> 5650 */
 static int arch_used, arch_used_s[2], buf_cur;
-static int wa_bb[2][4] = { { 0, 0, WW - 1, WH - 1 }, { 0, 0, WW - 1, WH - 1 } };     /* куди писали в шар арок/крон (x0, y0, x1, y1) */
-#define WA_MARK(x, y) { int *b_ = wa_bb[buf_cur]; if ((x) < b_[0]) b_[0] = (x); if ((x) > b_[2]) b_[2] = (x); if ((y) < b_[1]) b_[1] = (y); if ((y) > b_[3]) b_[3] = (y); }
+/* 15.11.2026 (швидкодія): шар арок/крон — список прямокутників (а не один спільний, що розтягувався на весь екран):
+   очищається й малюється лише там, де писали */
+#define WA_MAXR 96
+static short wa_r[2][WA_MAXR][4]; static int wa_n[2], wa_t[4];
+#define WA_MARK(x, y) { if ((x) < wa_t[0]) wa_t[0] = (x); if ((x) > wa_t[2]) wa_t[2] = (x); if ((y) < wa_t[1]) wa_t[1] = (y); if ((y) > wa_t[3]) wa_t[3] = (y); }
+static void wa_begin(void) { wa_t[0] = 1 << 20; wa_t[1] = 1 << 20; wa_t[2] = -1; wa_t[3] = -1; }
+static void wa_push(void) {
+    if (wa_t[2] < wa_t[0]) return;
+    int n = wa_n[buf_cur];
+    if (n >= WA_MAXR) { short *r = wa_r[buf_cur][WA_MAXR - 1];                 /* переповнення — розширити останній */
+        if (wa_t[0] < r[0]) r[0] = wa_t[0]; if (wa_t[1] < r[1]) r[1] = wa_t[1]; if (wa_t[2] > r[2]) r[2] = wa_t[2]; if (wa_t[3] > r[3]) r[3] = wa_t[3]; return; }
+    short *r = wa_r[buf_cur][n]; r[0] = wa_t[0]; r[1] = wa_t[1]; r[2] = wa_t[2]; r[3] = wa_t[3]; wa_n[buf_cur] = n + 1;
+}
 static void swap_bufs(void) {
     arch_used_s[buf_cur] = arch_used; buf_cur ^= 1; arch_used = arch_used_s[buf_cur];
     fb = fb_[buf_cur]; wbuf = wbuf_vram ? wbuf_vram : wbuf_[buf_cur]; warch = warch_[buf_cur]; wover = wover_[buf_cur];
@@ -535,6 +546,7 @@ static void otext8_raw(int x, int y, int sc, u8 col, u8 oc, const char *s) {
 /* ---- кеш готових написів (31.10.2026): напис з обводкою малюється один раз у маленький бітмап, далі — лише копія.
    Обводка — це 9 проходів шрифтом; на PSP інтерфейс щокадру їв кілька мілісекунд */
 #define NTC 72
+static int text_to_tg;
 static struct { uint32_t key; int w, h, dx, dy, last; char *s; u8 *px; } tcache[NTC];
 static u8 tc_tmp[SW * 80];
 static void text_cached(int x, int y, int sc, u8 col, u8 oc, int outline, const char *s) {
@@ -565,9 +577,10 @@ static void text_cached(int x, int y, int sc, u8 col, u8 oc, int outline, const 
     int x0 = x + tcache[k].dx, y0 = y + tcache[k].dy, w = tcache[k].w;
     for (int r = 0; r < tcache[k].h; r++) {
         int yy = y0 + r; if ((unsigned)yy >= SH) continue;
-        const u8 *src = tcache[k].px + r * w; u8 *d = fb + yy * SW; int lo = SW, hi = -1;
+        u8 *T = text_to_tg ? tg : fb;                                 /* 15.11.2026: у кеш телефона — у поточну ціль */
+        const u8 *src = tcache[k].px + r * w; u8 *d = T + yy * SW; int lo = SW, hi = -1;
         for (int c = 0; c < w; c++) { int xx = x0 + c; u8 v = src[c]; if (v && (unsigned)xx < SW) { d[xx] = v; if (xx < lo) lo = xx; hi = xx; } }
-        if (hi >= 0) drt_mark(fb, yy, lo, hi);
+        if (hi >= 0) drt_mark(T, yy, lo, hi);
     }
 }
 static void text8(int x, int y, int sc, u8 col, const char *s) { text_cached(x, y, sc, col, 0, 0, s); }
@@ -2667,6 +2680,7 @@ static void draw_speedo(void) {
 #define PMW 140
 #define PMH 200
 #define PMS 24                                                        /* пікселів карти на піксель мапи телефона */
+static int ph_pass;                                                   /* 15.11.2026: 0 — усе, 1 — основа телефона (у кеш), 2 — лише рухоме (стрілки) */
 static u8 phmap[PMW * PMH]; static int phm_x = -99999, phm_y = -99999, phm_rv = -1, phm_nav = -1;
 /* 15.11.2026 (швидкодія): уся мапа міста для телефона (вода, зелень, дороги) будується ОДИН раз при запуску;
    далі вікно — лише копія, а маршрут домальовується, коли змінився він або вікно */
@@ -2689,6 +2703,7 @@ static void city_phone_map(void) {
             cphm[y * CPW + x] = PC[cnt[1] >= 5 ? 1 : (cnt[2] >= 6 ? 2 : 0)];
         }
     }
+    u8 *tg0 = tg; int tw0 = tgw, th0 = tgh;
     target(cphm, CPW, CPH);
     for (int pass = 0; pass < 2; pass++)                               /* спершу дрібні, потім головні — поверх */
         for (int e = 0; e < RG_NE; e++) {
@@ -2698,9 +2713,10 @@ static void city_phone_map(void) {
                 lineth(A[0] / (float)PMS, A[1] / (float)PMS, B[0] / (float)PMS, B[1] / (float)PMS, main_ ? C_white_1 : C_white_0, main_ ? 2 : 1, 0, 0, CPW, CPH);
             }
         }
-    target(fb, SW, SH);
+    target(tg0, tw0, th0);
 }
 static void phone_map_build(int ox, int oy) {                         /* ox, oy — пікселі карти лівого верхнього кута (кратні PMS) */
+    u8 *tg0 = tg; int tw0 = tgw, th0 = tgh;
     if (!cphm) city_phone_map();
     int cx = ox / PMS, cy = oy / PMS;
     for (int y = 0; y < PMH; y++) {
@@ -2723,15 +2739,17 @@ static void phone_map_build(int ox, int oy) {                         /* ox, oy 
             }
         }
         float tx, ty; if (nav_target(&tx, &ty)) lineth(lx, ly, (tx - ox) / (float)PMS, (ty - oy) / (float)PMS, C_box_3, 3, 0, 0, PMW, PMH);
-        target(fb, SW, SH);
     }
+    target(tg0, tw0, th0);
 }
 static void phone_map(int x0, int y0, int w, int h, float pcx, float pcy) {   /* у прямокутнику екрана; гравець у (pcx, pcy) */
     int ox = (int)px_ - (int)(pcx - x0) * PMS, oy = (int)py_ - (int)(pcy - y0) * PMS;
     int gx = ox / PMS * PMS, gy = oy / PMS * PMS;                          /* прив'язка до сітки — без «тремтіння» */
     if (gx != phm_x || gy != phm_y || route_ver != phm_rv || nav_on != phm_nav) { phone_map_build(gx, gy); phm_x = gx; phm_y = gy; phm_rv = route_ver; phm_nav = nav_on; }
-    for (int y = 0; y < h && y < PMH; y++) { if (y0 + y < 0 || y0 + y >= SH) continue;
-        memcpy(fb + (y0 + y) * SW + x0, phmap + y * PMW, w < PMW ? w : PMW); drt_mark(fb, y0 + y, x0, x0 + w - 1); }
+    if (ph_pass != 2)
+    for (int y = 0; y < h && y < PMH; y++) { if (y0 + y < 0 || y0 + y >= tgh) continue;
+        memcpy(tg + (y0 + y) * tgw + x0, phmap + y * PMW, w < PMW ? w : PMW); drt_mark(tg, y0 + y, x0, x0 + w - 1); }
+    if (ph_pass == 1) return;                                              /* кешована основа — без стрілки й цілі */
     int cx1 = x0 + w, cy1 = y0 + h; if (cy1 > SH) cy1 = SH;
     float sx = x0 - gx / (float)PMS, sy = y0 - gy / (float)PMS;            /* світ -> екран: X/PMS + sx */
     if (nav_on && nroute > 0) {                                            /* ціль — кружечок (маршрут уже у вікні) */
@@ -2941,6 +2959,7 @@ static void target_arrow(float cx, float cy, float tx, float ty, u8 c) {   /* с
     tri(cx + ux * 5.5f, cy + uy * 5.5f, cx - ux * 3.5f + nx * 4, cy - uy * 3.5f + ny * 4, cx - ux * 3.5f - nx * 4, cy - uy * 3.5f - ny * 4, c);
 }
 #define NAV_MAP_H 92                                                  /* карта навігатора ≈ 4:3 */
+static void draw_phone_body(int y, int peek, int note, int lmnote, const Note *lmn_);
 static void draw_phone(void) {
     static Note lmn = { "ПАМ'ЯТКА ПОРУЧ", BT_X " — ВІДСТЕЖИТИ", C_blue_3, 0, -1 };
     int lmnote = lm_note_t > 0 && lm_note_i >= 0;
@@ -2954,29 +2973,64 @@ static void draw_phone(void) {
     if (ph_full) want = SH - PH - 2;
     ph_y += (want - ph_y) * 0.28f; if (fabsf(want - ph_y) < 0.6f) ph_y = want;
     int y = (int)ph_y; if (y >= SH) return;
+    /* 15.11.2026 (швидкодія): основа телефона (рамка, тексти, мапа) малюється в кеш лише коли щось змінилось;
+       щокадру — копія з кешу і рухомі стрілки */
+    if (!ph_full) {
+        static u8 phc[SW * SH]; static char sig0[200];
+        char sig[200]; char kb_[24] = ""; float tx_ = 0, ty_ = 0; int nk_ = peek == 2 ? nav_kind : 0;
+        if (peek == 3 && lm_track >= 0) km_str(kb_, sizeof kb_, dist(px_, py_, LMS[lm_track].x, LMS[lm_track].y) * MPP);
+        else if (peek) { int sv = nav_kind; nav_kind = nk_; nav_target(&tx_, &ty_); nav_kind = sv; km_str(kb_, sizeof kb_, dist(px_, py_, tx_, ty_) * MPP); }
+        const Note *nn = note ? (lmnote ? &lmn : &notes_q[0]) : 0;
+        int ttl = nn && nn->offer >= 0 ? offers[nn->offer].ttl / 20 : 0;
+        int pgx = 0, pgy = 0;
+        if (peek == 2) { float pcx = PX + 6 + (PW - 12) / 2, pcy_ = y + 26 + 26 + NAV_MAP_H * 0.5f; int ox = (int)px_ - (int)(pcx - (PX + 6)) * PMS, oy = (int)py_ - (int)(pcy_ - (y + 26 + 26)) * PMS; (void)pcy_; pgx = ox / PMS; pgy = oy / PMS; }
+        snprintf(sig, sizeof sig, "%d|%d|%d|%d|%d|%d|%.1f|%d|%d|%d|%d|%s|%d|%d|%d|%d|%d|%d|%d|%p|%d|%d|%d|%d|%d",
+                 y, peek, note, nk_, ostate, tod_clock(), rating, money, pay, ostate == O_DROP ? otimer / 60 : 0,
+                 ostate == O_DROP && otimer < 15 * 60 ? (int)((tick / 8) % 2) : 0, kb_, o_hold > 0 && !o_used ? o_hold : 0,
+                 pgx, pgy, route_ver, nav_on, lm_track, shop_i * 1000 + addr_i, (const void *)nn, ttl, lmnote, nav_kind, notes_n, nn ? nn->c : 0);
+        if (strcmp(sig, sig0)) {
+            strcpy(sig0, sig);
+            memset(phc + y * SW, 0, (size_t)(SH - y) * SW);
+            target(phc, SW, SH); ph_pass = 1; text_to_tg = 1; draw_phone_body(y, peek, note, lmnote, &lmn); text_to_tg = 0; ph_pass = 0; target(fb, SW, SH);
+        }
+        for (int yy = y < 0 ? 0 : y; yy < SH; yy++) {
+            const u8 *src = phc + yy * SW; u8 *d = fb + yy * SW;
+            for (int x = PX; x < PX + PW + 2; x++) if (src[x]) d[x] = src[x];
+            drt_mark(fb, yy, PX, PX + PW + 1);
+        }
+        ph_pass = 2; draw_phone_body(y, peek, note, lmnote, &lmn); ph_pass = 0;
+        return;
+    }
+    draw_phone_body(y, peek, note, lmnote, &lmn);
+}
+static void draw_phone_body(int y, int peek, int note, int lmnote, const Note *lmn_) {
+    if (ph_pass == 2) goto dyn;
     rect(PX + 2, y + 2, PW, PH, C_ink_0);
     rect(PX, y, PW, PH, C_ink_1);
     rect(PX, y, PW, 1, C_white_0); rect(PX, y, 1, PH, C_white_0); rect(PX + PW - 1, y, 1, PH, C_ink_2);
     rect(PX + PW / 2 - 8, y + 5, 16, 2, C_ink_2);                     /* динамік */
+dyn:;
     const int sx = PX + 6, sy = y + 12, sw = PW - 12, sh = PH - 20;
-    rect(sx, sy, sw, sh, C_panel_0);
-    phone_bar(sx, sy, sw);
+    if (ph_pass != 2) { rect(sx, sy, sw, sh, C_panel_0); phone_bar(sx, sy, sw); }
     int cy = sy + 14, ch = sh - 14;
     if (ph_full) { phone_full_draw(sx, cy, sw, ch); return; }
+    int D = ph_pass != 1, S = ph_pass != 2;                            /* D — рухоме (стрілки), S — основа */
     char b[64], kb[24];
     if (peek == 3) {                                                  /* відстеження пам'ятки: стрілка й відстань, назва прихована */
         int i = lm_track;
         km_str(kb, sizeof kb, dist(px_, py_, LMS[i].x, LMS[i].y) * MPP);
-        target_arrow(sx + 9, cy + 12, LMS[i].x, LMS[i].y, C_blue_3);
+        if (D) target_arrow(sx + 9, cy + 12, LMS[i].x, LMS[i].y, C_blue_3);
+        if (S) {
         text8(sx + 20, cy + 1, PF, C_white_2, "ПАМ'ЯТКА ПОРУЧ");
         text8(sx + 20, cy + 13, PF, C_box_3, kb);
         text8(sx + sw - 4 - tw8(BT_CIR " СКАСУВАТИ", PF), cy + 13, PF, C_white_0, BT_CIR " СКАСУВАТИ");
-        rect(sx, cy + 25, sw, 1, C_ink_2);
+        rect(sx, cy + 25, sw, 1, C_ink_2); }
     } else if (peek) {                                                       /* плашка поточної цілі зі стрілкою-радаром */
         float tx, ty; int nk = peek == 2 ? nav_kind : 0;
         int sv = nav_kind; nav_kind = nk; nav_target(&tx, &ty); nav_kind = sv;
         km_str(kb, sizeof kb, dist(px_, py_, tx, ty) * MPP);
-        target_arrow(sx + 9, cy + 12, tx, ty, nk ? C_green_3 : (ostate == O_DROP ? C_yellow_3 : C_green_3));
+        if (D) target_arrow(sx + 9, cy + 12, tx, ty, nk ? C_green_3 : (ostate == O_DROP ? C_yellow_3 : C_green_3));
+        if (!S) { if (peek == 2) phone_map(sx, cy + 26, sw, NAV_MAP_H, sx + sw / 2, cy + 26 + NAV_MAP_H * 0.5f); return; }
         if (nk == 0) {
             snprintf(b, sizeof b, "%s %s", ostate == O_DROP ? "ВЕЗТИ:" : "ЗАБРАТИ:", ostate == O_DROP ? ADDRS[addr_i].name : SHOPS[shop_i].name);
             text_clip0(sx + 20, cy + 1, sw - 23, C_white_2, b);
@@ -2997,7 +3051,7 @@ static void draw_phone(void) {
             text8(sx + 4, hy + 1, PF, C_white_1, BT_CIR " ВИЙТИ");
         }
     }
-    if (note) note_card(sx + 3, cy + (peek ? 28 : 2), sw - 6, lmnote ? &lmn : &notes_q[0]);
+    if (note && S) note_card(sx + 3, cy + (peek ? 28 : 2), sw - 6, lmnote ? lmn_ : &notes_q[0]);
 }
 /* піктограма «дістати телефон»: у краю екрана, кнопка ✕ і смужка, що заповнюється, поки ✕ затиснуто */
 static void draw_phone_hint(void) {
@@ -3209,6 +3263,7 @@ static void crown_box_r(float x, float y, int ox, int oy, float rr) {
     /* 15.11.2026 (швидкодія): блок карти береться раз на рядок і блок, а не двічі на піксель */
     if (x0 < ox) x0 = ox; if (y0 < oy) y0 = oy; if (x1 > ox + WW - 1) x1 = ox + WW - 1; if (y1 > oy + WH - 1) y1 = oy + WH - 1;
     if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0; if (x1 >= MAP_W) x1 = MAP_W - 1; if (y1 >= MAP_H) y1 = MAP_H - 1;
+    wa_begin();
     for (int wy = y0; wy <= y1; wy++) {
         int ly = wy - oy, cyy = wy / CS, ry = wy % CS;
         for (int wx = x0; wx <= x1; ) {
@@ -3222,6 +3277,7 @@ static void crown_box_r(float x, float y, int ox, int oy, float rr) {
             }
         }
     }
+    wa_push();
 }
 static void crown_box(float x, float y, int ox, int oy) { crown_box_r(x, y, ox, oy, CAR_LPX * 0.56f); }
 static void draw_world(void) {
@@ -3254,12 +3310,11 @@ static void draw_world(void) {
     /* ---- шар над машиною: будинки над арками, дим, бульбашки */
     target(wover, WW, WH);
     drt_clear(wover, 0); over_used = 0;
-    if (arch_used) {                                                   /* лише прямокутник, куди писали минулого разу */
-        int *bb = wa_bb[buf_cur];
-        if (bb[2] >= bb[0]) for (int y = bb[1]; y <= bb[3]; y++) memset(warch + y * WW + bb[0], 0, (size_t)(bb[2] - bb[0] + 1) * 2);
-        arch_used = 0;
+    for (int k = 0; k < wa_n[buf_cur]; k++) {                         /* лише прямокутники, куди писали минулого разу */
+        short *r = wa_r[buf_cur][k];
+        for (int y = r[1]; y <= r[3]; y++) memset(warch + y * WW + r[0], 0, (size_t)(r[2] - r[0] + 1) * 2);
     }
-    wa_bb[buf_cur][0] = WW; wa_bb[buf_cur][1] = WH; wa_bb[buf_cur][2] = -1; wa_bb[buf_cur][3] = -1;
+    wa_n[buf_cur] = 0; arch_used = 0;
     PROF(1)
 #ifndef PARALLAX
 #define PARALLAX 1                                   /* плавний (дробовий зсув на графічному чипі); цілопіксельний смикався */
@@ -3317,19 +3372,21 @@ static void draw_world(void) {
             }
             const Bridge *B = &BRIDGES[b];
             int RB = (int)CP(18);
+            wa_begin();
             for (int y = (int)cy_ - RB; y <= (int)cy_ + RB; y++) for (int x = (int)cx_ - RB; x <= (int)cx_ + RB; x++) {
                 float al, ac; br_local(b, x + 0.5f, y + 0.5f, &al, &ac);
                 int lx = x - ox, ly = y - oy;
                 if (fabsf(al) < B->hl && fabsf(ac) < B->hw && (unsigned)lx < WW && (unsigned)ly < WH) {
                     warch[ly * WW + lx] = (uint16_t)(map_px16(x, y) | 0x8000); WA_MARK(lx, ly); }
             }
+            wa_push();
             arch_used = 1;
         }
         for (int i = 0; i < NARCH; i++) {                         /* арки: будинок над проїздом — поверх машини */
             const Arch *A = &ARCHES[i];
             int RA_ = (int)CP(16), x0 = (int)px_ - RA_, x1 = (int)px_ + RA_, y0 = (int)py_ - RA_, y1 = (int)py_ + RA_;
             if (x1 < A->x0 || x0 > A->x1 || y1 < A->y0 || y0 > A->y1) continue;
-            arch_used = 1;
+            arch_used = 1; wa_begin();
             for (int y = y0; y <= y1; y++) for (int x = x0; x <= x1; x++) {
                 int in = 0;
                 for (int a = 0, b = A->n - 1; a < A->n; b = a++) {
@@ -3341,6 +3398,7 @@ static void draw_world(void) {
                     warch[ly * WW + lx] = (uint16_t)(map_px16(x, y) | 0x8000); WA_MARK(lx, ly);   /* непрозорий */
                 }
             }
+            wa_push();
         }
     }
     PROF(3)
@@ -3749,7 +3807,10 @@ static void render(void *target_buf) {
             }
         }
     }
-    if (arch_used) gfx_layer16(warch, WW, WW, WH, sx, sy, ZOOM, 1, 1, ZOOM != 1.0f);
+    if (arch_used) for (int k = 0; k < wa_n[buf_cur]; k++) {            /* лише прямокутники з кронами/арками */
+        short *r = wa_r[buf_cur][k]; int xa = r[0] & ~7, w = r[2] + 1 - xa, h = r[3] + 1 - r[1];
+        gfx_layer16(warch + r[1] * WW + xa, WW, w, h, sx + xa * ZOOM, sy + r[1] * ZOOM, ZOOM, 1, 1, ZOOM != 1.0f);
+    }
     if (over_used) layer8_dirty(wover, WW, WH, sx, sy, ZOOM, ZOOM != 1.0f);
     render_particles();
     float sdx, sdy, sk = (world_mode && !freecam) ? sun_shadow(&sdx, &sdy) : 0;
