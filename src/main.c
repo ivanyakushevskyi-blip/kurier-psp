@@ -3941,9 +3941,9 @@ static void render(void *target_buf) {
         if (sk > 0.02f) {                                               /* тіні від сонця; дахи — без тіні */
             build_shadows(viewx, viewy, sdx, sdy);
             float d = 1 - 0.26f * sk;
-            gfx_light_shade16(shw, nshv, lcol(ar * d, ag * d, ab * (d + 0.04f * sk), 1), (int)viewx, (int)viewy);
+            gfx_light_shade16(shw, nshv, lcol(ar * d, ag * d, ab * (d + 0.04f * sk), 1), viewx, viewy, ZOOM);
             build_footprints(viewx, viewy);
-            gfx_light_shade16(ftw, nfoot, lcol(ar, ag, ab, 1), (int)viewx, (int)viewy);
+            gfx_light_shade16(ftw, nfoot, lcol(ar, ag, ab, 1), viewx, viewy, ZOOM);
         }
         float on = night_k < 0.25f ? 0 : fminf(1, (night_k - 0.25f) / 0.35f);    /* ліхтарі й вікна вмикаються в сутінках */
         if (on > 0) {

@@ -261,14 +261,14 @@ void gfx_light_shade(const float *xy, int nv, uint32_t col) {
     sceGuEnable(GU_BLEND);
     sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFFFF, 0xFFFFFFFF);
 }
-void gfx_light_shade16(const int16_t *xy, int nv, uint32_t col, int vx, int vy) {
+void gfx_light_shade16(const int16_t *xy, int nv, uint32_t col, float vx, float vy, float sc) {
     q_last = 0;
     if (nv < 3) return;
     sceGuDisable(GU_TEXTURE_2D);
     sceGuDisable(GU_BLEND);
     typedef struct { float x, y, z; } VF;                                /* без кольору у вершині: колір — sceGuColor */
     VF *v = (VF *)sceGuGetMemory(nv * sizeof(VF));
-    for (int i = 0; i < nv; i++) { v[i].x = (float)(xy[2 * i] - vx); v[i].y = (float)(xy[2 * i + 1] - vy); v[i].z = 0; }
+    for (int i = 0; i < nv; i++) { v[i].x = (xy[2 * i] - vx) * sc; v[i].y = (xy[2 * i + 1] - vy) * sc; v[i].z = 0; }
     sceGuColor(col | 0xFF000000u);
     sceGuDrawArray(GU_TRIANGLES, GU_VERTEX_32BITF | GU_TRANSFORM_2D, nv, 0, v);
     sceGuEnable(GU_BLEND);
@@ -474,9 +474,9 @@ void gfx_tris_flat(const float *xy, int nv, uint32_t col) {
         }
     }
 }
-void gfx_light_shade16(const int16_t *xy, int nv, uint32_t col, int vx, int vy) {
+void gfx_light_shade16(const int16_t *xy, int nv, uint32_t col, float vx, float vy, float sc) {
     static float f[24000 * 2]; if (nv > 24000) nv = 24000;
-    for (int i = 0; i < 2 * nv; i += 2) { f[i] = xy[i] - vx; f[i + 1] = xy[i + 1] - vy; }
+    for (int i = 0; i < 2 * nv; i += 2) { f[i] = (xy[i] - vx) * sc; f[i + 1] = (xy[i + 1] - vy) * sc; }
     gfx_light_shade(f, nv, col);
 }
 void gfx_light_shade(const float *xy, int nv, uint32_t col) {

@@ -26,8 +26,8 @@ void gfx_tris16(const uint16_t *tex, int stride, int w, int h, int fmt, const fl
 void gfx_light_begin(uint32_t amb);
 void gfx_light_end(void *target);
 void gfx_light_shade(const float *xy, int nv, uint32_t col);   /* тіні: трикутники кольору col у шарі світла (заміна) */
-/* 15.11.2026: те саме з цілих світових координат (кеш): екран = xy - (vx, vy); без кольору у вершині */
-void gfx_light_shade16(const int16_t *xy, int nv, uint32_t col, int vx, int vy);
+/* 15.11.2026: те саме з цілих світових координат (кеш): екран = (xy - (vx, vy)) * sc; без кольору у вершині */
+void gfx_light_shade16(const int16_t *xy, int nv, uint32_t col, float vx, float vy, float sc);
 /* 15.11.2026: копія прямокутника 16-бітних пікселів силами чипа (карта з кешу блоків у шар світу без процесора).
    Після всіх копій — gfx_copy_done() (чекати кінця пересилань перед використанням як текстури). */
 void gfx_copy16(const uint16_t *src, int srcw, int sx, int sy, int w, int h, uint16_t *dst, int dstw, int dx, int dy);
