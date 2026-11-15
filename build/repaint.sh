@@ -8,7 +8,6 @@ date
 PARKMARKS=1 python3 -I tools/mappatch.py
 python3 -I tools/poifix.py
 python3 -I tools/lmbuild.py
-python3 -I tools/exits.py | tail -1
 date
 python3 -I tools/bake.py build src
 mkdir -p build/frames
