@@ -22,6 +22,7 @@ CURB = (196, 194, 188)
 SERV2 = os.environ.get('SERV2', '1') == '1'
 YARD2 = os.environ.get('YARD2', '1') == '1'          # 15.11.2026: двори — газон за замовчуванням, сірим лише явне покриття
 ROAD3 = os.environ.get('ROAD3', '1') == '1'          # 15.11.2026: дороги однією фігурою — заокруглені примикання, рівні бордюри й тротуари
+CORE_PAD = 0     # поле вікна блоку навколо ядра (сітка гри); ставить citybuild — для об'єктів, що малюються лише цілком в ядрі
 YARD2 = os.environ.get('YARD2', '1') == '1'
 MKT2 = os.environ.get('MKT2', '1') == '1'            # 14.11.2026: ринки — ряди кіосків з контурів, не поверх доріг/паркувань          # 14.11.2026: лавки, контейнери, дитмайданчики у дворах          # 14.11.2026: проїзди з бордюрами й рівними кінцями
 PAVED = [(132, 132, 130), (146, 146, 142), (158, 158, 154)]
@@ -552,8 +553,11 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None, props_out=None):
         # Сірим лишаємо лише явне покриття: рівне, світле, без кольору; решта двору — газон (буре — ґрунт)
         hard = (ch < 20) & (mx > 95) & (mx < 215) & (tex < 3.2)
         hard = cv2.morphologyEx(hard.astype(np.uint8), cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
-        nl_, lab_, st_, _ = cv2.connectedComponentsWithStats(hard, connectivity=8)
-        hard = (st_[:, cv2.CC_STAT_AREA] >= 4000)[lab_] & (lab_ > 0)    # лише великі майданчики (>≈300 м²), без дрібних сірих плям
+        # лише великі майданчики, без дрібних сірих плям. Локально (без площі зв'язної області — вона залежала від
+        # вікна блоку і давала шви): ядро — де вміщується коло ~9 м, плюс прилеглі до ядра смуги до 6 м
+        k9 = int(9 / MPP) | 1
+        core_ = cv2.morphologyEx(hard, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k9, k9)))
+        hard = (cv2.dilate(core_, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(12 / MPP) | 1,) * 2)) > 0) & (hard > 0)
         ycls[(ycls == 3) & ~hard] = 1
         ycls[dark] = 1
     else: ycls[dark] = 0
@@ -580,16 +584,26 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None, props_out=None):
         #  - навколо кожного будинку — вимощення ~1,2 м;
         #  - далі від головних вулиць (двори) — газон за знімком, з плавним переходом (шум, без рівної межі)
         MAINR = ('primary', 'secondary', 'tertiary', 'trunk', 'primary_link', 'secondary_link', 'tertiary_link')
-        mm_ = Image.new('L', (WF, HF), 0); dmm = ImageDraw.Draw(mm_)
-        pp_ = Image.new('L', (WF, HF), 0); dpp = ImageDraw.Draw(pp_)
-        for w, pts, ptf in ways:
+        # 15.11.2026: відстані й щільність рахуються на ширшому полі (сітка гри + запас), ніж вікно блоку, —
+        # інакше дорога/будинки за межею вікна не враховувались і на межах блоків були шви
+        PZ = int(48 / MPP); WZ, HZ = W + 2 * PZ, H + 2 * PZ
+        toz = lambda p: (p[0] * K - x0 + PZ, p[1] * K - y0 + PZ)
+        nearz = lambda bb: not (bb[2] * K - x0 < -PZ - 60 or bb[0] * K - x0 > W + PZ + 60 or bb[3] * K - y0 < -PZ - 60 or bb[1] * K - y0 > H + PZ + 60)
+        mm_ = Image.new('L', (WZ, HZ), 0); dmm = ImageDraw.Draw(mm_)
+        pp_ = Image.new('L', (WZ, HZ), 0); dpp = ImageDraw.Draw(pp_)
+        for w in D['w']:
             t = w['t']; h = t.get('highway')
-            if h in MAINR and t.get('area') != 'yes' and len(ptf) >= 2: dmm.line(ptf, fill=1, width=max(1, int(ROAD_W.get(h, 9) / MF)))
-            if (h == 'pedestrian' or t.get('place') == 'square' or t.get('area:highway') == 'pedestrian') and len(ptf) >= 2:
-                if w['closed'] and t.get('area') == 'yes' or t.get('place') == 'square' or t.get('area:highway') == 'pedestrian': dpp.polygon(ptf, fill=1)
-                else: dpp.line(ptf, fill=1, width=int(8 / MF))
-        d_main = cv2.distanceTransform(1 - np.array(mm_), cv2.DIST_L2, 5) * MF
-        d_ped = cv2.distanceTransform(1 - np.array(pp_), cv2.DIST_L2, 5) * MF
+            isp = h == 'pedestrian' or t.get('place') == 'square' or t.get('area:highway') == 'pedestrian'
+            if not ((h in MAINR and t.get('area') != 'yes') or isp) or len(w['pts']) < 2 or not nearz(w['bb']): continue
+            pz = [toz(p) for p in w['pts']]
+            if h in MAINR and t.get('area') != 'yes': dmm.line(pz, fill=1, width=max(1, int(ROAD_W.get(h, 9) / MPP)))
+            if isp:
+                if w['closed'] and t.get('area') == 'yes' or t.get('place') == 'square' or t.get('area:highway') == 'pedestrian': dpp.polygon(pz, fill=1)
+                else: dpp.line(pz, fill=1, width=int(8 / MPP))
+        def zup(a):                                                # поле із запасом -> детальна сітка вікна
+            return cv2.resize(np.ascontiguousarray(a[PZ:PZ + H, PZ:PZ + W]).astype(np.float32), (WF, HF), interpolation=cv2.INTER_LINEAR)
+        d_main = zup(cv2.distanceTransform(1 - np.array(mm_), cv2.DIST_L2, 5) * MPP)
+        d_ped = zup(cv2.distanceTransform(1 - np.array(pp_), cv2.DIST_L2, 5) * MPP)
         jit = _up(vnoise(H, W, 30, 21, int(round(x0)), int(round(y0))), S) * 8 - 4     # ±4 м — нерівна межа
         front = yard & (d_main < 15 + jit)
         plaza = yard & (d_ped < 22 + jit)
@@ -597,8 +611,11 @@ def render(x0, y0, W, H, tree_out=None, ss=1, solid_out=None, props_out=None):
         bmk = np.zeros((HF, WF), np.uint8)
         for _, b in BL: cv2.fillPoly(bmk, [np.round(np.array([tof(p) for p in b['q']])).astype(np.int32)], 1)
         # щільна забудова (центр): частка дахів у радіусі ~40 м > 35% — двори здебільшого заасфальтовані
-        cov = cv2.blur(cv2.resize(bmk, (W, H), interpolation=cv2.INTER_AREA).astype(np.float32), (int(80 / MPP) | 1, int(80 / MPP) | 1))
-        dense = yard & (_up(cov, S) > 0.35 + jit / 40) & (cls == G_GRASS)
+        bz = np.zeros((HZ, WZ), np.uint8)
+        for b in D['B'] + D['SAT']:
+            if nearz(b['bb']): cv2.fillPoly(bz, [np.round(np.array([toz(p) for p in b['q']])).astype(np.int32)], 1)
+        cov = zup(cv2.blur(bz.astype(np.float32), (int(80 / MPP) | 1, int(80 / MPP) | 1)))
+        dense = yard & (cov > 0.35 + jit / 40) & (cls == G_GRASS)
         cls[dense] = G_PAVED
         apron = yard & (cv2.distanceTransform(1 - bmk, cv2.DIST_L2, 5) * MF < 1.2) & (bmk == 0)
         cls[apron & (cls == G_GRASS)] = G_PAVED

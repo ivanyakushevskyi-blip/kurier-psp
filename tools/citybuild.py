@@ -18,6 +18,7 @@ W = int(META['W'] * K) // CS * CS
 H = int(META['H'] * K) // CS * CS
 SS = int(os.environ.get('SS', '4'))              # надвибірка (згладжені краї); 1 — стара піксельна карта
 B, M = (1024 if SS == 1 else 512), 96
+CD.CORE_PAD = M
 FS = 0.5 / CD.MPP                         # масштаб відносно старої сітки 0,5 м/пікс (1,8 з 31.10.2026)
 from numpy.lib.format import open_memmap
 LAT0, LON0 = 49.422, 26.995

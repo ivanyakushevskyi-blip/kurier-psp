@@ -1193,6 +1193,8 @@ def yards(c, blds, trees):
             rs_ = _rng(*c.world((sx, sy)), 91); bend = (rs_.random() - 0.5) * 0.25 * (L - r0)
             qx, qy = mx_ - uy_ * bend, my_ + ux_ * bend               # легкий вигин
             pts = [((1 - t) ** 2 * ax + 2 * (1 - t) * t * qx + t * t * tx, (1 - t) ** 2 * ay + 2 * (1 - t) * t * qy + t * t * ty) for t in np.linspace(0, 1, 16)]
+            cp_ = CD.CORE_PAD * S + c.m(2)                        # лише цілком у ядрі блоку: тоді її малює рівно один блок, без обрізу на межі
+            if cp_ > c.m(2) and any(not (cp_ <= x_ < W - cp_ and cp_ <= y_ < H - cp_) for x_, y_ in pts): skip['edge'] = skip.get('edge', 0) + 1; continue
             mm = np.zeros((H, W), np.uint8)
             cv2.polylines(mm, [np.round(np.array(pts)).astype(np.int32)], False, 1, max(2, int(c.m(1.5))))
             mm = mm.astype(bool) & (free.astype(bool) | (cls == G_DIRT)) & ~(bm > 0)
