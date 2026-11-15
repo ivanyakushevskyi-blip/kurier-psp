@@ -433,6 +433,16 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('typedef struct { int16_t x, y; uint8_t w, h, nfr; int32_t off; int16_t r; const char *name; uint8_t bit; } Landmark;\n')
     f.write('static const Landmark LMS[] = {\n%s};\n' % ',\n'.join('{%d,%d,%d,%d,%d,%d,%d,%s,%d}' % (r[0], r[1], r[2], r[3], r[4], r[5], r[6], cstr(r[7]), r[8]) for r in lm_rows) if lm_rows else 'static const Landmark LMS[1] = {{0}};\n')
     f.write('#define NLM %d\n' % len(lm_rows))
+    # 15.11.2026: район кожної пам'ятки (найближчий центр району OSM place=suburb) — для списку в телефоні
+    import citygen as _CGL
+    _D = CD.data()
+    _sub = [(t['name'], _CGL.px(*_D['nodes'][i])) for i, t in _D['n'].items() if t.get('place') == 'suburb' and t.get('name') and i in _D['nodes']]
+    _sub = [(n_, p_[0] * CD.K, p_[1] * CD.K) for n_, p_ in _sub]
+    _ln = [min(_sub, key=lambda q: (q[1] - r[0]) ** 2 + (q[2] - r[1]) ** 2)[0] if _sub else 'МІСТО' for r in lm_rows]
+    _dn = sorted(set(_ln), key=lambda n_: (-_ln.count(n_), n_))
+    f.write('static const char *const LM_DN[] = {"",%s};\n#define NLMD %d\n' % (','.join(cstr(n_.upper()) for n_ in _dn), len(_dn)))
+    f.write('static const uint8_t LM_ST[] = {%s};\n' % (','.join(str(_dn.index(n_) + 1) for n_ in _ln) or '0'))
+    print('  пам\'ятки по районах:', ', '.join('%s %d' % (n_, _ln.count(n_)) for n_ in _dn))
     f.write('typedef struct { uint16_t cp; int8_t adv, xoff; uint8_t w; uint32_t off; } Glyph;\n')
     f.write('static const uint8_t FONT_DATA[] = {%s};\n' % ','.join(map(str, font_bits)))
     for sc_, (hh, rows, _) in font_tabs.items():
