@@ -50,17 +50,55 @@ def main():
             ox, oy = (ux, uy) if va else (-ux, -uy)                       # назовні
             cx, cy = x - ux * 0.5 + ox * 0.7 * F, y - uy * 0.5 + oy * 0.7 * F
             found.append((cx, cy, math.atan2(oy, ox) + math.pi / 2, width + 1.5))
+    # 15.11.2026: ширина — за намальованою картою, від бордюру до бордюру (OSM-ширина буває меншою: додаткові смуги);
+    # якщо вихід припав на перехрестя (поперечний переріз ширший за дорогу) — ряд зсувається назовні, поки не вийде з нього
+    try: cl = np.load('build/cls_cache.npy', mmap_mode='r')
+    except FileNotFoundError: cl = None
+    def isroad(x, y): return 0 <= int(x) < W and 0 <= int(y) < H and cl[int(y), int(x)] == 5
+    def section(x, y, ax, ay, cap):
+        ends = []
+        for sg in (1, -1):
+            t = 0.0; last = 0.0
+            while True:
+                t += 1
+                if t > cap: return None                      # дорога не скінчилась — перехрестя
+                if isroad(x + sg * ax * t, y + sg * ay * t): last = t
+                elif t - last > 1.5 * F: break
+            ends.append(sg * last)
+        return ends
+    fixed = []
+    for x, y, a, Lm in found:
+        if cl is None: fixed.append((x, y, a, Lm)); continue
+        ax, ay = math.cos(a), math.sin(a); ox, oy = math.cos(a - math.pi / 2), math.sin(a - math.pi / 2)
+        best = None
+        for sm in range(0, 31):
+            px, py = x + ox * sm * F, y + oy * sm * F
+            e = section(px, py, ax, ay, (Lm / 2 + 6) * F)
+            if e is None or e[0] - e[1] < 3 * F: continue
+            if (e[0] - e[1]) / F > Lm + 5: continue
+            c = (e[0] + e[1]) / 2
+            best = (px + ax * c, py + ay * c, a, (e[0] - e[1]) / F + 1.5); break
+        fixed.append(best or (x, y, a, Lm))
+    found = fixed
     # злити близькі (дві смуги однієї дороги, сусідні відрізки): у межах 30 м — один, довжиною на обидва
     out = []
     for f in sorted(found, key=lambda f: -f[3]):
-        for g in out:
-            if math.hypot(f[0] - g[0], f[1] - g[1]) < 30 * F: break
+        for k, g in enumerate(out):
+            if math.hypot(f[0] - g[0], f[1] - g[1]) < 30 * F:
+                ax, ay = math.cos(g[2]), math.sin(g[2])
+                if abs(math.sin(f[2] - g[2])) > 0.35: break       # інший напрямок (поперечна дорога) — не зливати, просто один
+                hl, hf = g[3] * F / 2, f[3] * F / 2
+                t = (f[0] - g[0]) * ax + (f[1] - g[1]) * ay
+                lo, hi = min(-hl, t - hf), max(hl, t + hf)
+                c = (lo + hi) / 2
+                out[k] = (g[0] + ax * c, g[1] + ay * c, g[2], (hi - lo) / F)
+                break
         else: out.append(f)
     try: props = json.load(open('build/props.json'))
     except FileNotFoundError: props = []
     props = [p for p in props if p[3] != 'barrier']
     for x, y, a, Lm in out:
-        props.append([round(x, 1), round(y, 1), round(a, 4), 'barrier', int(round(min(Lm, 30) * 4))])
+        props.append([round(x, 1), round(y, 1), round(a, 4), 'barrier', int(round(min(Lm, 45) * 4))])
     json.dump(props, open(os.environ.get('PROPS_OUT', 'build/props.json'), 'w'))
     print('шлагбаумів на виїздах: %d' % len(out))
     for x, y, a, Lm in out: print('  %6d %6d  %.0f м' % (x, y, Lm))
