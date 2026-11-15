@@ -3280,6 +3280,9 @@ static void crown_box_r(float x, float y, int ox, int oy, float rr) {
     /* 15.11.2026 (швидкодія): блок карти береться раз на рядок і блок, а не двічі на піксель */
     if (x0 < ox) x0 = ox; if (y0 < oy) y0 = oy; if (x1 > ox + WW - 1) x1 = ox + WW - 1; if (y1 > oy + WH - 1) y1 = oy + WH - 1;
     if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0; if (x1 >= MAP_W) x1 = MAP_W - 1; if (y1 >= MAP_H) y1 = MAP_H - 1;
+    { int any = 0;                                                      /* 15.11.2026 (затори): спершу проба через 3 пікс — без крон далі не йдемо */
+      for (int wy = y0; wy <= y1 && !any; wy += 3) for (int wx = x0; wx <= x1; wx += 3) if (crown_at(wx, wy)) { any = 1; break; }
+      if (!any) return; }
     wa_begin();
     for (int wy = y0; wy <= y1; wy++) {
         int ly = wy - oy, cyy = wy / CS, ry = wy % CS;
