@@ -344,6 +344,12 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     # запарковані машини: сітка 256 пікс
     import parked
     _pk = parked.build(CD.data(), _g, W, H, _pl, solid, surfm, _tr, [(q, 4) for q in md['shops']] + [(q, 1) for q in md['addrs']])
+    # 21.11.2026: не паркуватись на зупинках (павільйон-об'єкт ± 9 м уздовж, жовта лінія)
+    _stp = [(p_[0], p_[1]) for p_ in (json.load(open(os.path.join(BUILD, 'props.json'))) if os.path.exists(os.path.join(BUILD, 'props.json')) else []) if p_[3] == 'stop']
+    if _stp:
+        _r2 = (9.0 / CD.MPP) ** 2; _n0 = len(_pk)
+        _pk = [c for c in _pk if all((c[0] - sx_) ** 2 + (c[1] - sy_) ** 2 > _r2 for sx_, sy_ in _stp)]
+        print('  запарковані: прибрано біля зупинок %d' % (_n0 - len(_pk)))
     PG = 256; pgw, pgh = (W + PG - 1) // PG, (H + PG - 1) // PG
     _pk.sort(key=lambda c: (c[1] // PG) * pgw + c[0] // PG)
     _pst = [0] * (pgw * pgh + 1)

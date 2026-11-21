@@ -4429,6 +4429,7 @@ int main(int argc, char **argv) {
             if (dd < OP(30) && fabsf(vel) < OP(0.02f) && (ostate == O_PICK || ostate == O_DROP)) { ohold = HOLD_O + 2; btn &= ~BTN_GAS; }
         }
         if (f % 120 == 0) { if (dist(px_, py_, lastx, lasty) < OP(6) && ostate != O_NONE) stuck++; lastx = px_; lasty = py_; }
+        { static float pd = 1e9f; if (f % 600 == 0) { float d_ = dist(px_, py_, tx, ty); if (!on_foot && ostate != O_NONE && d_ > OP(80) && pd - d_ < OP(100)) stuck = 2; pd = d_; } }   /* петляє без поступу — підтягнути */
         if (stuck > 1 && ostate != O_NONE) {     /* teleport the bot along when it gets stuck in the street maze */
             if (on_foot) { float gx, gy; order_door(&gx, &gy); if (ostate == O_NONE || dist(car_x, car_y, gx, gy) > OP(70)) { gx = car_x; gy = car_y; } tx = gx; ty = gy; }
             float d = dist(px_, py_, tx, ty), k = d > OP(200) ? OP(160) / d : 1;
@@ -4442,6 +4443,7 @@ int main(int argc, char **argv) {
             ph_full = 0;
         }
         game_update(btn, prs, lx, ly);
+        if (getenv("APTRACE") && f % 300 == 0) printf("   ap f%d pos %.0f,%.0f d %.0f m v %.1f st %d foot %d stuck %d\n", f, px_, py_, dist(px_, py_, tx, ty) * MPP, vel * MPP * 216, ostate, on_foot, stuck);
         { static int po = -1, pf = -1; if (po != ostate || pf != on_foot) { float gx, gy; order_door(&gx, &gy); printf("  f%d ostate %d on_foot %d door %.0f m car %.0f m\n", f, ostate, on_foot, dist(px_, py_, gx, gy) * MPP, dist(px_, py_, car_x, car_y) * MPP); po = ostate; pf = on_foot; } }
         draw_frame();
         if ((f == 200 || f == 900 || (ostate == O_LOAD && load_t == 30) || (ostate == O_DROP && otimer == olimit - 300) || (ostate == O_DROP && hand_t == 40) || (toast_t == 140 && strstr(toast, "₴"))) && shots < 9) {
