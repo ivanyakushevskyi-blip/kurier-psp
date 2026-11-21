@@ -2075,6 +2075,7 @@ static void zone_guard(void) {
 
 /* ================= режим пішохода (15.11.2026) ================= */
 #define PED_R TM(0.3f)
+static int ped_carry(void) { return on_foot && ostate == O_DROP; }    /* з посилкою в руках */
 static int own_car_hit(float x, float y, float r) {                  /* точка (з запасом r) у кузові покинутої машини */
     if (!on_foot) return 0;
     float dx = x - car_x, dy = y - car_y, c = cosf(car_a), sn = sinf(car_a), lx = dx * c + dy * sn, ly = -dx * sn + dy * c;
@@ -2119,7 +2120,7 @@ static void update_ped(unsigned btn, int lx, int ly) {
     if (abs(lx - 128) > 24) mx = (lx - 128) / 104.0f; if (abs(ly - 128) > 24) my = (ly - 128) / 104.0f;
     if (!ph_full) { if (btn & PSP_CTRL_LEFT) mx = -1; if (btn & PSP_CTRL_RIGHT) mx = 1; if (btn & PSP_CTRL_UP) my = -1; if (btn & PSP_CTRL_DOWN) my = 1; }
     float m = sqrtf(mx * mx + my * my); if (m > 1) { mx /= m; my /= m; m = 1; }
-    float vmax = ((btn & BTN_GAS) ? TM(4.2f) : TM(1.5f)) / 60.0f;       /* біг ~15 км/год, хода ~5,4 км/год */
+    float vmax = ((btn & BTN_GAS) ? (ped_carry() ? TM(3.2f) : TM(4.2f)) : TM(1.5f)) / 60.0f;   /* біг ~15 км/год (з коробкою ~11,5), хода ~5,4 */
     float want = m * vmax; ped_v += (want - ped_v) * 0.2f;
     if (m > 0.05f) { float a = atan2f(my, mx), d = a - ang; while (d > PI_F) d -= 2 * PI_F; while (d < -PI_F) d += 2 * PI_F; ang += d * 0.35f; }
     if (ped_v > 0.001f && m > 0.05f) {
@@ -2132,26 +2133,85 @@ static void update_ped(unsigned btn, int lx, int ly) {
     vx_ = vy_ = 0; vel = 0;
     zone_guard();
 }
-/* текстура людини згори (16×16, 4 кадри кроку): голова, плечі, руки й ноги, що ходять */
-static uint32_t ped_tex[4][16 * 16];
+/* 21.11.2026: кур'єр згори, 32×32 (1:1 на камері 2×; фігура ~24 текс., текс ≈ 0,14 м), згладжені краї (4×4 підвибірки), контур.
+   Помаранчева куртка, термосумка за спиною, кепка з козирком; кадри: [з коробкою][хода/біг/стоїть][6 фаз] */
+#define PED_T 32
+static uint32_t __attribute__((aligned(16))) ped_tex[2][3][6][PED_T * PED_T];
+static float seg_d(float px, float py, float ax, float ay, float bx, float by) {   /* відстань до відрізка */
+    float vx = bx - ax, vy = by - ay, l2 = vx * vx + vy * vy, t = l2 > 0 ? ((px - ax) * vx + (py - ay) * vy) / l2 : 0;
+    if (t < 0) t = 0; if (t > 1) t = 1; float dx = px - ax - vx * t, dy = py - ay - vy * t; return sqrtf(dx * dx + dy * dy);
+}
+static uint32_t ped_sample(float X, float Y, int carry, float leg, float arm) {   /* X — вперед, Y — праворуч; 0 — прозоро */
+    uint32_t c = 0;
+    #define SH_(col, k) ({ uint32_t c_ = (col); float k_ = (k); if (k_ < 0) k_ = 0; if (k_ > 1.3f) k_ = 1.3f; \
+        uint32_t r_ = (uint32_t)fminf(255, (c_ & 255) * k_), g_ = (uint32_t)fminf(255, ((c_ >> 8) & 255) * k_), b_ = (uint32_t)fminf(255, ((c_ >> 16) & 255) * k_); 0xFF000000u | b_ << 16 | g_ << 8 | r_; })
+    /* ноги: від стегна до стопи, черевик на кінці */
+    for (int sd = -1; sd <= 1; sd += 2) {
+        float fx = leg * sd, hy = 1.5f * sd;
+        if (seg_d(X, Y, 0, hy, fx, hy) < 1.25f) c = SH_(0xFF6A4A2E, 1 - 0.08f * fabsf(Y - hy));
+        if (((X - fx - 0.5f * (fx >= 0 ? 1 : -1)) * (X - fx - 0.5f * (fx >= 0 ? 1 : -1))) / 2.2f + (Y - hy) * (Y - hy) / 1.3f < 1) c = fabsf(Y - hy) > 0.7f ? 0xFF8A9098 : 0xFFDCE2E6;          /* кросівки */
+    }
+    /* термосумка за спиною */
+    if (X > -4.6f && X < -1.5f && fabsf(Y) < 3.3f) {
+        int edge = X < -4.1f || fabsf(Y) > 2.8f;
+        c = edge ? 0xFF0F8AC8 : (fabsf(Y) < 0.6f ? 0xFF1F1F22 : SH_(0xFF1AC2F2, 1.08f - 0.05f * fabsf(Y)));   /* жовта, темна смуга-ручка */
+    }
+    /* руки: плече -> лікоть -> кисть */
+    for (int sd = -1; sd <= 1; sd += 2) {
+        float sx = 0.3f, sy = 4.2f * sd, hx, hy;
+        if (carry) { hx = 4.2f; hy = 2.9f * sd; }
+        else { hx = -arm * sd * 1.0f + 0.4f; hy = 4.6f * sd; }
+        float ex = (sx + hx) / 2 - (carry ? 0 : 0.3f), ey = (sy + hy) / 2 + 0.5f * sd;
+        if (seg_d(X, Y, sx, sy, ex, ey) < 1.15f || seg_d(X, Y, ex, ey, hx, hy) < 1.0f) c = SH_(0xFF2A5AE8, 0.92f);
+        if ((X - hx) * (X - hx) + (Y - hy) * (Y - hy) < 0.95f * 0.95f) c = 0xFFA0C8EC;
+    }
+    /* тулуб: куртка, світлиша посередині, світловідбивна смуга по плечах */
+    {
+        float e = X * X / (2.5f * 2.5f) + Y * Y / (4.6f * 4.6f);
+        if (e < 1) {
+            c = SH_(0xFF2A5AE8, 1.15f - 0.35f * e);
+            if (e > 0.82f) c = SH_(0xFF1E3EB0, 1);
+            if (fabsf(X + 0.9f) < 0.38f && e < 0.9f) c = 0xFFD8DCDC;
+        }
+    }
+    /* коробка в руках */
+    if (carry && X > 2.3f && X < 6.9f && fabsf(Y) < 3.1f) {
+        int edge = X < 2.7f || X > 6.5f || fabsf(Y) > 2.7f;
+        c = edge ? 0xFF3A6A9A : (fabsf(Y) < 0.45f ? 0xFF7AB4D8 : SH_(0xFF5A96C8, 1.05f - 0.04f * (X - 2.3f)));
+        if ((X - 4.2f) * (X - 4.2f) + (Y - 2.9f) * (Y - 2.9f) < 0.8f || (X - 4.2f) * (X - 4.2f) + (Y + 2.9f) * (Y + 2.9f) < 0.8f) c = 0xFFA0C8EC;   /* пальці на краях */
+    }
+    /* голова: вуха, кепка з козирком уперед */
+    {
+        float hx = 0.4f, r2 = (X - hx) * (X - hx) + Y * Y;
+        if ((X - hx) * (X - hx) + (fabsf(Y) - 2.0f) * (fabsf(Y) - 2.0f) < 0.45f) c = 0xFF8CB4DC;
+        if (r2 < 2.25f * 2.25f) c = SH_(0xFF1C2A78, 1.3f - 0.07f * r2);    /* кепка — темно-червона */
+        if (r2 < 0.3f) c = 0xFF1A2A90;                                     /* ґудзик на маківці */
+        if (X > hx + 1.5f && X < hx + 3.4f && ((X - hx - 1.5f) * (X - hx - 1.5f)) / (1.9f * 1.9f) + Y * Y / (1.7f * 1.7f) < 1) c = 0xFF14204A;   /* козирок */
+    }
+    #undef SH_
+    return c;
+}
 static void ped_tex_init(void) {
-    for (int f = 0; f < 4; f++) {
-        uint32_t *t = ped_tex[f]; memset(t, 0, sizeof ped_tex[f]);
-        float sw = sinf(f * PI_F / 2) * 3.2f;                              /* розмах кроку (вперед = +x) */
-        #define PP(x, y, c) { int xx_ = (int)(x), yy_ = (int)(y); if (xx_ >= 0 && xx_ < 16 && yy_ >= 0 && yy_ < 16) t[yy_ * 16 + xx_] = (c); }
-        for (int y = 0; y < 16; y++) for (int x = 0; x < 16; x++) {
-            float X = x + 0.5f - 8, Y = y + 0.5f - 8;
-            if (fabsf(Y + 2.0f) < 1.2f && X > -1.5f + (sw > 0 ? 0 : sw) && X < 1.5f + (sw > 0 ? sw : 0) - 0.5f) PP(x, y, 0xFF5A3A26);   /* ноги (джинси) */
-            if (fabsf(Y - 2.0f) < 1.2f && X > -1.5f + (-sw > 0 ? 0 : -sw) && X < 1.5f + (-sw > 0 ? -sw : 0) - 0.5f) PP(x, y, 0xFF5A3A26);
+    for (int cr = 0; cr < 2; cr++) for (int md = 0; md < 3; md++) for (int f = 0; f < 6; f++) {
+        float ph = f * 2 * PI_F / 6, leg = md == 2 ? 0 : sinf(ph) * (md ? 4.6f : 3.5f), arm = md == 2 ? 0 : sinf(ph) * (md ? 2.8f : 2.0f);
+        uint32_t *t = ped_tex[cr][md][f]; static float A[PED_T * PED_T];
+        for (int y = 0; y < PED_T; y++) for (int x = 0; x < PED_T; x++) {
+            float r = 0, g = 0, b = 0, a = 0;
+            for (int sy = 0; sy < 4; sy++) for (int sx = 0; sx < 4; sx++) {
+                float X = x + (sx + 0.5f) / 4 - PED_T / 2.0f, Y = y + (sy + 0.5f) / 4 - PED_T / 2.0f;   /* текстура: +x вперед */
+                uint32_t c = ped_sample(X / 1.3f, Y / 1.3f, cr, leg, arm);   /* фігура трохи більша за реальну, як і машини */
+                if (c) { r += c & 255; g += (c >> 8) & 255; b += (c >> 16) & 255; a += 1; }
+            }
+            A[y * PED_T + x] = a / 16;
+            t[y * PED_T + x] = a > 0 ? ((uint32_t)(a / 16 * 255) << 24 | (uint32_t)(b / a) << 16 | (uint32_t)(g / a) << 8 | (uint32_t)(r / a)) : 0;
         }
-        for (int y = 0; y < 16; y++) for (int x = 0; x < 16; x++) {
-            float X = x + 0.5f - 8, Y = y + 0.5f - 8;
-            if ((X * X) / (2.4f * 2.4f) + (Y * Y) / (4.6f * 4.6f) < 1) PP(x, y, 0xFF2E5A3A);       /* куртка (плечі) */
-            if (fabsf(Y + 4.3f) < 0.9f && fabsf(X + sw * 0.5f) < 1.2f) PP(x, y, 0xFF9CC4E8);       /* руки (шкіра) */
-            if (fabsf(Y - 4.3f) < 0.9f && fabsf(X - sw * 0.5f) < 1.2f) PP(x, y, 0xFF9CC4E8);
-            if (X * X + Y * Y < 2.0f * 2.0f) PP(x, y, X > 0.6f ? 0xFF9CC4E8 : 0xFF203450);          /* голова: волосся, обличчя вперед */
+        for (int y = 1; y < PED_T - 1; y++) for (int x = 1; x < PED_T - 1; x++) {   /* темний контур — видно на будь-якому ґрунті */
+            if (A[y * PED_T + x] > 0.5f) continue;
+            float m = fmaxf(fmaxf(A[y * PED_T + x - 1], A[y * PED_T + x + 1]), fmaxf(A[(y - 1) * PED_T + x], A[(y + 1) * PED_T + x]));
+            if (m > 0.5f) { float a0 = A[y * PED_T + x], ao = 0.55f * (1 - a0) + a0; uint32_t c0 = t[y * PED_T + x];
+                float k = a0 / ao; uint32_t r_ = (uint32_t)((c0 & 255) * k + 16 * (1 - k)), g_ = (uint32_t)(((c0 >> 8) & 255) * k + 18 * (1 - k)), b_ = (uint32_t)(((c0 >> 16) & 255) * k + 20 * (1 - k));
+                t[y * PED_T + x] = (uint32_t)(ao * 255) << 24 | b_ << 16 | g_ << 8 | r_; }
         }
-        #undef PP
     }
 }
 static void update_player(unsigned btn, int lx) {
@@ -3861,6 +3921,9 @@ static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
 
 static void assets_init(void) {
     cache_init(); rg_init(); ped_tex_init();
+#ifdef HOST
+    if (getenv("PEDTEX")) { FILE *f_ = fopen(getenv("PEDTEX"), "wb"); fprintf(f_, "P6 %d %d 255\n", PED_T * 6, PED_T * 6); for (int y = 0; y < PED_T * 6; y++) for (int x = 0; x < PED_T * 6; x++) { int fr = x / PED_T, rw = y / PED_T; uint32_t c = ped_tex[rw / 3][rw % 3][fr][(y % PED_T) * PED_T + x % PED_T]; float a = (c >> 24) / 255.0f; uint8_t o[3] = { (uint8_t)((c & 255) * a + 120 * (1 - a)), (uint8_t)(((c >> 8) & 255) * a + 140 * (1 - a)), (uint8_t)(((c >> 16) & 255) * a + 110 * (1 - a)) }; fwrite(o, 1, 3, f_); } fclose(f_); exit(0); }
+#endif
     map_open();
     uLongf l = BIG_W * BIG_H; uncompress(bigb, &l, assets_bin + BIG_OFF, BIG_ZLEN);
     city_phone_map();                                                  /* мапа міста для телефона — один раз */
@@ -4067,10 +4130,10 @@ static void render(void *target_buf) {
         gfx_quad((const uint32_t *)(assets_bin + (carv.lit ? CARTEX_LIT : CARTEX_OFF)), CARTEX_W, CARTEX_H, carv.x, carv.y, carv.a, hx, hy, carv.col);
     }
     if (on_foot && !freecam && state != S_TITLE) {                      /* пішохід: тінь і людина (кадр кроку за фазою) */
-        float x = (px_ - viewx) * ZOOM, y = (py_ - viewy) * ZOOM, h = TM(1.5f) * ZOOM;
-        int fr = ped_v > 0.002f ? ((int)ped_ph) & 3 : 0;
-        gfx_quad(puff_tex, 16, 16, x + 0.4f * ZOOM, y + 0.6f * ZOOM, 0, h * 0.55f, h * 0.55f, 0x50000000);
-        gfx_quad(ped_tex[fr], 16, 16, x, y, ang, h, h, 0xFFFFFFFF);
+        float x = (px_ - viewx) * ZOOM, y = (py_ - viewy) * ZOOM, h = TM(2.22f) * ZOOM;   /* 32 текс. = 16 пікс екрана на 2× */
+        int md = ped_v < 0.002f ? 2 : ped_v > TM(2.6f) / 60.0f ? 1 : 0, fr = md == 2 ? 0 : ((int)(ped_ph * 1.5f)) % 6;
+        gfx_quad(puff_tex, 16, 16, x + 0.5f * ZOOM, y + 0.8f * ZOOM, 0, h * 0.42f, h * 0.36f, 0x58000000);
+        gfx_quad(ped_tex[ped_carry()][md][fr], PED_T, PED_T, x, y, ang, h, h, 0xFFFFFFFF);
     }
     static float vv[MAXRV * 4];
     if (nroofv) {                                                   /* дахи з паралаксом — над машинами (07.11.2026: малюються після машин — під дахом над дорогою машину не видно) */
