@@ -366,7 +366,8 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     for k_, v_ in _ptypes:
         b_, tw_, th_, hx_, hy_ = _PR.sprite(k_, v_)
         cw_, ch_ = _PR.COLL.get(k_, (0, 0))                                  # 21.11.2026: перешкода (пікс карти)
-        _ptex.append((put(b_), tw_, th_, hx_, hy_, cw_ / CD.MPP, ch_ / CD.MPP))
+        fl_ = (1 if k_ in ('bench', 'urn', 'bins', 'lamp') else 0) | (2 if k_ == 'lamp' else 0)   # 21.11.2026: збиваються машиною; ліхтар
+        _ptex.append((put(b_), tw_, th_, hx_, hy_, cw_ / CD.MPP, ch_ / CD.MPP, fl_))
     _tid = {t: i for i, t in enumerate(_ptypes)}
     _pv.sort(key=lambda c: (c[1] // PG) * pgw + c[0] // PG)
     _pps = [0] * (pgw * pgh + 1)
@@ -376,8 +377,8 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('typedef struct { int16_t x, y; uint8_t a, t; } Prop;\n')
     f.write('static const Prop PROPS[] = {%s};\n' % (','.join('{%d,%d,%d,%d}' % (x_, y_, a_, _tid[(k_, v_)]) for x_, y_, a_, k_, v_ in _pv) or '{0}'))
     f.write('static const uint32_t PROP_CELL[] = {%s};\n' % ','.join(map(str, _pps)))
-    f.write('typedef struct { uint32_t off; uint16_t w, h; float hx, hy, cw, ch; } PropTex;\n')
-    f.write('static const PropTex PROPTEX[] = {%s};\n' % (','.join('{%d,%d,%d,%.3ff,%.3ff,%.3ff,%.3ff}' % t for t in _ptex) or '{0}'))
+    f.write('typedef struct { uint32_t off; uint16_t w, h; float hx, hy, cw, ch; uint32_t fl; } PropTex;\n')
+    f.write('static const PropTex PROPTEX[] = {%s};\n' % (','.join('{%d,%d,%d,%.3ff,%.3ff,%.3ff,%.3ff,%d}' % t for t in _ptex) or '{0}'))
     print('props', len(_pv), 'textures', len(_ptex), dict(__import__('collections').Counter(k_ for _, _, _, k_, _ in _pv)))
     # нічне світло: ліхтарі (з карти) й вікна; сітка 256 пікс
     import lights
