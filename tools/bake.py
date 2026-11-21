@@ -429,6 +429,11 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('#define NSHOPS (int)(sizeof(SHOPS)/sizeof(SHOPS[0]))\n')
     f.write('static const Poi ADDRS[] = {\n%s};\n' % ',\n'.join('{%d,%d,%s,""}' % (a['x'], a['y'], cstr(a['name'])) for a in md['addrs']))
     f.write('#define NADDRS (int)(sizeof(ADDRS)/sizeof(ADDRS[0]))\n')
+    import doors                                                          # 21.11.2026: двері — куди підходити пішки
+    _org = doors.origins(CD.data(), CD.K)
+    _sd = doors.build(md['shops'], 's', _org, solid, surfm, _bl, CD.MPP, W, H); _ad = doors.build(md['addrs'], 'a', _org, solid, surfm, _bl, CD.MPP, W, H)
+    f.write('static const int16_t SHOP_DOOR[][3] = {%s};\nstatic const int16_t ADDR_DOOR[][3] = {%s};\n' % (
+        ','.join('{%d,%d,%d}' % t for t in _sd), ','.join('{%d,%d,%d}' % t for t in _ad)))
     f.write('static const uint8_t SHOP_ST[] = {%s};\nstatic const uint8_t ADDR_ST[] = {%s};\n' % (','.join(str(x['st']) for x in md['shops']), ','.join(str(x['st']) for x in md['addrs'])))
     f.write('static const char *STREETS[] = {%s};\n' % ','.join(cstr(n) for n in md['names']))
     f.write('static const int16_t SEGS[][5] = {%s};\n' % ','.join('{%d,%d,%d,%d,%d}' % tuple(s) for s in md['segs']))

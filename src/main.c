@@ -49,6 +49,7 @@ typedef uint8_t u8;
    обгорнуто в OP(); розміри, прив'язані до машини, — у CP() (машина 5,5 м замість 7). */
 #define OPK (0.5f / MPP)
 #define OP(x) ((x) * OPK)
+#define TM(m) ((m) / MPP)                                            /* метри -> пікселі карти */
 #define CP(x) ((x) * OPK * (4.7f / 7.0f))          /* 07.11.2026: машини 4,7 м (було 5,5) */
 #include "pal_ids.h"
 #include "gfx.h"
@@ -903,21 +904,35 @@ static void phone_input2(unsigned pressed, unsigned btn) {
     }
 }
 
+/* 21.11.2026 (Іван: «посилки віддавати й забирати лише пішки»): двері біля закладу/адреси (bake: tools/doors.py);
+   машину ставиш, де вийде, далі — пішки до дверей; у багатоповерхівці передача довша (поверх) */
+#define DOOR_R TM(3.0f)
+static int hand_t, door_hint;
+static int hand_need(void) { int fl = ADDR_DOOR[addr_i][2]; return 60 + (fl > 1 ? (fl - 1) * 18 : 0); }
+static void order_door(float *x, float *y) {
+    if (ostate == O_DROP) { *x = ADDR_DOOR[addr_i][0]; *y = ADDR_DOOR[addr_i][1]; } else { *x = SHOP_DOOR[shop_i][0]; *y = SHOP_DOOR[shop_i][1]; }
+}
 static void update_orders(unsigned pressed) {
     (void)pressed;
     offers_tick();                                                  /* замовлення приходять завжди, навіть під час доставки */
     if (ostate == O_NONE) return;
+    float dx_, dy_; order_door(&dx_, &dy_);
+    if (!on_foot && (ostate == O_PICK || ostate == O_DROP)) {         /* під'їхав — підказка вийти */
+        if (!door_hint && dist(px_, py_, dx_, dy_) < OP(36) && fabsf(vel) < OP(0.1f)) { door_hint = 1; say("ДАЛІ ПІШКИ: ЗАТИСНИ " BT_CIR, C_yellow_3, 150); }
+        if (dist(px_, py_, dx_, dy_) > OP(80)) door_hint = 0;
+    }
     if (ostate == O_PICK) {
-        if (dist(px_, py_, SHOPS[shop_i].x, SHOPS[shop_i].y) < OP(24) && fabsf(vel) < OP(0.35f)) { ostate = O_LOAD; load_t = 0; }
+        if (on_foot && dist(px_, py_, dx_, dy_) < DOOR_R) { ostate = O_LOAD; load_t = 0; }
         return;
     }
     if (ostate == O_LOAD) {
-        if (dist(px_, py_, SHOPS[shop_i].x, SHOPS[shop_i].y) > OP(34)) { ostate = O_PICK; return; }
+        if (!on_foot || dist(px_, py_, dx_, dy_) > DOOR_R + TM(2)) { ostate = O_PICK; return; }
         if (++load_t >= 60) {
             otimer = olimit;
             ostate = O_DROP;
             audio_play(SND_PICK, 0.7f, 1, 0);
-            say(otype == T_DANGER ? "ОБЕРЕЖНО! НЕ БИЙ МАШИНУ" : (otype == T_FRAGILE ? "КРИХКЕ! ЇДЬ АКУРАТНО" : "ЗАБРАВ! ВЕЗИ ДО КЛІЄНТА"), C_yellow_3, 110);
+            say(otype == T_DANGER ? "ОБЕРЕЖНО! НЕ БИЙ МАШИНУ" : (otype == T_FRAGILE ? "КРИХКЕ! ЇДЬ АКУРАТНО" : "ЗАБРАВ! НЕСИ ДО МАШИНИ"), C_yellow_3, 110);
+            door_hint = 0; hand_t = 0;
         }
         return;
     }
@@ -926,7 +941,9 @@ static void update_orders(unsigned pressed) {
         if (!nav_on && (otimer == 60 * 60 || otimer == 15 * 60)) {         /* без навігатора телефон сам нагадує про час */
             say(otimer == 3600 ? "ДО ДОСТАВКИ ЛИШИЛАСЬ 1 ХВ" : "ДО ДОСТАВКИ ЛИШИЛОСЬ 15 С", otimer == 3600 ? C_yellow_3 : C_red_3, 180);
         }
-        if (dist(px_, py_, ADDRS[addr_i].x, ADDRS[addr_i].y) < OP(24) && fabsf(vel) < OP(0.45f)) {
+        if (on_foot && dist(px_, py_, dx_, dy_) < DOOR_R) hand_t++; else hand_t = 0;
+        if (hand_t >= hand_need()) {
+            hand_t = 0; door_hint = 0;
             int bonus = otimer / 60 / 3;
             int got = pay + bonus;
             if (otype == T_FRAGILE) got = (int)(got * cargo / 100.0f);
@@ -1129,7 +1146,6 @@ static int traf_hit(float x, float y) {                             /* точк�
     }
     return 0;
 }
-#define TM(m) ((m) / MPP)                                            /* метри -> пікселі карти */
 static float tv_ms(float spd) { return spd * MPP * 60.0f; }          /* пікс/кадр -> м/с */
 static int tr_per(int e) { return rg_per(e); }
 static float tr_off(int e, int lane) { return rg_lane_off(e, lane); }
@@ -3358,9 +3374,10 @@ static void draw_hud(void) {
         otext8(4, 40, 1, C_white_2, C_ink_0, f_);
     }
     /* прогрес: ремонт / заправка / завантаження */
-    const char *prog = repair_t > 0 ? "РЕМОНТ НА СТО" : (fuel_t > 0 ? "ЗАПРАВКА" : (ostate == O_LOAD ? "ЗАБИРАЮ ЗАМОВЛЕННЯ" : NULL));
+    char hb_[48]; if (ostate == O_DROP && hand_t > 0) { int fl = ADDR_DOOR[addr_i][2]; if (fl > 1) snprintf(hb_, sizeof hb_, "ВІДДАЮ ПОСИЛКУ  (%d ПОВЕРХ)", fl); else snprintf(hb_, sizeof hb_, "ВІДДАЮ ПОСИЛКУ"); }
+    const char *prog = repair_t > 0 ? "РЕМОНТ НА СТО" : (fuel_t > 0 ? "ЗАПРАВКА" : (ostate == O_LOAD ? "ЗАБИРАЮ ЗАМОВЛЕННЯ" : (ostate == O_DROP && hand_t > 0 ? hb_ : NULL)));
     if (prog) {
-        int ww = 120, x = SW / 2 - ww / 2, y = 150, t = repair_t > 0 ? repair_t : (fuel_t > 0 ? fuel_t : load_t * 70 / 60);
+        int ww = 120, x = SW / 2 - ww / 2, y = 150, t = repair_t > 0 ? repair_t : (fuel_t > 0 ? fuel_t : ostate == O_LOAD ? load_t * 70 / 60 : hand_t * 70 / hand_need());
         otext8_c(SW / 2, y - 15, 1, C_white_2, C_ink_0, prog);
         rect(x - 2, y - 2, ww + 4, 10, C_ink_0); rect(x, y, ww * t / 70, 6, C_yellow_3);
     }
@@ -3745,8 +3762,8 @@ static void draw_frame(void) {
         text8(100, SH - 13, 1, C_white_1, "СТІК: РУХ  " BT_X " ШВИДКО  " BT_SQ " МАШИНУ СЮДИ  " BT_CIR " ДО МАШИНИ");
         return;
     }
-    if (ostate == O_PICK || ostate == O_LOAD) draw_target(SHOPS[shop_i].x, SHOPS[shop_i].y, assets_bin + ICON_SHOP, C_green_2, C_green_0);
-    else if (ostate == O_DROP) draw_target(ADDRS[addr_i].x, ADDRS[addr_i].y, assets_bin + ICON_HOME, C_yellow_2, C_yellow_0);
+    if (ostate == O_PICK || ostate == O_LOAD) draw_target(SHOP_DOOR[shop_i][0], SHOP_DOOR[shop_i][1], assets_bin + ICON_SHOP, C_green_2, C_green_0);   /* ціль — двері */
+    else if (ostate == O_DROP) draw_target(ADDR_DOOR[addr_i][0], ADDR_DOOR[addr_i][1], assets_bin + ICON_HOME, C_yellow_2, C_yellow_0);
     draw_hud();
     if (state == S_PAUSE) {
         darken_rect(0, 0, SW, SH, 2);
@@ -4381,7 +4398,7 @@ int main(int argc, char **argv) {
     if (getenv("PROFONLY")) goto prof_only;
     /* simple autopilot toward the current target */
     int shots = 0, stuck = 0; float lastx = 0, lasty = 0;
-    for (int f = 0; f < 9000; f++) {
+    for (int f = 0; f < 14000; f++) {
         float tx = 0, ty = 0;
         if (ostate == O_PICK || ostate == O_LOAD) { tx = SHOPS[shop_i].x; ty = SHOPS[shop_i].y; }
         else if (ostate == O_DROP) { tx = ADDRS[addr_i].x; ty = ADDRS[addr_i].y; }
@@ -4394,15 +4411,26 @@ int main(int argc, char **argv) {
             game_update(0, BTN_OK, 128, 128);                 /* △ — взяти */
             if (ostate != O_NONE) game_update(0, BTN_BACK, 128, 128);
             ph_full = 0; fuel = 100; }
-        if (ostate != O_NONE) {
+        int ly = 128; unsigned prs = 0;
+        static int ohold;                                               /* 21.11.2026: посилки пішки — вийти, дійти до дверей, повернутися, сісти */
+        if (ohold > 0) { btn |= BTN_BACK; if (ohold == HOLD_O + 2) prs = BTN_BACK; if (--ohold == 0) btn &= ~BTN_BACK; }
+        else if (on_foot) {
+            float gx, gy; order_door(&gx, &gy); int to_car = ostate == O_NONE || dist(car_x, car_y, gx, gy) > OP(70);
+            if (to_car) { gx = car_x; gy = car_y; }
+            float dd = dist(px_, py_, gx, gy);
+            if (to_car && dd < CAR_LPX * 0.5f + TM(2)) ohold = HOLD_O + 2;
+            else if (dd > DOOR_R * 0.5f) { float a = atan2f(gy - py_, gx - px_); lx = 128 + (int)(cosf(a) * 110); ly = 128 + (int)(sinf(a) * 110); btn |= BTN_GAS; }
+        } else if (ostate != O_NONE) {
             float want = atan2f(ty - py_, tx - px_), d = want - ang;
             while (d > PI_F) d -= 2 * PI_F; while (d < -PI_F) d += 2 * PI_F;
             lx = 128 + (int)(fmaxf(-1, fminf(1, d * 2)) * 127);
             float dd = dist(px_, py_, tx, ty);
             if (dd > OP(60)) btn |= BTN_GAS; else if (vel > OP(0.2f)) btn |= BTN_BRAKE;
+            if (dd < OP(30) && fabsf(vel) < OP(0.02f) && (ostate == O_PICK || ostate == O_DROP)) { ohold = HOLD_O + 2; btn &= ~BTN_GAS; }
         }
         if (f % 120 == 0) { if (dist(px_, py_, lastx, lasty) < OP(6) && ostate != O_NONE) stuck++; lastx = px_; lasty = py_; }
         if (stuck > 1 && ostate != O_NONE) {     /* teleport the bot along when it gets stuck in the street maze */
+            if (on_foot) { float gx, gy; order_door(&gx, &gy); if (ostate == O_NONE || dist(car_x, car_y, gx, gy) > OP(70)) { gx = car_x; gy = car_y; } tx = gx; ty = gy; }
             float d = dist(px_, py_, tx, ty), k = d > OP(200) ? OP(160) / d : 1;
             float nx = px_ + (tx - px_) * k, ny = py_ + (ty - py_) * k;
             if (!hit(nx, ny, ang)) { px_ = nx; py_ = ny; }
@@ -4413,13 +4441,15 @@ int main(int argc, char **argv) {
             ph_full = 1; ph_app = APP_ORDERS; ph_sel = 0; for (int i = 0; i < 20; i++) draw_frame(); snprintf(nm, sizeof nm, "%s/f_note_task.ppm", dir); dump(nm);
             ph_full = 0;
         }
-        game_update(btn, 0, lx, 128);
+        game_update(btn, prs, lx, ly);
+        { static int po = -1, pf = -1; if (po != ostate || pf != on_foot) { float gx, gy; order_door(&gx, &gy); printf("  f%d ostate %d on_foot %d door %.0f m car %.0f m\n", f, ostate, on_foot, dist(px_, py_, gx, gy) * MPP, dist(px_, py_, car_x, car_y) * MPP); po = ostate; pf = on_foot; } }
         draw_frame();
-        if ((f == 200 || f == 900 || (ostate == O_LOAD && load_t == 30) || (ostate == O_DROP && otimer == olimit - 300) || (toast_t == 140 && strstr(toast, "₴"))) && shots < 8) {
+        if ((f == 200 || f == 900 || (ostate == O_LOAD && load_t == 30) || (ostate == O_DROP && otimer == olimit - 300) || (ostate == O_DROP && hand_t == 40) || (toast_t == 140 && strstr(toast, "₴"))) && shots < 9) {
             snprintf(nm, sizeof nm, "%s/f_play%d.ppm", dir, shots++); dump(nm);
         }
     }
     printf("delivery run: deliveries %d, ostate %d, money %d, zone exits %d\n", deliveries, ostate, money, zg_n);
+    if (on_foot) { px_ = car_x; py_ = car_y; ped_enter(); }
     /* 13.11.2026: кадри смартфона — усі програми, навігатор, сповіщення */
     {
         if (ostate == O_NONE) { make_offer(0); offers_count(); accept_offer(0); }
