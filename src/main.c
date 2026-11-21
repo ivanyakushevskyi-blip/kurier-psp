@@ -2152,6 +2152,7 @@ static void update_ped(unsigned btn, int lx, int ly) {
 /* 21.11.2026: кур'єр згори, 32×32 (1:1 на камері 2×; фігура ~24 текс., текс ≈ 0,14 м), згладжені краї (4×4 підвибірки), контур.
    Помаранчева куртка, термосумка за спиною, кепка з козирком; кадри: [з коробкою][хода/біг/стоїть][6 фаз] */
 #define PED_T 32
+static float PED_K = 1.3f, PED_H = 2.22f, PED_Z = 2.0f;   /* масштаб фігури в текстурі, половина квадрата (м), камера пішки */
 static uint32_t __attribute__((aligned(16))) ped_tex[2][3][6][PED_T * PED_T];
 static float seg_d(float px, float py, float ax, float ay, float bx, float by) {   /* відстань до відрізка */
     float vx = bx - ax, vy = by - ay, l2 = vx * vx + vy * vy, t = l2 > 0 ? ((px - ax) * vx + (py - ay) * vy) / l2 : 0;
@@ -2215,7 +2216,7 @@ static void ped_tex_init(void) {
             float r = 0, g = 0, b = 0, a = 0;
             for (int sy = 0; sy < 4; sy++) for (int sx = 0; sx < 4; sx++) {
                 float X = x + (sx + 0.5f) / 4 - PED_T / 2.0f, Y = y + (sy + 0.5f) / 4 - PED_T / 2.0f;   /* текстура: +x вперед */
-                uint32_t c = ped_sample(X / 1.3f, Y / 1.3f, cr, leg, arm);   /* фігура трохи більша за реальну, як і машини */
+                uint32_t c = ped_sample(X / PED_K, Y / PED_K, cr, leg, arm);   /* фігура трохи більша за реальну, як і машини */
                 if (c) { r += c & 255; g += (c >> 8) & 255; b += (c >> 16) & 255; a += 1; }
             }
             A[y * PED_T + x] = a / 16;
@@ -2437,7 +2438,7 @@ static void update_camera(int snap) {
     float spd = sqrtf(vx_ * vx_ + vy_ * vy_), k = spd / VMAX; if (k > 1) k = 1;
     /* віддалення на швидкості: до 75 км/год камера найближча (найчіткіше), далі плавно до 80% на 90 км/год */
     { float t = k < 75.0f / 90.0f ? 0 : (k - 75.0f / 90.0f) / (15.0f / 90.0f); t = t * t * (3 - 2 * t);
-      float zt = on_foot ? 2.0f : 1.0f - ZOOM_OUT * t;                  /* пішки — камера 2× */
+      float zt = on_foot ? PED_Z : 1.0f - ZOOM_OUT * t;                  /* пішки — камера 2× */
       if (snap) zoom = zt; else zoom += (zt - zoom) * 0.08f;
       if (fabsf(zoom - zt) < 0.004f) zoom = zt; }
     float tx = px_ + vx_ * (32 + 36 * k) - VW / 2, ty = py_ + vy_ * (27 + 29 * k) - VH / 2 + 12 / ZOOM;
@@ -4147,7 +4148,7 @@ static void render(void *target_buf) {
         gfx_quad((const uint32_t *)(assets_bin + (carv.lit ? CARTEX_LIT : CARTEX_OFF)), CARTEX_W, CARTEX_H, carv.x, carv.y, carv.a, hx, hy, carv.col);
     }
     if (on_foot && !freecam && state != S_TITLE) {                      /* пішохід: тінь і людина (кадр кроку за фазою) */
-        float x = (px_ - viewx) * ZOOM, y = (py_ - viewy) * ZOOM, h = TM(2.22f) * ZOOM;   /* 32 текс. = 16 пікс екрана на 2× */
+        float x = (px_ - viewx) * ZOOM, y = (py_ - viewy) * ZOOM, h = TM(PED_H) * ZOOM;
         int md = ped_v < 0.002f ? 2 : ped_v > TM(2.6f) / 60.0f ? 1 : 0, fr = md == 2 ? 0 : ((int)(ped_ph * 1.5f)) % 6;
         gfx_quad(puff_tex, 16, 16, x + 0.5f * ZOOM, y + 0.8f * ZOOM, 0, h * 0.42f, h * 0.36f, 0x58000000);
         gfx_quad(ped_tex[ped_carry()][md][fr], PED_T, PED_T, x, y, ang, h, h, 0xFFFFFFFF);
@@ -4392,6 +4393,13 @@ int main(int argc, char **argv) {
             for (int i = 0; i < NTRAF; i++) if (traf[i].on && traf[i].route >= 0) {
                 printf("trolley %d route %d rk %d dwell %d spd %.2f at %.0f,%.0f\n", i, traf[i].route, traf[i].rk, traf[i].dwell, traf[i].spd, traf[i].x, traf[i].y);
                 px_ = traf[i].x - cosf(traf[i].a) * TM(14); py_ = traf[i].y - sinf(traf[i].a) * TM(14); ang = traf[i].a; break; }
+        }
+        if (getenv("PEDSHOT")) {                                         /* пішки поруч з машиною */
+            if (getenv("PED_K")) PED_K = atof(getenv("PED_K")); if (getenv("PED_H")) PED_H = atof(getenv("PED_H")); if (getenv("PED_Z")) PED_Z = atof(getenv("PED_Z"));
+            ped_tex_init(); stop_car(); ped_exit();
+            for (int f = 0; f < 70; f++) game_update(BTN_GAS, 0, 128 + 90, 128 + 60);
+            for (int f = 0; f < 200; f++) game_update(0, 0, 128, 128);
+            printf("ped zoom %.2f\n", ZOOM);
         }
         update_camera(1); draw_frame(); draw_frame(); snprintf(nm, sizeof nm, "%s/f_shot.ppm", dir); dump(nm); return 0;
     }
