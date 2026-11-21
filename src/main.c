@@ -1063,13 +1063,17 @@ static float rg_lane_off(int e, int lane) {
     if (lane == per - 1) { float edge = w / 2 - OP(3.8f); if (edge > o) o = fminf(edge, o + OP(1.2f)); }   /* права крайня: правіше, лише якщо до бордюру лишається >= 0,9 м */
     return o;
 }
-static int rg_light_green(int e, int dir) {                         /* світлофор на кінці ребра: зелений для цього підходу? */
+/* світлофор на кінці ребра: 0 — червоний, 1 — жовтий, 2 — зелений. Цикл 36 с: по 18 с кожна вісь, з них останні 3 с — жовтий
+   (21.11.2026); між осями — 1 с «усі червоні» не потрібна: жовтий дає час звільнити перехрестя */
+static int rg_light(int e, int dir) {
     int nd = rg_end_node(e, dir);
     float x, y, tx, ty; rg_at(e, dir, rg_len(e) - 1, &x, &y, &tx, &ty);
     int axis = fabsf(tx) > fabsf(ty) ? 0 : 1;
-    int ph = ((tick / 60 + nd * 7) % 36) < 18 ? 0 : 1;              /* цикл 36 с: по 18 с кожна вісь */
-    return axis == ph;
+    int t = (tick / 60 + nd * 7) % 36, ph = t < 18 ? 0 : 1, in = t % 18;
+    if (axis != ph) return 0;
+    return in >= 15 ? 1 : 2;
 }
+static int rg_light_green(int e, int dir) { return rg_light(e, dir) == 2; }
 
 #define NTRAF 30                                                     /* максимум (години пік); удень ~22, вночі ~8 */
 /* машина трафіку (31.10.2026): своя позиція й швидкість, кермує до точки попереду на своїй смузі (дуги замість стрибків),
@@ -1460,8 +1464,9 @@ static void traffic_update(void) {
         float stop = 1e9f, nr = RG_NODE_R[nd], line = left - nr - TM(3.0f);     /* стоп-лінія з запасом на дуги поворотів */
         if (traf[i].held != nd && traf[i].nx >= 0) {
             int must = 0;
-            if ((RG_EDGE[e].sig & (dir ? 1 : 2)) && !rg_light_green(e, dir) && line > -TM(1)) must = 1;
             float need = line * MPP - (v * v) / (2 * 3.0f);                 /* ще встигаю зупинитися? */
+            if (RG_EDGE[e].sig & (dir ? 1 : 2)) { int L_ = rg_light(e, dir);
+                if ((L_ == 0 && line > -TM(1)) || (L_ == 1 && need > 0.5f)) must = 1; }     /* жовтий: стоп, якщо встигаю зупинитися */
             if (!must && !traf[i].lblk && line * MPP < 22 + v * 1.5f) {      /* займати лише коли сам можу їхати (не стою за кимось) */
                 if (tr_can_enter(i, nd)) { tr_release(i); traf[i].held = nd; traf[i].hold_t = 0; traf[i].hold_ap = e * 2 + dir; traf[i].hold_turn = turn; node_hold[nd] |= 1u << i; }
                 else if (need > -2) must = 1;
@@ -1713,6 +1718,24 @@ static void br_update(float px0, float py0) {
     }
 }
 static const float HP[][2] = { { 0, 0 }, { 6.2f, 0 }, { -6.2f, 0 }, { 5.3f, 2.5f }, { 5.3f, -2.5f }, { -5.3f, 2.5f }, { -5.3f, -2.5f }, { 0, 2.5f }, { 0, -2.5f } };   /* точки кузова (старі пікс. для 7 м; ×CP) */
+/* 21.11.2026: об'єкти-перешкоди (павільйони зупинок, ліхтарі, лавки, урни, контейнери, гірки): точка з запасом r у прямокутнику */
+static int prop_hit(float x, float y, float r) {
+    if (NPROPS <= 0) return 0;
+    int gx = (int)x / PK_G, gy = (int)y / PK_G;
+    for (int cy = gy - 1; cy <= gy + 1; cy++) for (int cx = gx - 1; cx <= gx + 1; cx++) {
+        if (cx < 0 || cy < 0 || cx >= PK_GW || cy >= PK_GH) continue;
+        int c = cy * PK_GW + cx;
+        for (uint32_t q = PROP_CELL[c]; q < PROP_CELL[c + 1]; q++) {
+            const Prop *P = &PROPS[q]; const PropTex *T = &PROPTEX[P->t];
+            if (T->cw <= 0) continue;
+            float dx = x - P->x, dy = y - P->y, R = T->cw + T->ch + r;
+            if (dx * dx + dy * dy > R * R) continue;
+            float a = PK_ANG(P->a), c_ = cosf(a), s_ = sinf(a), lx = dx * c_ + dy * s_, ly = -dx * s_ + dy * c_;
+            if (fabsf(lx) < T->cw + r && fabsf(ly) < T->ch + r) return 1;
+        }
+    }
+    return 0;
+}
 static int hit(float x, float y, float a) {
     float c = cosf(a), s = sinf(a);
     if (NTREE > 0 && trunk_hit(x, y, c, s)) return 1;
@@ -1739,6 +1762,7 @@ static int hit(float x, float y, float a) {
                 if (fabsf(lx) < hl && fabsf(ly) < hw) return 1;
             }
         }
+        if (NPROPS > 0) for (int i = 0; i < 9; i++) if (prop_hit(px[i], py[i], 0)) return 1;
         if (NPARKED > 0) {
             int gx = (int)x / PK_G, gy = (int)y / PK_G;
             for (int cy = gy - 1; cy <= gy + 1; cy++) for (int cx = gx - 1; cx <= gx + 1; cx++) {
@@ -2016,7 +2040,7 @@ static int ped_hit(float x, float y) {
             }
         }
     }
-    if (traf_hit(x, y) || (NPARKED > 0 && park_hit(x, y)) || own_car_hit(x, y, r)) return 1;
+    if (traf_hit(x, y) || (NPARKED > 0 && park_hit(x, y)) || own_car_hit(x, y, r) || prop_hit(x, y, r)) return 1;
     return 0;
 }
 static void ped_exit(void) {                                          /* вийти: з боку водія (лівий), інакше праворуч / позаду */
@@ -3767,6 +3791,65 @@ static void snd_init(void) {
     for (int i = 0; i < NSND; i++) { snd_ptr[i] = (const int16_t *)(assets_bin + SNDS[i].off); snd_len[i] = SNDS[i].len; }
     audio_init(snd_ptr, snd_len, NSND, SND_RATE);
 }
+/* ================= світлофори-об'єкти (21.11.2026, Іван) =================
+   Біля кожної стоп-лінії з сигналом: стовп на правому бордюрі, корпус на кронштейні над краєм дороги, увімкнена лінза
+   і короткий промінь світла кольору сигналу назустріч водіям. Малюються над машинами; у карту більше не малюються. */
+#define MAXSIG 1600
+static struct { float x, y, tx, ty; int e, dir; } sig_[MAXSIG]; static int nsig = -1;
+static void sig_init(void) {
+    nsig = 0;
+    for (int e = 0; e < RG_NE && nsig < MAXSIG; e++) for (int dir = 0; dir < 2; dir++) {
+        const REdge *E = &RG_EDGE[e];
+        if (!(E->sig & (dir ? 1 : 2)) || (dir && E->one)) continue;
+        int nd = rg_end_node(e, dir); float L = rg_len(e), s0 = L - RG_NODE_R[nd] - TM(2.5f); if (s0 < L * 0.3f) s0 = L * 0.3f;
+        float x, y, tx, ty; rg_at(e, dir, s0, &x, &y, &tx, &ty);
+        float half = E->one ? E->w2 * 0.5f : E->w2 * 0.5f;
+        float rx = -ty, ry = tx;                                         /* праворуч від напрямку руху */
+        sig_[nsig].x = x + rx * (half + TM(0.9f)); sig_[nsig].y = y + ry * (half + TM(0.9f)); sig_[nsig].tx = tx; sig_[nsig].ty = ty;
+        sig_[nsig].e = e; sig_[nsig].dir = dir; nsig++;
+    }
+}
+static void draw_signals(float sx, float sy) {
+    if (nsig < 0) sig_init();
+    static float tri[MAXSIG / 4 * 6 * 2 * 3]; int nt;
+    const uint32_t LC[3] = { 0x3C3CE6, 0x3CC4F0, 0x6ED246 };           /* червоний, жовтий, зелений (0xBBGGRR) */
+    float Z = ZOOM, m = TM(1) * Z;
+    /* проходи: 0 — промені (напівпрозорі), 1 — стовп і корпус, 2 — лінза */
+    for (int pass = 0; pass < 3; pass++) for (int col = 0; col < (pass == 1 ? 1 : 3); col++) {
+        nt = 0;
+        for (int k = 0; k < nsig; k++) {
+            float X = (sig_[k].x - viewx) * Z + sx, Y = (sig_[k].y - viewy) * Z + sy;
+            if (X < -6 * m || X > SW + 6 * m || Y < -6 * m || Y > SH + 6 * m) continue;
+            int st = rg_light(sig_[k].e, sig_[k].dir); if (pass != 1 && st != col) continue;
+            float tx = sig_[k].tx, ty = sig_[k].ty, rx = -ty, ry = tx;
+            float hx = X - rx * 1.1f * m, hy = Y - ry * 1.1f * m;          /* корпус — на кронштейні над краєм дороги */
+            if (nt + 24 > (int)(sizeof tri / sizeof tri[0]) / 2) break;
+            #define T3(ax, ay, bx, by, cx, cy) { float *q_ = tri + 2 * nt; q_[0] = ax; q_[1] = ay; q_[2] = bx; q_[3] = by; q_[4] = cx; q_[5] = cy; nt += 3; }
+            if (pass == 0) {                                            /* промінь назустріч водіям: два клини — ширший блідий і вужчий яскравий */
+                float bx = -tx, by = -ty, L1 = 5.5f * m, w1 = 1.6f * m;
+                T3(hx, hy, hx + bx * L1 + rx * w1, hy + by * L1 + ry * w1, hx + bx * L1 - rx * w1, hy + by * L1 - ry * w1);
+            } else if (pass == 1) {                                     /* стовп (кружок), кронштейн, корпус */
+                for (int q = 0; q < 6; q++) { float a0 = q * PI_F / 3, a1 = (q + 1) * PI_F / 3, r = 0.3f * m;
+                    T3(X, Y, X + cosf(a0) * r, Y + sinf(a0) * r, X + cosf(a1) * r, Y + sinf(a1) * r); }
+                float ax = X - rx * 1.1f * m, ay = Y - ry * 1.1f * m, w = 0.12f * m;
+                T3(X + tx * w, Y + ty * w, ax + tx * w, ay + ty * w, ax - tx * w, ay - ty * w); T3(X + tx * w, Y + ty * w, ax - tx * w, ay - ty * w, X - tx * w, Y - ty * w);
+                float L = 0.45f * m, W = 0.35f * m;                       /* корпус уздовж дороги 0,9 м, поперек 0,7 м */
+                float c0x = hx - tx * L - rx * W, c0y = hy - ty * L - ry * W, c1x = hx + tx * L - rx * W, c1y = hy + ty * L - ry * W;
+                float c2x = hx + tx * L + rx * W, c2y = hy + ty * L + ry * W, c3x = hx - tx * L + rx * W, c3y = hy - ty * L + ry * W;
+                T3(c0x, c0y, c1x, c1y, c2x, c2y); T3(c0x, c0y, c2x, c2y, c3x, c3y);
+            } else {                                                    /* лінза з боку водіїв */
+                float lx = hx - tx * 0.45f * m, ly = hy - ty * 0.45f * m, r = 0.3f * m;
+                for (int q = 0; q < 6; q++) { float a0 = q * PI_F / 3, a1 = (q + 1) * PI_F / 3;
+                    T3(lx, ly, lx + cosf(a0) * r, ly + sinf(a0) * r, lx + cosf(a1) * r, ly + sinf(a1) * r); }
+            }
+            #undef T3
+        }
+        if (!nt) continue;
+        if (pass == 0) gfx_tris_flat(tri, nt, 0x48000000u | LC[col]);
+        else if (pass == 1) gfx_tris_flat(tri, nt, 0xFF262A2Eu);
+        else gfx_tris_flat(tri, nt, 0xFF000000u | LC[col]);
+    }
+}
 static void *cur_target;
 /* 15.11.2026 (швидкодія чипа): прозорий 8-бітний шар малюється лише смугами, де щось намальовано (брудні рядки),
    а не на весь екран */
@@ -3926,6 +4009,7 @@ static void render(void *target_buf) {
             }
         }
     }
+    if (world_mode && 1) draw_signals(sx, sy);       /* 21.11.2026: світлофори над машинами */
     if (arch_used) for (int k = 0; k < wa_n[buf_cur]; k++) {            /* лише прямокутники з кронами/арками */
         short *r = wa_r[buf_cur][k]; int xa = r[0] & ~7, w = r[2] + 1 - xa, h = r[3] + 1 - r[1];
         gfx_layer16(warch + r[1] * WW + xa, WW, w, h, sx + xa * ZOOM, sy + r[1] * ZOOM, ZOOM, 1, 1, ZOOM_SMOOTH);
@@ -4104,7 +4188,9 @@ int main(int argc, char **argv) {
     draw_frame(); snprintf(nm, sizeof nm, "%s/f_title.ppm", dir); dump(nm);
     game_update(0, PSP_CTRL_START, 128, 128);
     if (getenv("SHOTAT")) {                                            /* кадр у заданій точці (налагодження) */
-        float x_, y_; sscanf(getenv("SHOTAT"), "%f,%f", &x_, &y_); px_ = x_; py_ = y_; ang = 0; stop_car(); update_camera(1);
+        float x_, y_; sscanf(getenv("SHOTAT"), "%f,%f", &x_, &y_);
+        if (getenv("SIGK")) { sig_init(); int k = atoi(getenv("SIGK")) % nsig; x_ = sig_[k].x + sig_[k].tx * TM(14); y_ = sig_[k].y + sig_[k].ty * TM(14); printf("sig %d/%d at %.0f,%.0f\n", k, nsig, x_, y_); }
+        px_ = x_; py_ = y_; ang = 0; stop_car(); update_camera(1);
         if (getenv("TODM")) tod_mode = atoi(getenv("TODM"));
         if (getenv("TODF")) { tod_mode = 0; tod = atof(getenv("TODF")); }
         if (getenv("WX")) { wx_mode = wx_cur = atoi(getenv("WX")); wx_cloud = (wx_cur == WX_CLOUD || wx_cur == WX_RAIN || wx_cur == WX_STORM || wx_cur == WX_SNOW) ? 1 : 0;

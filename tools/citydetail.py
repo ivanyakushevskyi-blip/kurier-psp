@@ -94,7 +94,9 @@ def road_marks(c):
 
 
 def traffic_light(c, x, y, ux, uy):
-    """Вид згори: стовп і корпус уздовж дороги, лінзи червона/жовта/зелена."""
+    """Вид згори: стовп і корпус уздовж дороги, лінзи червона/жовта/зелена.
+    21.11.2026 (Іван): у карту не малюються — світлофори малює гра (над машинами, з променем кольору сигналу)."""
+    if getattr(c, 'props', None) is not None: return
     img = c.img; S = c.S
     cv2.circle(img, _ip((x, y)), max(1, int(round(c.m(0.3)))), POLE, -1)
     L = c.m(1.9); Wd = c.m(0.75)
@@ -129,6 +131,7 @@ def lamps(c):
                 for side in ((sg,) if w['t'].get('oneway') == 'yes' else (1, -1)):
                     bx, by = px_ + nx * (hw + c.m(0.7)) * side, py_ + ny * (hw + c.m(0.7)) * side
                     if c.cls[min(c.cls.shape[0] - 1, max(0, int(by))), min(c.cls.shape[1] - 1, max(0, int(bx)))] == 5: continue   # не на дорозі
+                    if _prop(c, 'lamp', bx, by, -nx * side, -ny * side): continue      # 21.11.2026: ліхтар — об'єкт гри (стовп — перешкода)
                     ax, ay = bx - nx * c.m(2.0) * side, by - ny * c.m(2.0) * side
                     cv2.line(img, _ip((bx + c.m(0.3), by + c.m(0.4))), _ip((ax + c.m(0.3), ay + c.m(0.4))), (96, 96, 96), max(1, int(round(c.m(0.22)))))   # тінь
                     cv2.line(img, _ip((bx, by)), _ip((ax, ay)), (70, 72, 78), max(1, int(round(c.m(0.22)))))
@@ -164,6 +167,11 @@ def bus_stops(c):
         hw = c.m(ROAD_W[h]) / 2
         cx, cy = qx + nx * sg * (hw + c.m(1.6)), qy + ny * sg * (hw + c.m(1.6))
         L, Wd = c.m(3.6), c.m(1.4)
+        if _prop(c, 'stop', cx, cy, ux, uy):                                 # 21.11.2026: павільйон — об'єкт гри (перешкода)
+            bin_(c, cx + ux * (L / 2 + c.m(0.8)), cy + uy * (L / 2 + c.m(0.8)))
+            ex, ey = qx + nx * sg * (hw - c.m(0.3)), qy + ny * sg * (hw - c.m(0.3))
+            cv2.line(img, _ip((ex - ux * c.m(8), ey - uy * c.m(8))), _ip((ex + ux * c.m(8), ey + uy * c.m(8))), (226, 190, 60), max(1, int(round(c.m(0.15)))))
+            continue
         box = np.array([[-L / 2, -Wd / 2], [L / 2, -Wd / 2], [L / 2, Wd / 2], [-L / 2, Wd / 2]])
         R = np.array([[ux, nx * sg], [uy, ny * sg]])
         P = (box @ R.T) + [cx, cy]

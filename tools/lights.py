@@ -37,9 +37,10 @@ def lamps(rgb, g, W, H):
     return res
 
 
-def build(rgb, g, bl, dens, W, H, play, seed=5):
+def build(rgb, g, bl, dens, W, H, play, seed=5, lamp_props=()):
     rs = random.Random(seed)
-    out = [(int(x), int(y), int(M(11)), 0) for x, y in lamps(rgb, g, W, H)]
+    # 21.11.2026: ліхтарі — об'єкти гри (світильник на кінці кронштейна); на карті шукаємо лише старі намальовані
+    out = [(int(x), int(y), int(M(11)), 0) for x, y in list(lamp_props) + (lamps(rgb, g, W, H) if not lamp_props else [])]
     nl = len(out)
     # вікна: плями світла на землі біля стін (зовні контуру на 1,5 м)
     for t in bl:

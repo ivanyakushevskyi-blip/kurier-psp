@@ -10,7 +10,11 @@ import citydraw as CD
 
 TPX = 2                     # текселів на піксель карти
 SS = 4                      # надвибірка при малюванні
-KINDS = ['bench', 'urn', 'bins', 'pg_slide', 'pg_swing', 'pg_sand', 'pg_climb', 'pg_carousel', 'pg_yard', 'barrier']
+KINDS = ['bench', 'urn', 'bins', 'pg_slide', 'pg_swing', 'pg_sand', 'pg_climb', 'pg_carousel', 'pg_yard', 'barrier', 'lamp', 'stop']
+# 21.11.2026: перешкоди — півдовжина й півширина в метрах уздовж осі об'єкта (0 — не заважає): машина й пішохід не проходять
+COLL = {'bench': (0.9, 0.3), 'urn': (0.35, 0.35), 'bins': (1.6, 0.7), 'pg_slide': (1.4, 0.5), 'pg_swing': (1.2, 0.3),
+        'pg_climb': (1.0, 1.0), 'pg_carousel': (1.0, 1.0), 'pg_sand': (0, 0), 'pg_yard': (0, 0), 'barrier': (0, 0),
+        'lamp': (0.25, 0.25), 'stop': (1.8, 0.7)}
 
 
 class _RS:
@@ -49,6 +53,19 @@ def _draw(kind, var, bg):
         CDt._playground(img, c, x, y, 1.0, 0.0, _RS([0.1 if var < 2 else 0.9, 0.1 if var % 2 == 0 else 0.9]))
     elif kind.startswith('pg_'): CDt._pg_item(img, c, kind[3:], x, y, 1.0, 0.0)
     elif kind == 'barrier': _barrier(img, c, x, y, min(var / 4.0, 30.0))
+    elif kind == 'lamp':                                                    # стовп у центрі, кронштейн і світильник уздовж +x
+        ax, ay = x + c.m(2.0), y
+        cv2.line(img, CDt._ip((x + c.m(0.3), y + c.m(0.4))), CDt._ip((ax + c.m(0.3), ay + c.m(0.4))), (96, 96, 96), max(1, int(round(c.m(0.22)))))
+        cv2.line(img, CDt._ip((x, y)), CDt._ip((ax, ay)), (70, 72, 78), max(1, int(round(c.m(0.22)))))
+        cv2.circle(img, CDt._ip((x, y)), max(1, int(round(c.m(0.32)))), (58, 60, 64), -1)
+        cv2.ellipse(img, CDt._ip((ax, ay)), (max(1, int(c.m(0.6))), max(1, int(c.m(0.3)))), 0, 0, 360, (54, 56, 60), -1)
+        cv2.ellipse(img, CDt._ip((ax, ay)), (max(1, int(c.m(0.45))), max(1, int(c.m(0.18)))), 0, 0, 360, (226, 226, 214), -1)
+    elif kind == 'stop':                                                    # павільйон зупинки: каркас, скляний дах, тінь
+        L, Wd = c.m(3.6), c.m(1.4)
+        CDt._rect(img, x + c.m(0.25), y + c.m(0.35), L, Wd, 1, 0, (90, 92, 94))
+        CDt._rect(img, x, y, L, Wd, 1, 0, (44, 58, 70))
+        CDt._rect(img, x, y, L * 0.86, Wd * 0.6, 1, 0, (104, 150, 176))
+        cv2.line(img, CDt._ip((x - L * 0.43, y - Wd * 0.3)), CDt._ip((x + L * 0.43, y - Wd * 0.3)), (176, 210, 226), max(1, int(c.m(0.1))))
     return img
 
 

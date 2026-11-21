@@ -365,7 +365,8 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     _ptex = []
     for k_, v_ in _ptypes:
         b_, tw_, th_, hx_, hy_ = _PR.sprite(k_, v_)
-        _ptex.append((put(b_), tw_, th_, hx_, hy_))
+        cw_, ch_ = _PR.COLL.get(k_, (0, 0))                                  # 21.11.2026: перешкода (пікс карти)
+        _ptex.append((put(b_), tw_, th_, hx_, hy_, cw_ / CD.MPP, ch_ / CD.MPP))
     _tid = {t: i for i, t in enumerate(_ptypes)}
     _pv.sort(key=lambda c: (c[1] // PG) * pgw + c[0] // PG)
     _pps = [0] * (pgw * pgh + 1)
@@ -375,13 +376,14 @@ with open(os.path.join(OUT, 'assets.h'), 'w', encoding='utf-8') as f:
     f.write('typedef struct { int16_t x, y; uint8_t a, t; } Prop;\n')
     f.write('static const Prop PROPS[] = {%s};\n' % (','.join('{%d,%d,%d,%d}' % (x_, y_, a_, _tid[(k_, v_)]) for x_, y_, a_, k_, v_ in _pv) or '{0}'))
     f.write('static const uint32_t PROP_CELL[] = {%s};\n' % ','.join(map(str, _pps)))
-    f.write('typedef struct { uint32_t off; uint16_t w, h; float hx, hy; } PropTex;\n')
-    f.write('static const PropTex PROPTEX[] = {%s};\n' % (','.join('{%d,%d,%d,%.3ff,%.3ff}' % t for t in _ptex) or '{0}'))
+    f.write('typedef struct { uint32_t off; uint16_t w, h; float hx, hy, cw, ch; } PropTex;\n')
+    f.write('static const PropTex PROPTEX[] = {%s};\n' % (','.join('{%d,%d,%d,%.3ff,%.3ff,%.3ff,%.3ff}' % t for t in _ptex) or '{0}'))
     print('props', len(_pv), 'textures', len(_ptex), dict(__import__('collections').Counter(k_ for _, _, _, k_, _ in _pv)))
     # нічне світло: ліхтарі (з карти) й вікна; сітка 256 пікс
     import lights
     _pois = [(q, 4) for q in md['shops']] + [(q, 1) for q in md['addrs']]
-    _lt = lights.build(rgbm, _g, _bl, parked.district(_pois, W, H), W, H, _pl)
+    _lt = lights.build(rgbm, _g, _bl, parked.district(_pois, W, H), W, H, _pl,
+                       lamp_props=[(x_ + math.cos(a_) * 2.0 / CD.MPP, y_ + math.sin(a_) * 2.0 / CD.MPP) for x_, y_, a_, k_, v_ in _pp if k_ == 'lamp'])
     _lt.sort(key=lambda c: (c[1] // PG) * pgw + c[0] // PG)
     _lst = [0] * (pgw * pgh + 1)
     for c in _lt: _lst[(c[1] // PG) * pgw + c[0] // PG + 1] += 1
