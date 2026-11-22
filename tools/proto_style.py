@@ -289,6 +289,21 @@ def lm_tex(kind, w, hp, main, rs):
             for q in range(6, w - 6, 26):
                 if abs(q - px_) > 20: T[hp - 8:hp - 1, q:q + 7] = (150, 154, 156); T[hp - 8:hp - 1, q:q + 7:2] = (132, 136, 138)   # ворота складу
         T[hp - 1] = dark(wall, 0.5); return T
+    if kind == 'annex':                                                # прибудова: 3 поверхи, вохра, вікна в білих обрамленнях з «бровами»
+        OCH, WH = (230, 196, 118), (244, 240, 230)
+        T = np.zeros((hp, w, 3), np.uint8); T[:] = OCH
+        if w >= 8:
+            nc = max(1, int(round(w / 9)))
+            for j in range(nc):
+                xc = int((j + 0.5) * w / nc)
+                for f in range(3):
+                    yb = hp - 2 - f * ((hp - 3) // 3)
+                    r0 = yb - (hp - 3) // 3 + 2
+                    if r0 < 2: continue
+                    T[r0:yb - 1, xc - 2:xc + 2] = WH; T[r0 + 1:yb - 2, xc - 1:xc + 1] = (54, 64, 70)
+                    T[r0 - 1, xc - 3:xc + 3] = WH
+        T[0] = WH; T[1] = dark(OCH, 0.75); T[hp - 2:hp] = (88, 84, 80)
+        return T
     if kind == 'depot':
         # За фото (Подільська, 39): вохристий фасад, білі руставані пілястри між прольотами, балюстрада з тумбами
         # на даху, фриз з червоними літерами «КІНОТЕАТР ПЛАНЕТА», 2-й поверх — пари вікон з напівциркульними
@@ -389,11 +404,11 @@ def tower_tex(w, hp, z0m, z_top, main):
     T[hp - 2:hp] = (88, 84, 80)                                          # цоколь
     return T
 
-def draw_tower(canvas, x, y, z0m=0.0, ang=0.0):
+def draw_tower(canvas, x, y, z0m=0.0, ang=0.0, side=None):
     """Стара пожежна вежа — об'єм у проєкції 3/4, ПОВЕРНУТИЙ ЯК БУДИНОК, на якому стоїть (ang — напрям його стін):
     квадрат 6,5 м на даху депо (z0m), стовбур до 24 м, шатро до 31 м. Видимі стіни (нормаль до камери) —
     текстурою в площині стіни; шатро — чотири грані піраміди від дальньої до ближньої."""
-    hw = 6.0 / MPP / 2
+    hw = (side if side else 6.0 / MPP) / 2
     z_top, z_roof = 31.0, 33.0                                           # стовбур+альтанка до 31 м, парапет до 33 (на фото вежа ~2,5× вища за кінотеатр)
     hp = int(round(zpx(z_top - z0m)))
     c, s_ = np.cos(ang), np.sin(ang)
@@ -461,21 +476,55 @@ for i, b, pts in [(i, b, pts) for i, b, pts, ptf in C['blds']]:
     if lm == 'mall': floors = 6
     if lm == 'depot': floors = 4
     blist.append(dict(i=i, b=b, P=P, rb=rb, floors=floors, tp=tp, hp=floors * FLOOR, lm=lm))
+# ---------- складені пам'ятки: один контур OSM ділиться на частини за фото (у справжньому конвеєрі — data/landmark_parts.json)
+# Рамка будинку: початок — західний кут південного фасаду, вісь u — уздовж фасаду (м), v — углиб будинку (м).
+from shapely.geometry import Polygon as SPoly
+COMPOSE = [dict(
+    name='Планета + пожежна вежа (Подільська, 39)',
+    facade=((11896, 14430), (12055, 14451)),                           # південний фасад: захід -> схід (світові пікс.)
+    parts=[dict(u=(0, 27.5), style='depot', h=13.5, roof=(140, 58, 48)),        # кінотеатр: 5 прольотів
+           dict(u=(27.5, 38.0), style='annex', h=10.5, roof=(150, 52, 44)),     # 3-поверхова прибудова з червоним дахом
+           dict(u=(38.0, 99), v=(0, 6.2), style='tower'),                       # вежа на розі, квадрат ~6 м
+           dict(u=(38.0, 99), v=(6.2, 99), style='annex', h=10.5, roof=(150, 52, 44))])]
+def split_compose(blist):
+    out = []
+    for o in blist:
+        cm = None
+        for c in COMPOSE:
+            (ax_, ay_), (bx_, by_) = c['facade']
+            mid = ((ax_ + bx_) / 2 - x0, (ay_ + by_) / 2 - y0)
+            if cv2.pointPolygonTest(o['P'], mid, True) > -8: cm = c
+        if cm is None: out.append(o); continue
+        (ax_, ay_), (bx_, by_) = cm['facade']
+        A_ = np.array([ax_ - x0, ay_ - y0], float); e = np.array([bx_ - ax_, by_ - ay_], float); L_ = np.linalg.norm(e); e /= L_
+        nv = np.array([e[1], -e[0]])                                      # углиб будинку (на північ)
+        if np.dot(nv, np.array(o['P']).mean(0) - A_) < 0: nv = -nv
+        Ppoly = SPoly(o['P']).buffer(0)
+        def rect(u, v):
+            u0, u1 = u[0] / MPP, min(u[1] / MPP, L_ + 50); v0, v1 = v[0] / MPP, v[1] / MPP
+            u0 = -50 if u[0] == 0 else u0
+            q = [A_ + e * uu + nv * vv for uu, vv in ((u0, v0 if v0 > 0 else -50), (u1, v0 if v0 > 0 else -50), (u1, v1), (u0, v1))]
+            return SPoly(q)
+        for k, pt in enumerate(cm['parts']):
+            g = Ppoly.intersection(rect(pt['u'], pt.get('v', (0, 999))))
+            geoms = [g] if g.geom_type == 'Polygon' else [x for x in getattr(g, 'geoms', []) if x.geom_type == 'Polygon']
+            for gg in geoms:
+                if gg.area < 4: continue
+                P_ = np.array(gg.exterior.coords[:-1], np.float32)
+                q = dict(o); q.update(P=P_, i=o['i'] * 10 + k, lm=pt['style'])
+                if pt['style'] == 'tower':
+                    q.update(tower=True, ang=float(np.arctan2(e[1], e[0])), floors=1, hp=0)
+                else:
+                    fl = max(1, int(round(pt['h'] / 3.0))); q.update(floors=fl, hp=int(round(zpx(pt['h']))), rb=np.array(pt['roof'], float))
+                out.append(q)
+    return out
+blist = split_compose(blist)
 # тіні будинків на землю (світло з північного заходу: тінь праворуч-вниз)
 for o in blist:
-    sh = np.round(o['P'] + [o['hp'] * 0.45, 2]).astype(np.int32)
+    sh = np.round(o['P'] + [(zpx(33) if o.get('tower') else o['hp']) * 0.45, 2]).astype(np.int32)
     ms = np.zeros((H, W), np.uint8); cv2.fillPoly(ms, [sh], 1); cv2.fillPoly(ms, [np.round(o['P']).astype(np.int32)], 1)
     B[ms.astype(bool)] = (B[ms.astype(bool)] * 0.74).astype(np.uint8)
 objs = [(o['P'][:, 1].max(), 'b', o) for o in blist] + [(y - y0 + r * 0.3, 't', (x - x0, y - y0, r, k)) for x, y, r, k in tl]
-for lx_, ly_, lk in LMK:                                                # вежа — після будинку, на якому стоїть
-    if lk != 'tower' or not (-60 < lx_ - x0 < W + 60 and -60 < ly_ - y0 < H + 200): continue
-    by_ = ly_ - y0 + 12; z0 = 0.0; ang = 0.0
-    for o in blist:
-        if cv2.pointPolygonTest(o['P'], (float(lx_ - x0), float(ly_ - y0)), True) > -30:
-            by_ = max(by_, o['P'][:, 1].max() + 0.5)   # за фото вежа росте від землі на розі, малюємо після депо
-            Pp = o['P']; e = [(np.hypot(*(Pp[(k + 1) % len(Pp)] - Pp[k])), Pp[(k + 1) % len(Pp)] - Pp[k]) for k in range(len(Pp))]
-            d_ = max(e, key=lambda t: t[0])[1]; ang = float(np.arctan2(d_[1], d_[0])) % (np.pi / 2)   # напрям стін депо
-    objs.append((by_, 'tower', (lx_ - x0, ly_ - y0, z0, ang)))
 for base_y, kind, o in sorted(objs, key=lambda z: z[0]):
     if kind == 'tower':
         draw_tower(B, *o); continue
@@ -483,6 +532,10 @@ for base_y, kind, o in sorted(objs, key=lambda z: z[0]):
         x, y, r, k = o
         if 1 <= x < W - 1 and 0 < y: B[max(0, int(y - r * 0.7)):min(H, int(y)), int(x) - 1:int(x) + 1] = (92, 70, 52)
         draw_tree(B, x, y, r, k, lift=r * 0.9); continue
+    if o.get('tower'):                                                   # вежа — частина складеної пам'ятки
+        Pc = o['P']; cx_, cy_ = Pc.mean(0)
+        side = np.sqrt(abs(cv2.contourArea(Pc)))
+        draw_tower(B, cx_, cy_, 0.0, o['ang'], side); continue
     P, floors, tp, hp = o['P'], o['floors'], o['tp'], o['hp']
     rs = random.Random(o['i'])
     wall = jit(PAL[tp][rs.randrange(len(PAL[tp]))], rs, 6)
