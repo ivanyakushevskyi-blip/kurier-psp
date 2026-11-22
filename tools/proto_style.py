@@ -312,46 +312,70 @@ def lm_tex(kind, w, hp, main, rs):
 
 def zpx(m): return m / MPP * KV                                        # висота (м) -> зсув угору на екрані
 
-def draw_tower(canvas, x, y, z0m=0.0):
-    """Стара пожежна вежа як справжній об'єм у проєкції 3/4: квадрат 6,5 м, стоїть на даху депо (z0m),
-    стовбур до 24 м, вище — шатро до 30 м. Стіна, що дивиться на камеру, — текстурою в площині стіни
-    (та сама blit_wall, що й для будинків); верх — грані піраміди."""
-    s = 6.5 / MPP; hw = s / 2
-    z_top, z_roof = 24.0, 31.0
-    hp = int(round(zpx(z_top - z0m)))
-    w = int(round(s))
+def tower_tex(w, hp, z0m, z_top, main):
     wall, wh = (232, 212, 164), (248, 242, 228)
     T = np.zeros((hp, w, 3), np.uint8); T[:] = wall
     T[:, 0:2] = wh; T[:, w - 2:w] = wh                                  # кутові пілястри
-    # яруси рахуємо від верху вежі в метрах, щоб пропорції не залежали від даху депо
     def ry(m): return int(round(zpx(z_top - m)))                         # висота m -> рядок текстури
     for m in (21.0, 17.0, 13.0):
         r = ry(m); T[max(0, r - 1):r + 1] = wh
         if r + 1 < hp: T[r + 1] = dark(wall, 0.7)
     a0, a1 = ry(23.5), ry(21.0) - 1                                       # альтанка з арками (21–24 м)
     for q in range(3, w - 3, 4): T[a0:a1, q:q + 2] = (52, 46, 44); T[a0, q:q + 2] = wall
-    cy_ = (ry(20.6) + ry(17.4)) // 2; r_ = min(int(hw) - 3, 6)          # годинник (17–21 м)
-    yy, xx = np.ogrid[:hp, :w]; d = np.sqrt((yy - cy_) ** 2 + (xx - (w - 1) / 2) ** 2)
-    T[d <= r_ + 1] = (60, 50, 40); T[d <= r_] = (250, 248, 238)
-    T[cy_ - r_ + 2:cy_ + 1, w // 2] = (30, 30, 30); T[cy_, w // 2:w // 2 + r_ - 2] = (30, 30, 30)
+    if main and w >= 12:                                                 # годинник (17–21 м)
+        cy_ = (ry(20.6) + ry(17.4)) // 2; r_ = min(w // 2 - 3, 6)
+        yy, xx = np.ogrid[:hp, :w]; d = np.sqrt((yy - cy_) ** 2 + (xx - (w - 1) / 2) ** 2)
+        T[d <= r_ + 1] = (60, 50, 40); T[d <= r_] = (250, 248, 238)
+        T[cy_ - r_ + 2:cy_ + 1, w // 2] = (30, 30, 30); T[cy_, w // 2:w // 2 + r_ - 2] = (30, 30, 30)
     for m in np.arange(15.5, z0m + 1.5, -3.2):                            # вузькі арочні вікна стовбура
         r = ry(m)
-        if 6 <= r < hp - 1: T[r - 5:r, w // 2 - 1:w // 2 + 1] = GLASS; T[r - 6, w // 2 - 1:w // 2 + 1] = wh
+        if 6 <= r < hp - 1 and w >= 6: T[r - 5:r, w // 2 - 1:w // 2 + 1] = GLASS; T[r - 6, w // 2 - 1:w // 2 + 1] = wh
     T[hp - 1] = dark(wall, 0.55)
-    # земля -> екран: квадрат (x±hw, y±hw), південна стіна між (x-hw, y+hw) і (x+hw, y+hw) на висоті z0
-    yb = y + hw - zpx(z0m)
-    blit_wall(canvas, np.array([x - hw, yb]), np.array([x + hw, yb]), T, 1.0)
-    for X in (int(round(x - hw)), int(round(x + hw)) - 1):              # кути
-        if 0 <= X < W: canvas[max(0, int(yb) - hp):max(0, int(yb)), X] = dark(wall, 0.5)
-    # шатро: піраміда над верхньою гранню (z_top) з вершиною на z_roof; грані — від дальньої до ближньої
+    return T
+
+def draw_tower(canvas, x, y, z0m=0.0, ang=0.0):
+    """Стара пожежна вежа — об'єм у проєкції 3/4, ПОВЕРНУТИЙ ЯК БУДИНОК, на якому стоїть (ang — напрям його стін):
+    квадрат 6,5 м на даху депо (z0m), стовбур до 24 м, шатро до 31 м. Видимі стіни (нормаль до камери) —
+    текстурою в площині стіни; шатро — чотири грані піраміди від дальньої до ближньої."""
+    hw = 6.5 / MPP / 2
+    z_top, z_roof = 24.0, 31.0
+    hp = int(round(zpx(z_top - z0m)))
+    c, s_ = np.cos(ang), np.sin(ang)
+    loc = [(-hw, -hw), (hw, -hw), (hw, hw), (-hw, hw)]
+    G_ = [np.array([x + u * c - v * s_, y + u * s_ + v * c]) for u, v in loc]   # кути на землі (за годинниковою на екрані)
+    lift = zpx(z0m)
+    walls = []
+    for k in range(4):
+        a, b = G_[k], G_[(k + 1) % 4]
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        nx, ny = dy, -dx                                                   # зовнішня нормаль для обходу за годинниковою (y вниз)
+        if ny <= 0: continue
+        walls.append((a, b, dx, dy, nx, ny))
+    main = max(range(len(walls)), key=lambda q: walls[q][5]) if walls else -1
+    for q, (a, b, dx, dy, nx, ny) in enumerate(walls):
+        w = int(round(abs(dx)))
+        if w < 1: continue
+        T = tower_tex(w, hp, z0m, z_top, q == main)
+        L = np.hypot(dx, dy); shade = 1.0 if ny / L > 0.8 else (0.82 if nx > 0 else 0.94)
+        aa, bb = (a, b) if dx > 0 else (b, a)
+        if dx < 0: T = T[:, ::-1]
+        blit_wall(canvas, aa - [0, lift], bb - [0, lift], T, shade)
+        for p_ in (aa, bb):
+            X, Y = int(round(p_[0])), int(round(p_[1] - lift))
+            if 0 <= X < W: canvas[max(0, Y - hp):max(0, Y), X] = (150, 132, 100)
     zt, zr = zpx(z_top), zpx(z_roof)
-    c00 = (x - hw, y - hw - zt); c10 = (x + hw, y - hw - zt); c11 = (x + hw, y + hw - zt); c01 = (x - hw, y + hw - zt)
+    top = [(p_[0], p_[1] - zt) for p_ in G_]
     apex = (x, y - zr)
     roof = (78, 100, 96)
-    faces = [((c00, c10), 1.25), ((c10, c11), 0.8), ((c01, c00), 1.05), ((c11, c01), 1.0)]   # північ, схід, захід, південь
-    for (p1, p2), k in faces:
+    faces = []
+    for k in range(4):
+        p1, p2 = top[k], top[(k + 1) % 4]
+        mx, my = (p1[0] + p2[0]) / 2 - x, (p1[1] + p2[1]) / 2 - (y - zt)  # напрям грані від центру
+        k_ = 1.0 + 0.22 * (-mx - my) / hw / 1.4                           # світло з північного заходу
+        faces.append(((p1[1] + p2[1]) / 2, p1, p2, k_))
+    for _, p1, p2, k_ in sorted(faces, key=lambda f: f[0]):
         tri = np.round(np.array([p1, p2, apex])).astype(np.int32)
-        cv2.fillPoly(canvas, [tri], dark(roof, k))
+        cv2.fillPoly(canvas, [tri], dark(roof, k_))
         cv2.polylines(canvas, [tri], True, dark(roof, 0.5), 1)
     ax, ay = int(round(apex[0])), int(round(apex[1]))                 # шпиль з кулькою
     if 0 <= ax < W:
@@ -387,11 +411,13 @@ for o in blist:
 objs = [(o['P'][:, 1].max(), 'b', o) for o in blist] + [(y - y0 + r * 0.3, 't', (x - x0, y - y0, r, k)) for x, y, r, k in tl]
 for lx_, ly_, lk in LMK:                                                # вежа — після будинку, на якому стоїть
     if lk != 'tower' or not (-60 < lx_ - x0 < W + 60 and -60 < ly_ - y0 < H + 200): continue
-    by_ = ly_ - y0 + 12; z0 = 0.0
+    by_ = ly_ - y0 + 12; z0 = 0.0; ang = 0.0
     for o in blist:
         if cv2.pointPolygonTest(o['P'], (float(lx_ - x0), float(ly_ - y0)), True) > -30:
             by_ = max(by_, o['P'][:, 1].max() + 0.5); z0 = max(z0, o['floors'] * 3.0)   # стоїть на даху депо
-    objs.append((by_, 'tower', (lx_ - x0, ly_ - y0, z0)))
+            Pp = o['P']; e = [(np.hypot(*(Pp[(k + 1) % len(Pp)] - Pp[k])), Pp[(k + 1) % len(Pp)] - Pp[k]) for k in range(len(Pp))]
+            d_ = max(e, key=lambda t: t[0])[1]; ang = float(np.arctan2(d_[1], d_[0])) % (np.pi / 2)   # напрям стін депо
+    objs.append((by_, 'tower', (lx_ - x0, ly_ - y0, z0, ang)))
 for base_y, kind, o in sorted(objs, key=lambda z: z[0]):
     if kind == 'tower':
         draw_tower(B, *o); continue
