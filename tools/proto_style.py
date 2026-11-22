@@ -134,81 +134,162 @@ for x, y, r, k in sorted(tl, key=lambda t: t[1]):
     draw_tree(A, x - x0, y - y0, r, k)
 
 # ---------- B: 3/4 з фасадами
-KV = 0.62                                                              # стискання висоти для виду 3/4
-FLOOR = 3.0 / MPP * KV                                                 # пікселів на поверх
-WALLS = [(214, 206, 188), (196, 192, 184), (226, 214, 176), (204, 160, 128), (232, 222, 206), (186, 196, 200), (220, 196, 160)]
+# Стіна малюється як текстура у «власних» координатах (u — уздовж стіни, v — висота), а на екран переноситься
+# стовпчиками: кожен стовпчик зсувається вертикально за нахилом стіни. Тому вікна — паралелограми з вертикальними
+# боками, рівно в площині стіни (як у піксель-арті 3/4). Стіни, що дивляться вбік (майже вертикальні на екрані), — вузька
+# смужка без вікон, бо в цьому виді їх майже не видно.
+KV = 0.62
+FLOOR = int(round(3.0 / MPP * KV))                                     # 7 пікс на поверх
+def jit(c, rs, a=8): return tuple(int(np.clip(v + rs.randint(-a, a), 0, 255)) for v in c)
+
+def btype(b, floors, area_m2):
+    bt = b.get('t', {}).get('building', 'yes')
+    if bt in ('garage', 'garages', 'shed', 'kiosk', 'service') or area_m2 < 25: return 'shed'
+    if bt in ('house', 'detached', 'semidetached_house', 'terrace') or (floors <= 2 and area_m2 < 220): return 'house'
+    if floors >= 9: return 'panel'
+    if floors >= 4: return 'brick'
+    return 'old'
+
+PAL = {
+    'panel': [(208, 210, 204), (198, 204, 206), (214, 210, 198)],
+    'brick': [(186, 116, 92), (210, 190, 152), (196, 178, 150), (178, 122, 98)],
+    'old':   [(226, 196, 170), (232, 214, 160), (196, 214, 196), (226, 204, 196), (214, 206, 186)],
+    'house': [(236, 226, 200), (230, 214, 178), (214, 224, 206), (240, 236, 226), (222, 204, 184)],
+    'shed':  [(150, 156, 160), (168, 160, 146), (132, 140, 146)],
+}
+GLASS, GLASS_HI, LIT = (62, 88, 118), (146, 178, 202), (236, 210, 132)
+
+def wall_tex(tp, w, floors, Lm, rs, wall, shop, entr):
+    """текстура стіни w×hp пікс (без перспективи); w — ширина на екрані, Lm — справжня довжина, м"""
+    hp = floors * FLOOR
+    T = np.zeros((hp, w, 3), np.uint8); T[:] = wall
+    dk, lt = dark(wall, 0.82), dark(wall, 1.08)
+    yy = np.arange(hp)[:, None]
+    if tp == 'brick':                                                  # цегла: рядки по 2 пікс зі зсувом
+        xx = np.arange(w)[None, :]
+        mortar = ((yy % 2) == 0) & (((xx + 2 * ((yy // 2) % 2)) % 4) == 0)
+        T[np.broadcast_to(mortar, (hp, w))] = dk
+    if tp == 'shed':                                                   # профнастил: вертикальні смуги
+        T[:, ::2] = dk
+        if w >= 8: T[hp - 5:hp, w // 2 - 3:w // 2 + 3] = dark(wall, 0.6); T[hp - 5:hp, w // 2 - 3:w // 2 + 3:2] = dark(wall, 0.5)
+        return T
+    # колонки вікон: за справжньою довжиною, але не густіше ніж 5 пікс на екрані
+    ncol = max(1, min(int(round(Lm / 3.2)), w // 5))
+    if w < 6: ncol = 0
+    cw = w / max(ncol, 1); ww = int(np.clip(round(cw * 0.5), 2, 5))
+    for f in range(floors):
+        yb = hp - f * FLOOR                                            # низ поверху
+        if tp == 'panel':
+            T[yb - 1, :] = dk                                          # шов плит
+        for j in range(ncol):
+            xc = int((j + 0.5) * cw); x0_ = xc - ww // 2
+            ground = f == 0
+            if ground and shop:
+                continue
+            if ground and entr and j in entr:                          # під'їзд: двері + козирок
+                d0 = max(0, xc - 2)
+                T[yb - 5:yb, d0:d0 + 4] = (92, 66, 50); T[yb - 5:yb, d0 + 1:d0 + 3] = (120, 88, 64)
+                T[yb - 6, max(0, d0 - 1):d0 + 5] = dark(wall, 0.55)
+                continue
+            wy0 = yb - FLOOR + 2; wy1 = yb - 2                         # 3–4 пікс заввишки
+            lit = rs.random() < 0.12
+            T[wy0 - 1:wy1 + 1, x0_ - 1:x0_ + ww + 1] = (236, 234, 226) if tp in ('old', 'house') else dark(wall, 0.72)
+            T[wy0:wy1, x0_:x0_ + ww] = LIT if lit else GLASS
+            if not lit: T[wy0, x0_] = GLASS_HI
+            T[wy1, x0_ - 1:x0_ + ww + 1] = dark(wall, 1.15)            # підвіконня
+            if tp == 'panel' and j % 2 == 1 and f > 0:                  # балкон
+                T[yb - 2, x0_ - 2:x0_ + ww + 2] = dark(wall, 1.12); T[yb - 1, x0_ - 2:x0_ + ww + 2] = (88, 92, 96)
+    if shop:                                                           # перший поверх — вітрини й вивіска
+        yb = hp
+        T[yb - FLOOR + 1:yb, 1:w - 1] = GLASS
+        for q in range(2, w - 2, 7): T[yb - FLOOR + 1:yb, q] = (200, 204, 206)
+        for q in range(0, w - 3, 9): T[yb - FLOOR + 2, q + 1:q + 3] = GLASS_HI
+        sc = shop
+        T[yb - FLOOR - 2:yb - FLOOR + 1, 0:w] = sc
+        for q in range(2, w - 2, 2):
+            if rs.random() < 0.75: T[yb - FLOOR - 1, q] = (250, 246, 236)
+    if tp in ('old', 'brick') and hp > 3: T[0, :] = lt; T[1, :] = dark(wall, 0.7)   # карниз
+    T[hp - 1, :] = dark(wall, 0.55)                                    # цоколь
+    return T
+
+def blit_wall(canvas, a, c, T, shade):
+    """перенести текстуру на стіну a->c: стовпчики з вертикальним зсувом"""
+    hp, w = T.shape[:2]
+    dx, dy = c[0] - a[0], c[1] - a[1]
+    xs = range(int(round(min(a[0], c[0]))), int(round(max(a[0], c[0]))))
+    for X in xs:
+        if not (0 <= X < W): continue
+        t = (X + 0.5 - a[0]) / dx
+        if not (0 <= t <= 1): continue
+        yb = int(round(a[1] + dy * t))
+        u = min(w - 1, max(0, int(t * w)))
+        col = (T[:, u].astype(np.float32) * shade).clip(0, 255).astype(np.uint8)
+        y0_ = yb - hp
+        s0, s1 = max(0, y0_), min(H, yb)
+        if s1 > s0: canvas[s0:s1, X] = col[s0 - y0_:s1 - y0_]
+
 B = stylize_ground(gnd)
-objs = []
-for i, b, pts, ptf in C['blds']:
+SHOP_COLS = [(190, 52, 48), (40, 104, 168), (228, 164, 36), (54, 132, 76), (132, 60, 140)]
+blist = []
+for i, b, pts in [(i, b, pts) for i, b, pts, ptf in C['blds']]:
     P = np.array(pts, np.float32)
-    objs.append((P[:, 1].max(), 'b', (i, b, pts)))
-for x, y, r, k in tl:
-    objs.append((y - y0 + r * 0.3, 't', (x - x0, y - y0, r, k)))
+    if len(P) < 3: continue
+    rb, m = roof_colors(i, b, pts)
+    if rb is None: continue
+    am2 = abs(cv2.contourArea(P)) * MPP * MPP
+    h = float(b.get('h') or 6)
+    floors = max(1, int(round(h / 3.0)))
+    tp = btype(b, floors, am2)
+    if tp == 'shed': floors = 1
+    blist.append(dict(i=i, b=b, P=P, rb=rb, floors=floors, tp=tp, hp=floors * FLOOR))
+# тіні будинків на землю (світло з північного заходу: тінь праворуч-вниз)
+for o in blist:
+    sh = np.round(o['P'] + [o['hp'] * 0.45, 2]).astype(np.int32)
+    ms = np.zeros((H, W), np.uint8); cv2.fillPoly(ms, [sh], 1); cv2.fillPoly(ms, [np.round(o['P']).astype(np.int32)], 1)
+    B[ms.astype(bool)] = (B[ms.astype(bool)] * 0.74).astype(np.uint8)
+objs = [(o['P'][:, 1].max(), 'b', o) for o in blist] + [(y - y0 + r * 0.3, 't', (x - x0, y - y0, r, k)) for x, y, r, k in tl]
 for base_y, kind, o in sorted(objs, key=lambda z: z[0]):
     if kind == 't':
         x, y, r, k = o
-        cv2.line(B, (int(x), int(y)), (int(x), int(y - r * 0.6)), (92, 70, 52), 2)      # стовбур
+        if 1 <= x < W - 1 and 0 < y: B[max(0, int(y - r * 0.7)):min(H, int(y)), int(x) - 1:int(x) + 1] = (92, 70, 52)
         draw_tree(B, x, y, r, k, lift=r * 0.9); continue
-    i, b, pts = o
-    rb, m = roof_colors(i, b, pts)
-    if rb is None: continue
-    t = b.get('t', {}); bt = t.get('building', 'yes')
-    h = float(b.get('h') or 6)
-    small = bt in ('garage', 'garages', 'shed', 'kiosk') or cv2.contourArea(np.array(pts, np.float32)) * MPP * MPP < 30
-    if small: h = min(h, 3)
-    floors = max(1, int(round(h / 3.0)))
-    hp = floors * FLOOR
-    rs = random.Random(i)
-    wall = WALLS[rs.randrange(len(WALLS))]
-    if bt in ('house', 'detached', 'semidetached_house'): wall = [(232, 220, 190), (226, 206, 170), (240, 236, 222), (214, 222, 200)][rs.randrange(4)]
-    if floors >= 9: wall = [(210, 210, 204), (226, 222, 212), (196, 204, 208)][rs.randrange(3)]
-    P = np.array(pts, np.float32)
-    if cv2.contourArea(P) < 0: P = P[::-1]
+    P, floors, tp, hp = o['P'], o['floors'], o['tp'], o['hp']
+    rs = random.Random(o['i'])
+    wall = jit(PAL[tp][rs.randrange(len(PAL[tp]))], rs, 6)
     n = len(P)
-    # орієнтація контуру: зовнішня нормаль ребра (a->b) = (dy, -dx) при обході за годинниковою стрілкою в екранних координатах
     area2 = sum(P[k][0] * P[(k + 1) % n][1] - P[(k + 1) % n][0] * P[k][1] for k in range(n))
     sgn = 1 if area2 > 0 else -1
-    shop_here = [s for s in shops if cv2.pointPolygonTest(P, (float(s[0]), float(s[1])), True) > -14]
+    shop_here = [s for s in shops if cv2.pointPolygonTest(P, (float(s[0]), float(s[1])), True) > -16]
+    shop_col = SHOP_COLS[rs.randrange(len(SHOP_COLS))] if shop_here else None
+    walls = []
     for k in range(n):
         a, c = P[k], P[(k + 1) % n]
         dx, dy = c[0] - a[0], c[1] - a[1]
-        nx, ny = dy * sgn, -dx * sgn                                     # зовнішня нормаль
+        nx, ny = dy * sgn, -dx * sgn
         L = np.hypot(dx, dy)
-        if L < 1 or ny <= 0.05 * L: continue                            # видимі лише стіни, що дивляться «до камери»
-        shade = 1.0 if abs(nx) < 0.5 * L else (0.86 if nx > 0 else 0.94)
-        wc = dark(wall, shade)
-        quad = np.round(np.array([a, c, c - [0, hp], a - [0, hp]])).astype(np.int32)
-        cv2.fillPoly(B, [quad], wc)
-        # вікна: колонки кожні ~3 м, ряди за поверхами
-        step = 3.0 / MPP; ncol = int(L // step)
-        if ncol >= 1 and not small:
-            for j in range(ncol):
-                tt = (j + 0.5) / ncol
-                gx_, gy_ = a[0] + dx * tt, a[1] + dy * tt
-                for f in range(floors):
-                    yb = gy_ - f * FLOOR
-                    ground = f == 0
-                    if ground and shop_here:                             # вітрина
-                        cv2.rectangle(B, (int(gx_ - step * 0.42), int(yb - FLOOR * 0.85)), (int(gx_ + step * 0.42), int(yb - 1)), (62, 92, 120), -1)
-                        cv2.line(B, (int(gx_ - step * 0.42), int(yb - FLOOR * 0.85)), (int(gx_ + step * 0.42), int(yb - FLOOR * 0.85)), (150, 190, 214), 1)
-                        continue
-                    if ground and j == ncol // 2 and floors > 1:          # під'їзд
-                        cv2.rectangle(B, (int(gx_ - 2), int(yb - FLOOR * 0.8)), (int(gx_ + 2), int(yb - 1)), (98, 70, 52), -1)
-                        continue
-                    wx0, wy0 = int(gx_ - 2), int(yb - FLOOR * 0.72)
-                    cv2.rectangle(B, (wx0 - 1, wy0 - 1), (wx0 + 4, wy0 + 3), dark(wc, 0.8), -1)
-                    lit_ = rs.random() < 0.15
-                    cv2.rectangle(B, (wx0, wy0), (wx0 + 3, wy0 + 2), (236, 214, 140) if lit_ else (70, 96, 124), -1)
-                    if 0 <= wy0 < H and 0 <= wx0 < W - 2: B[wy0, wx0:wx0 + 2] = (150, 180, 204) if not lit_ else (250, 236, 180)
-            if shop_here:                                                # вивіска над вітринами
-                y_s = int(min(a[1], c[1]) - FLOOR * 0.95)
-                sc = [(196, 56, 52), (46, 110, 170), (232, 172, 40), (60, 140, 80)][rs.randrange(4)]
-                cv2.rectangle(B, (int(min(a[0], c[0]) + 2), y_s - 3), (int(max(a[0], c[0]) - 2), y_s), sc, -1)
-                for q in range(int(min(a[0], c[0]) + 5), int(max(a[0], c[0]) - 5), 3):
-                    if rs.random() < 0.7 and 0 <= q < W and 2 <= y_s < H: B[y_s - 2, q] = (250, 246, 236)
-        cv2.polylines(B, [quad], True, dark(wc, 0.55), 1)
-        cv2.line(B, tuple(np.round(a).astype(int)), tuple(np.round(c).astype(int)), dark(wc, 0.4), 1)
-    draw_roof_flat(B, b, pts, rb, dy=hp)
+        if L < 1 or ny <= 0: continue
+        walls.append((a, c, dx, dy, nx, ny, L))
+    # головна (найдовша видима) стіна житлового будинку отримує під'їзди
+    main_k = max(range(len(walls)), key=lambda q: abs(walls[q][2])) if walls else -1
+    for q, (a, c, dx, dy, nx, ny, L) in enumerate(walls):
+        w = int(round(abs(dx)))
+        if w < 1: continue
+        face = ny / L                                                  # 1 — прямо на камеру, 0 — вбік
+        shade = 1.0 if face > 0.8 else (0.8 if nx * sgn * 0 + nx > 0 else 0.92)
+        entr = None
+        if q == main_k and tp in ('panel', 'brick', 'old') and floors > 1:
+            ncol = max(1, min(int(round(L * MPP / 3.2)), w // 5))
+            entr = set(range(ncol // 4, ncol, max(3, ncol // 3))) if ncol >= 3 else {ncol // 2}
+        T = wall_tex(tp, max(w, 1), floors, L * MPP, rs, wall, shop_col if (shop_here and q == main_k) else None, entr)
+        if dx < 0: T = T[:, ::-1]                                       # текстура йде зліва направо по екрану
+        aa, cc = (a, c) if dx > 0 else (c, a)
+        blit_wall(B, aa, cc, T, shade)
+        # кути будинку — темна вертикаль
+        for p_ in (aa, cc):
+            X, Y = int(round(p_[0])), int(round(p_[1]))
+            if 0 <= X < W: B[max(0, Y - hp):max(0, min(H, Y)), X] = dark(wall, 0.5)
+    draw_roof_flat(B, o['b'], P, o['rb'], dy=hp)
+    # лінія карниза між дахом і стіною — у draw_roof_flat контур уже темний
 
 for name, im in (('A', A), ('B', B)):
     crop = im[PADT:PADT + SH, :W]
