@@ -581,6 +581,147 @@ def split_compose(blist):
                 out.append(q)
     return out
 blist = split_compose(blist)
+
+# ---------- шрифт 4–5×5 для великих вивісок (латиниця й кирилиця)
+F45 = {'M': ['10001', '11011', '10101', '10001', '10001'], 'O': ['0110', '1001', '1001', '1001', '0110'],
+       'N': ['1001', '1101', '1011', '1001', '1001'], 'T': ['111', '010', '010', '010', '010'],
+       'B': ['1110', '1001', '1110', '1001', '1110'], 'L': ['100', '100', '100', '100', '111'],
+       'A': ['0110', '1001', '1111', '1001', '1001'], 'C': ['0111', '1000', '1000', '1000', '0111'],
+       'Н': ['1001', '1001', '1111', '1001', '1001'], 'А': ['0110', '1001', '1111', '1001', '1001'],
+       'Й': ['1001', '1011', '1101', '1001', '1001'], '-': ['000', '000', '111', '000', '000'], ' ': ['00', '00', '00', '00', '00']}
+def text_w2(t, sc): return sum((len(F45[c][0]) + 1) * sc for c in t) - sc
+def draw_text2(T, x, y, t, col, sc):
+    for ch in t:
+        g = F45[ch]
+        for r in range(5):
+            for c_ in range(len(g[0])):
+                if g[r][c_] == '1':
+                    yy_, xx_ = y + r * sc, x + c_ * sc
+                    if 0 <= yy_ and yy_ + sc <= T.shape[0] and 0 <= xx_ and xx_ + sc <= T.shape[1]: T[yy_:yy_ + sc, xx_:xx_ + sc] = col
+        x += (len(g[0]) + 1) * sc
+
+def facade_chains(P):
+    """видимі стіни (нормаль до камери), згруповані в неперервні ланцюжки: фасад іде суцільною стрічкою через
+    вигини й заокруглення — вікна й вивіски не рвуться на кожному відрізку контуру"""
+    n = len(P); area2 = sum(P[k][0] * P[(k + 1) % n][1] - P[(k + 1) % n][0] * P[k][1] for k in range(n)); sg = 1 if area2 > 0 else -1
+    vis = []
+    for k in range(n):
+        a, c = P[k], P[(k + 1) % n]; dx, dy = c[0] - a[0], c[1] - a[1]; L = np.hypot(dx, dy)
+        nx, ny = dy * sg, -dx * sg
+        vis.append(L > 0.5 and ny > 0 and abs(dx) >= 0.5)
+    if all(vis): start = 0
+    else: start = next(k for k in range(n) if not vis[k])
+    chains, cur = [], []
+    for j in range(1, n + 1):
+        k = (start + j) % n
+        if vis[k]: cur.append(k)
+        elif cur: chains.append(cur); cur = []
+    if cur: chains.append(cur)
+    out = []
+    for ch in chains:
+        segs = []
+        for k in ch:
+            a, c = np.array(P[k], float), np.array(P[(k + 1) % n], float); dx, dy = c - a; L = np.hypot(dx, dy)
+            segs.append(dict(a=a, c=c, w=abs(dx), nx=dy * sg / L, ny=-dx * sg / L, L=L))
+        out.append(segs)
+    return out
+
+def draw_prism(canvas, P, z0m, z1m, texfn, outline=None):
+    """об'єм від z0 до z1 (м): кожен ланцюжок видимих стін — одна текстура (ширина = сума |dx|), розрізана по відрізках"""
+    hp = int(round(zpx(z1m - z0m))); lift = zpx(z0m)
+    for segs in facade_chains(P):
+        Wc = int(round(sum(sg_['w'] for sg_ in segs)))
+        if Wc < 1 or hp < 1: continue
+        cols = []                                                     # для кожного стовпчика текстури — нормаль його відрізка
+        for sg_ in segs: cols += [(sg_['nx'], sg_['ny'])] * max(0, int(round(sg_['w'])))
+        cols = (cols + [cols[-1]] * Wc)[:Wc] if cols else [(0, 1)] * Wc
+        T = texfn(Wc, hp, np.array(cols))
+        u0 = 0.0
+        for sg_ in segs:
+            a, c = sg_['a'], sg_['c']
+            if c[0] < a[0]: a, c = c, a                                 # по екрану зліва направо; ланцюжок іде проти годинникової,
+            w = int(round(sg_['w']))                                      # тож порядок стовпчиків для відрізків з dx<0 дзеркальний
+            if w < 1: continue
+            part = T[:, int(round(u0)):int(round(u0)) + w]
+            if sg_['c'][0] < sg_['a'][0]: part = part[:, ::-1]
+            if part.shape[1] >= 1:
+                sh = 1.0 if sg_['ny'] > 0.8 else (0.86 if sg_['nx'] > 0 else 0.95)
+                blit_wall(canvas, a - [0, lift], c - [0, lift], part, sh)
+            u0 += sg_['w']
+    return hp
+
+# ---------- ТЦ «Монблан» (вул. Бандери, 2/1а): за фото Івана (вид із південного заходу)
+# Подіум (контур OSM 2/1а): 3 поверхи ~13 м — 1-й і 2-й поверхи суцільне скло в білих пілонах (на заокругленому
+# південно-західному розі — скляна «вітрина» на всі 3 поверхи), 3-й — біла панель з вікнами; червона вивіска MONTBLANC
+# з горами над склом розі, «НАЙ-НАЙ» на південному крилі. Вежа (building:part, 16 пов.) — на подіумі до ~61 м:
+# західна заокруглена частина — скляний «циліндр», решта — біла з квадратними вікнами й вертикальною смугою лоджій,
+# угорі уступи (менший об'єм ще на 2 поверхи).
+MB_NODE = (12243, 11526)
+MB_TOWER = [(12311, 11737), (12333, 11686), (12331, 11620), (12278, 11525), (12262, 11526), (12218, 11613), (12216, 11671), (12238, 11709)]
+WHT, WHT_D, GL, GL_D, GL_H = (238, 240, 240), (206, 210, 212), (92, 132, 170), (70, 100, 134), (176, 206, 226)
+def mb_podium_tex(Wc, hp, nrm):
+    T = np.zeros((hp, Wc, 3), np.uint8); T[:] = WHT
+    f3 = int(hp * 0.30); f2 = int(hp * 0.60)                           # межі: 3-й | 2-й | 1-й поверх
+    nx = nrm[:, 0]; corner = nx < -0.35                                # стовпчики, що дивляться на захід/південний захід (ріг)
+    T[f2:hp - 2] = GL                                                  # 1-й поверх — скло
+    T[f3:f2 - 1] = GL                                                  # 2-й поверх — скло
+    T[f2 - 1] = WHT
+    for x in range(Wc):
+        if corner[x]: T[2:f3, x] = GL                                  # на розі скло й на 3-му
+    for x in range(0, Wc, 9): T[2:hp - 2, x:x + 2] = WHT; T[2:hp - 2, x + 1:x + 2] = WHT_D   # білі пілони
+    for x in range(0, Wc, 3): T[f3:hp - 2, x][(T[f3:hp - 2, x] == GL).all(1)] = GL_D        # імпости
+    for x in range(4, Wc - 2, 13): T[f2 + 1:f2 + 3, x:x + 2] = GL_H; T[f3 + 1, x + 1] = GL_H     # відблиски
+    for x in range(3, Wc - 3, 7):                                      # вікна 3-го поверху на білих крилах
+        if not corner[x]: T[5:f3 - 2, x:x + 3] = (90, 104, 116); T[5, x:x + 3] = (140, 150, 160)
+    T[0:2] = WHT; T[2] = WHT_D; T[hp - 2:hp] = (120, 124, 128)
+    # вивіски: MONTBLANC над рогом, НАЙ-НАЙ на південному крилі (праворуч)
+    cidx = np.nonzero(corner)[0]
+    cx_ = int(cidx.mean()) if len(cidx) else Wc // 3
+    t = 'MONTBLANC'; sc = 2 if text_w2(t, 2) < Wc * 0.6 else 1
+    tw = text_w2(t, sc); tx = max(1, min(Wc - tw - 1, cx_ - tw // 2)); ty = max(3, f3 - 5 * sc - 3)
+    T[ty - 2:ty + 5 * sc + 2, tx - 3:tx + tw + 3] = WHT
+    draw_text2(T, tx, ty, t, (196, 30, 44), sc)
+    mx = tx + 2 * sc; my = ty - 2                                       # гори-логотип над «M»
+    for k_ in range(6 * sc):
+        h_ = max(0, 3 * sc - abs(k_ - 3 * sc)) // 1
+        if my - h_ >= 0 and mx + k_ < Wc: T[max(0, my - h_):my, mx + k_] = (52, 84, 140); T[max(0, my - h_), mx + k_] = WHT
+    t2 = 'НАЙ-НАЙ'; tw2 = text_w2(t2, sc); x2 = int(Wc * 0.78) - tw2 // 2
+    if x2 > tx + tw + 8 and x2 + tw2 < Wc - 2: draw_text2(T, x2, ty, t2, (206, 30, 44), sc)
+    return T
+def mb_tower_tex(Wc, hp, nrm, floors):
+    T = np.zeros((hp, Wc, 3), np.uint8); T[:] = WHT
+    nx = nrm[:, 0]; glass = nx < -0.25                                 # західний заокруглений бік — скляний «циліндр»
+    fh = hp / floors
+    for f in range(floors):
+        yb = int(hp - f * fh); y0_ = int(hp - (f + 1) * fh)
+        T[yb - 1:yb, :] = WHT_D
+        for x in range(Wc):
+            if glass[x]: T[y0_ + 1:yb - 1, x] = GL if (x % 3) else GL_D
+        for x in range(3, Wc - 3, 7):                                  # квадратні вікна на білому (рідше, як на фото)
+            if not glass[x] and not glass[min(Wc - 1, x + 2)]: T[y0_ + 2:yb - 2, x:x + 2] = (84, 100, 114); T[y0_ + 2, x] = (150, 170, 186)
+    white = np.nonzero(~glass)[0]
+    if len(white) > 12:                                                 # вертикальна смуга лоджій посередині білої частини
+        mid = int(white.mean())
+        T[2:hp - 1, mid - 3:mid + 3] = GL; T[2:hp - 1, mid - 3] = WHT_D; T[2:hp - 1:max(2, int(fh)), mid - 3:mid + 3] = WHT
+    T[0:2] = WHT; T[2] = WHT_D
+    return T
+def draw_montblanc(canvas, Pp):
+    z_pod, z_tw, z_cr = 13.0, 61.0, 67.0
+    draw_prism(canvas, Pp, 0.0, z_pod, mb_podium_tex)
+    draw_roof_flat(canvas, None, Pp, (178, 180, 182), dy=zpx(z_pod))   # дах подіуму (світлий бетон, з паркуванням із карти)
+    Pt = np.array([(x - x0, y - y0) for x, y in MB_TOWER], np.float32)
+    draw_prism(canvas, Pt, z_pod, z_tw, lambda Wc, hp, nrm: mb_tower_tex(Wc, hp, nrm, 16))
+    cen = Pt.mean(0); Pc = cen + (Pt - cen) * 0.62                     # уступ угорі: менший об'єм ще на 2 поверхи
+    Pc[:, 0] += 3
+    cv2.fillPoly(canvas, [np.round(Pt - [0, zpx(z_tw)]).astype(np.int32)], (214, 216, 216))
+    cv2.polylines(canvas, [np.round(Pt - [0, zpx(z_tw)]).astype(np.int32)], True, (150, 154, 156), 1)
+    draw_prism(canvas, Pc, z_tw, z_cr, lambda Wc, hp, nrm: mb_tower_tex(Wc, hp, nrm, 2))
+    top = np.round(Pc - [0, zpx(z_cr)]).astype(np.int32)
+    cv2.fillPoly(canvas, [top], (226, 228, 228)); cv2.polylines(canvas, [top], True, (150, 154, 156), 1)
+    t0 = top.mean(0).astype(int); cv2.rectangle(canvas, (t0[0] - 3, t0[1] - 6), (t0[0] + 3, t0[1]), (200, 202, 204), -1)   # машинне відділення
+    cv2.rectangle(canvas, (t0[0] - 3, t0[1] - 6), (t0[0] + 3, t0[1]), (150, 154, 156), 1)
+for o in blist:
+    if cv2.pointPolygonTest(o['P'], (float(MB_NODE[0] - x0), float(MB_NODE[1] - y0)), False) >= 0: o['montblanc'] = True; o['hp'] = int(zpx(30))
 # тіні будинків на землю (світло з північного заходу: тінь праворуч-вниз)
 for o in blist:
     sh = np.round(o['P'] + [(zpx(33) if o.get('tower') else o['hp']) * 0.45, 2]).astype(np.int32)
@@ -596,6 +737,8 @@ for base_y, kind, o in sorted(objs, key=lambda z: z[0]):
         if 1 <= x < W - 1 and 0 < y: B[max(0, int(y - r * 0.7)):min(H, int(y)), int(x) - 1:int(x) + 1] = (92, 70, 52)
         draw_tree(B, x, y, r, k, lift=r * 0.9); continue
     _B0 = B.copy()
+    if o.get('montblanc'):
+        draw_montblanc(B, o['P']); ZB[(B != _B0).any(2)] = base_y; continue
     if o.get('tower'):                                                   # вежа — частина складеної пам'ятки
         Pc = o['P']; cx_, cy_ = Pc.mean(0)
         side = np.sqrt(abs(cv2.contourArea(Pc)))
