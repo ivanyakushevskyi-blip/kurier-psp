@@ -228,6 +228,128 @@ def blit_wall(canvas, a, c, T, shade):
         s0, s1 = max(0, y0_), min(H, yb)
         if s1 > s0: canvas[s0:s1, X] = col[s0 - y0_:s1 - y0_]
 
+# ---------- піксельний шрифт 3×5 для вивісок (лише потрібні великі літери)
+F35 = {
+ 'А': ['010', '101', '111', '101', '101'], 'В': ['110', '101', '110', '101', '110'], 'Е': ['111', '100', '110', '100', '111'],
+ 'І': ['111', '010', '010', '010', '111'], 'К': ['101', '110', '100', '110', '101'], 'Л': ['010', '101', '101', '101', '101'],
+ 'М': ['101', '111', '111', '101', '101'], 'Н': ['101', '101', '111', '101', '101'], 'О': ['010', '101', '101', '101', '010'],
+ 'П': ['111', '101', '101', '101', '101'], 'Р': ['110', '101', '110', '100', '100'], 'Т': ['111', '010', '010', '010', '010'],
+ 'Ц': ['101', '101', '101', '111', '001'], 'Ч': ['101', '101', '011', '001', '001'], 'Ш': ['101', '101', '111', '111', '111'],
+ '.': ['000', '000', '000', '000', '010'], ' ': ['000', '000', '000', '000', '000'], 'Г': ['111', '100', '100', '100', '100'],
+}
+def text_w(t, sc=1): return (len(t) * 4 - 1) * sc
+def draw_text(T, x, y, t, col, sc=1):
+    for ch in t:
+        g = F35.get(ch, F35[' '])
+        for r in range(5):
+            for c_ in range(3):
+                if g[r][c_] == '1':
+                    yy_, xx_ = y + r * sc, x + c_ * sc
+                    if 0 <= yy_ and yy_ + sc <= T.shape[0] and 0 <= xx_ and xx_ + sc <= T.shape[1]: T[yy_:yy_ + sc, xx_:xx_ + sc] = col
+        x += 4 * sc
+
+# ---------- пам'ятки: власні фасади (стилізація; точність — за фото)
+LMK = [(12040, 14430, 'tower'), (11979, 14409, 'depot'), (13149, 15918, 'cinema'), (13664, 12133, 'mall')]
+def lm_tex(kind, w, hp, main, rs):
+    if kind == 'cinema':                                               # модернізм: скляний вестибюль, глуха стіна з літерами, рама
+        wall = (222, 218, 206)
+        T = np.zeros((hp, w, 3), np.uint8); T[:] = wall
+        if not main:
+            for q in range(3, w, 8): T[:, q] = dark(wall, 0.9)
+            T[hp - 1] = dark(wall, 0.55); return T
+        g0 = hp - FLOOR * 2 + 2                                        # два поверхи скла
+        T[g0:hp - 1, 2:w - 2] = GLASS
+        for q in range(2, w - 2, 5): T[g0:hp - 1, q] = (214, 216, 214)   # імпости
+        T[g0 + FLOOR - 1, 2:w - 2] = (214, 216, 214)
+        for q in range(4, w - 4, 11): T[g0 + 1, q:q + 2] = GLASS_HI; T[g0 + 2, q + 1] = GLASS_HI
+        T[g0 - 2:g0, :] = dark(wall, 0.6)                               # козирок над входом
+        t = 'КІНОТЕАТР ІМ. ШЕВЧЕНКА'; sc = 2 if text_w(t, 2) < w - 6 else 1
+        if text_w(t, sc) > w - 4: t = 'КІНОТЕАТР'; sc = 2 if text_w(t, 2) < w - 6 else 1
+        ty = max(2, (g0 - 2 - 5 * sc) // 2)
+        draw_text(T, (w - text_w(t, sc)) // 2, ty, t, (178, 40, 40), sc)
+        for q in range(0, w, 3): T[0, q] = dark(wall, 0.8)
+        T[hp - 1] = dark(wall, 0.5); return T
+    if kind == 'mall':                                                 # гіпермаркет: сендвіч-панелі, помаранчевий пояс, вивіска, вхідний портал
+        wall = (226, 228, 226)
+        T = np.zeros((hp, w, 3), np.uint8); T[:] = wall
+        for y in range(4, hp, 4): T[y] = dark(wall, 0.92)
+        T[0:5] = (232, 104, 34); T[5] = dark((232, 104, 34), 0.7)
+        if main:
+            t = 'ЕПІЦЕНТР'; sc = 3 if (text_w(t, 3) < w * 0.5 and 8 + 5 * 3 + 9 < hp - FLOOR * 2) else (2 if 8 + 19 < hp - FLOOR * 2 else 1)
+            bw, bh = text_w(t, sc) + 10 + 5 * sc + 6, 5 * sc + 8
+            bx, by = (w - bw) // 2, 8
+            T[by:by + bh, bx:bx + bw] = (232, 104, 34); T[by + bh, bx:bx + bw] = dark((232, 104, 34), 0.6)
+            draw_text(T, bx + 5, by + 4, t, (255, 255, 255), sc)
+            kx = bx + 5 + text_w(t, sc) + 5                             # «К» у квадраті
+            T[by + 3:by + 5 + 5 * sc, kx:kx + 5 * sc] = (255, 214, 40)
+            draw_text(T, kx + sc, by + 4, 'К', (232, 104, 34), sc)
+            px_ = w // 2; T[hp - FLOOR * 2 + 1:hp - 1, px_ - 10:px_ + 10] = GLASS   # вхід
+            for q in range(px_ - 10, px_ + 10, 4): T[hp - FLOOR * 2 + 1:hp - 1, q] = (200, 204, 206)
+            T[hp - FLOOR * 2 - 1:hp - FLOOR * 2 + 1, px_ - 13:px_ + 13] = (232, 104, 34)
+            for q in range(6, w - 6, 26):
+                if abs(q - px_) > 20: T[hp - 8:hp - 1, q:q + 7] = (150, 154, 156); T[hp - 8:hp - 1, q:q + 7:2] = (132, 136, 138)   # ворота складу
+        T[hp - 1] = dark(wall, 0.5); return T
+    if kind == 'depot':                                                # колишнє пожежне депо (1954): штукатурка, арки воріт, карниз
+        wall = (228, 206, 160)
+        T = np.zeros((hp, w, 3), np.uint8); T[:] = wall
+        n_ = max(1, w // 12)
+        for j in range(n_):
+            xc = int((j + 0.5) * w / n_)
+            if main and hp >= 2 * FLOOR:                               # ворота-арки на першому поверсі
+                a0, a1 = hp - FLOOR + 1, hp - 1
+                T[a0 + 1:a1, xc - 3:xc + 3] = (118, 84, 62); T[a0, xc - 2:xc + 2] = (118, 84, 62)
+                T[a0 - 1, xc - 3:xc + 3] = (246, 240, 226)
+            for f in range(1, hp // FLOOR):
+                yb = hp - f * FLOOR
+                T[yb - FLOOR + 2:yb - 2, xc - 1:xc + 2] = GLASS; T[yb - FLOOR + 1, xc - 1:xc + 2] = (246, 240, 226)
+        for q in range(0, w, 6): T[:, q] = dark(wall, 0.95)            # пілястри
+        T[0] = (246, 240, 226); T[1] = dark(wall, 0.7); T[hp - 1] = dark(wall, 0.5)
+        if main:
+            t = 'ПЛАНЕТА'
+            if text_w(t) < w - 4: draw_text(T, (w - text_w(t)) // 2, 3, t, (40, 70, 150))
+        return T
+    return None
+
+def draw_tower(canvas, x, y):
+    """стара пожежна вежа: квадратна, 3 яруси, годинник, оглядова альтанка з арками, шпиль"""
+    s = int(round(6.5 / MPP)); hw = s // 2; Ht = int(round(30 / MPP * KV))
+    wall, wh = (232, 212, 164), (248, 242, 228)
+    T = np.zeros((Ht, s, 3), np.uint8); T[:] = wall
+    T[:, 0:2] = wh; T[:, s - 2:s] = wh                                 # кутові пілястри
+    tiers = [int(Ht * 0.16), int(Ht * 0.34), int(Ht * 0.5)]            # згори вниз: альтанка | годинник | ствол
+    for ty in tiers: T[ty - 1:ty + 1] = wh; T[ty + 1] = dark(wall, 0.7)
+    for ty in range(Ht - 4, tiers[2] + 8, -10):                         # вузькі арочні вікна ствола
+        T[ty - 5:ty, hw - 1:hw + 1] = GLASS; T[ty - 6, hw - 1:hw + 1] = wh
+    T[Ht - 7:Ht - 1, hw - 2:hw + 2] = (118, 84, 62)                     # двері
+    cy_ = (tiers[0] + tiers[1]) // 2                                     # годинник
+    yy, xx = np.ogrid[:Ht, :s]
+    d = np.sqrt((yy - cy_) ** 2 + (xx - (s - 1) / 2) ** 2); r_ = min(hw - 3, 6)
+    T[(d <= r_ + 1)] = (60, 50, 40); T[(d <= r_)] = (250, 248, 238)
+    T[cy_ - r_ + 2:cy_ + 1, s // 2] = (30, 30, 30); T[cy_, s // 2:s // 2 + r_ - 2] = (30, 30, 30)
+    a0, a1 = 2, tiers[0] - 1                                           # альтанка: арки
+    for q in range(3, s - 3, 4): T[a0:a1, q:q + 2] = (52, 46, 44); T[a0, q:q + 2] = wall
+    T[0:tiers[2]] = T[0:tiers[2]]
+    # переносимо на екран: низ — (x, y), стіна південна
+    X0 = int(x) - hw; Yb = int(y) + hw
+    for c_ in range(s):
+        X = X0 + c_
+        if not (0 <= X < W): continue
+        sh_ = 0.86 if c_ > s - 3 else 1.0
+        y0_ = Yb - Ht; a, b_ = max(0, y0_), min(H, Yb)
+        if b_ > a: canvas[a:b_, X] = (T[a - y0_:b_ - y0_, c_] * sh_).astype(np.uint8)
+    # верх: квадратний дах-шатро з шпилем
+    top = Yb - Ht - s
+    roof = (78, 96, 92)
+    for r in range(s):
+        X1, X2 = X0 + abs(r - hw) // 2, X0 + s - abs(r - hw) // 2
+        Y = top + r
+        if 0 <= Y < H: canvas[Y, max(0, X1):min(W, X2)] = dark(roof, 1.15 if r < hw else 0.85)
+    sx_ = X0 + hw
+    for Y in range(top - 10, top + 2):
+        if 0 <= Y < H and 0 <= sx_ < W: canvas[Y, sx_] = (60, 64, 62)
+    if 0 <= top - 11 < H and 0 <= sx_ < W: canvas[top - 11, sx_] = (226, 186, 60)
+    cv2.rectangle(canvas, (X0, Yb - Ht - s), (X0 + s - 1, Yb - Ht), dark(roof, 0.5), 1)
+
 B = stylize_ground(gnd)
 SHOP_COLS = [(190, 52, 48), (40, 104, 168), (228, 164, 36), (54, 132, 76), (132, 60, 140)]
 blist = []
@@ -241,14 +363,29 @@ for i, b, pts in [(i, b, pts) for i, b, pts, ptf in C['blds']]:
     floors = max(1, int(round(h / 3.0)))
     tp = btype(b, floors, am2)
     if tp == 'shed': floors = 1
-    blist.append(dict(i=i, b=b, P=P, rb=rb, floors=floors, tp=tp, hp=floors * FLOOR))
+    lm = None
+    for lx_, ly_, lk in LMK:
+        if lk == 'tower': continue
+        if cv2.pointPolygonTest(P, (float(lx_ - x0), float(ly_ - y0)), True) > -25: lm = lk
+    if lm == 'cinema': floors = 4
+    if lm == 'mall': floors = 6
+    if lm == 'depot': floors = 2
+    blist.append(dict(i=i, b=b, P=P, rb=rb, floors=floors, tp=tp, hp=floors * FLOOR, lm=lm))
 # тіні будинків на землю (світло з північного заходу: тінь праворуч-вниз)
 for o in blist:
     sh = np.round(o['P'] + [o['hp'] * 0.45, 2]).astype(np.int32)
     ms = np.zeros((H, W), np.uint8); cv2.fillPoly(ms, [sh], 1); cv2.fillPoly(ms, [np.round(o['P']).astype(np.int32)], 1)
     B[ms.astype(bool)] = (B[ms.astype(bool)] * 0.74).astype(np.uint8)
 objs = [(o['P'][:, 1].max(), 'b', o) for o in blist] + [(y - y0 + r * 0.3, 't', (x - x0, y - y0, r, k)) for x, y, r, k in tl]
+for lx_, ly_, lk in LMK:                                                # вежа — після будинку, на якому стоїть
+    if lk != 'tower' or not (-60 < lx_ - x0 < W + 60 and -60 < ly_ - y0 < H + 200): continue
+    by_ = ly_ - y0 + 12
+    for o in blist:
+        if cv2.pointPolygonTest(o['P'], (float(lx_ - x0), float(ly_ - y0)), True) > -30: by_ = max(by_, o['P'][:, 1].max() + 0.5)
+    objs.append((by_, 'tower', (lx_ - x0, ly_ - y0)))
 for base_y, kind, o in sorted(objs, key=lambda z: z[0]):
+    if kind == 'tower':
+        draw_tower(B, *o); continue
     if kind == 't':
         x, y, r, k = o
         if 1 <= x < W - 1 and 0 < y: B[max(0, int(y - r * 0.7)):min(H, int(y)), int(x) - 1:int(x) + 1] = (92, 70, 52)
@@ -280,8 +417,9 @@ for base_y, kind, o in sorted(objs, key=lambda z: z[0]):
         if q == main_k and tp in ('panel', 'brick', 'old') and floors > 1:
             ncol = max(1, min(int(round(L * MPP / 3.2)), w // 5))
             entr = set(range(ncol // 4, ncol, max(3, ncol // 3))) if ncol >= 3 else {ncol // 2}
-        T = wall_tex(tp, max(w, 1), floors, L * MPP, rs, wall, shop_col if (shop_here and q == main_k) else None, entr)
-        if dx < 0: T = T[:, ::-1]                                       # текстура йде зліва направо по екрану
+        T = lm_tex(o['lm'], max(w, 1), hp, q == main_k or (o.get('lm') == 'mall' and w > 120), rs) if o.get('lm') else None
+        if T is None: T = wall_tex(tp, max(w, 1), floors, L * MPP, rs, wall, shop_col if (shop_here and q == main_k) else None, entr)
+        if dx < 0 and not o.get('lm'): T = T[:, ::-1]                   # текстура йде зліва направо по екрану (написи не дзеркалимо)
         aa, cc = (a, c) if dx > 0 else (c, a)
         blit_wall(B, aa, cc, T, shade)
         # кути будинку — темна вертикаль
