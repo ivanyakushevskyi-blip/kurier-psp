@@ -12,7 +12,7 @@ import citydraw as CD
 
 cx, cy = int(sys.argv[1]), int(sys.argv[2])
 tag = sys.argv[3] if len(sys.argv) > 3 else 'p'
-SW, SH = 480, 272
+SW, SH = (int(v) for v in os.environ.get('PSIZE', '480,272').split(','))   # PSIZE — більша ділянка для вставки в гру
 PADT = 140                                                             # зверху більше: високі будинки знизу кадру «ростуть» угору
 W, H, M = SW, SH + PADT, 96
 x0, y0 = cx - SW // 2, cy - SH // 2 - PADT
@@ -28,11 +28,39 @@ src = src.replace("def render(", "def render_cap(", 1)
 CD.__dict__['_CAP'] = {}
 exec(compile(src, CD.__file__, 'exec'), CD.__dict__)
 tl, so, pr = [], [], []
-img, cls = CD.render_cap(x0 - M, y0 - M, W + 2 * M, H + 2 * M, tree_out=tl, ss=4, solid_out=so, props_out=pr)
-C = CD._CAP
-C['blds'] = [(i, b, [(p[0] - M, p[1] - M) for p in pts], ptf) for i, b, pts, ptf in C['blds']]   # у координати обрізаного кадру
-sl = (slice(M, M + H), slice(M, M + W))
-img, cls, gnd = img[sl].copy(), cls[sl].copy(), C['gnd'][sl].copy()
+# великі ділянки — шматками (пам'ять): земля/класи склеюються, будинки й дерева без повторів
+TW_, TH_ = 480, 420
+img = np.zeros((H, W, 3), np.uint8); cls = np.zeros((H, W), np.int32); gnd = np.zeros((H, W, 3), np.uint8)
+C = {'blds': []}; seen_b, seen_t = set(), set()
+for ty_ in range(0, H, TH_):
+    for tx_ in range(0, W, TW_):
+        tw, th = min(TW_, W - tx_), min(TH_, H - ty_)
+        tl_ = []
+        CD.__dict__['_CAP'] = {}
+        im_, cl_ = CD.render_cap(x0 + tx_ - M, y0 + ty_ - M, tw + 2 * M, th + 2 * M, tree_out=tl_, ss=4, solid_out=[], props_out=[])
+        cp = CD._CAP
+        img[ty_:ty_ + th, tx_:tx_ + tw] = im_[M:M + th, M:M + tw]
+        cls[ty_:ty_ + th, tx_:tx_ + tw] = cl_[M:M + th, M:M + tw]
+        gnd[ty_:ty_ + th, tx_:tx_ + tw] = cp['gnd'][M:M + th, M:M + tw]
+        for i, b, pts, ptf in cp['blds']:
+            if i in seen_b: continue
+            seen_b.add(i); C['blds'].append((i, b, [(q[0] - M + tx_, q[1] - M + ty_) for q in pts], ptf))
+        for t in tl_:
+            k_ = (round(t[0]), round(t[1]))
+            if k_ not in seen_t: seen_t.add(k_); tl.append(t)
+        del im_, cl_, cp
+# дахи — з готової карти (там і ручні латки: Монблан, пам'ятки), а не з голого рендера
+try:
+    _mf = np.load('build/map_rgb.npy', mmap_mode='r')
+    _ya, _xa = max(0, y0), max(0, x0)
+    _crop = np.asarray(_mf[_ya:y0 + H, _xa:x0 + W])
+    img_roof = img.copy(); img_roof[_ya - y0:_ya - y0 + _crop.shape[0], _xa - x0:_xa - x0 + _crop.shape[1]] = _crop
+    img = img_roof
+    mapc = img_roof.copy()                                              # готова карта (земля, розмітка, крони, латки)
+    _cr = np.load('build/crown.npy', mmap_mode='r')
+    crownc = np.zeros((H, W), bool); crownc[_ya - y0:_ya - y0 + _crop.shape[0], _xa - x0:_xa - x0 + _crop.shape[1]] = np.asarray(_cr[_ya:y0 + H, _xa:x0 + W]) > 0
+except Exception as e_:
+    print('  map_rgb недоступна:', e_)
 cv2.imwrite(os.path.join(OUT, 'raw.png'), cv2.cvtColor(img[PADT:PADT + SH], cv2.COLOR_RGB2BGR)); cv2.imwrite(os.path.join(OUT, 'rawg.png'), cv2.cvtColor(gnd[PADT:PADT + SH], cv2.COLOR_RGB2BGR))
 ox, oy = x0 - M, y0 - M                                                # світ -> локальні: (x - x0, y - y0)
 md = json.load(open('build/mapdata.json', encoding='utf-8'))
@@ -144,8 +172,11 @@ def jit(c, rs, a=8): return tuple(int(np.clip(v + rs.randint(-a, a), 0, 255)) fo
 
 def btype(b, floors, area_m2):
     bt = b.get('t', {}).get('building', 'yes')
+    if bt in ('roof', 'carport'): return 'canopy'
     if bt in ('garage', 'garages', 'shed', 'kiosk', 'service') or area_m2 < 25: return 'shed'
+    if bt in ('retail', 'commercial', 'supermarket', 'mall') or area_m2 > 3000: return 'store'
     if bt in ('house', 'detached', 'semidetached_house', 'terrace') or (floors <= 2 and area_m2 < 220): return 'house'
+    if floors >= 6 and bt in ('commercial', 'retail', 'office', 'yes') and area_m2 > 1500: return 'glass'
     if floors >= 9: return 'panel'
     if floors >= 4: return 'brick'
     return 'old'
@@ -156,6 +187,9 @@ PAL = {
     'old':   [(226, 196, 170), (232, 214, 160), (196, 214, 196), (226, 204, 196), (214, 206, 186)],
     'house': [(236, 226, 200), (230, 214, 178), (214, 224, 206), (240, 236, 226), (222, 204, 184)],
     'shed':  [(150, 156, 160), (168, 160, 146), (132, 140, 146)],
+    'glass': [(120, 150, 172), (110, 140, 160), (140, 160, 170)],
+    'store': [(222, 224, 222), (210, 214, 216), (226, 220, 206)],
+    'canopy': [(236, 236, 232)],
 }
 GLASS, GLASS_HI, LIT = (62, 88, 118), (146, 178, 202), (236, 210, 132)
 
@@ -169,6 +203,26 @@ def wall_tex(tp, w, floors, Lm, rs, wall, shop, entr):
         xx = np.arange(w)[None, :]
         mortar = ((yy % 2) == 0) & (((xx + 2 * ((yy // 2) % 2)) % 4) == 0)
         T[np.broadcast_to(mortar, (hp, w))] = dk
+    if tp == 'glass':                                                  # скляний фасад: сітка імпостів, відблиски
+        T[:] = wall
+        for f in range(floors): T[hp - 1 - f * FLOOR, :] = (206, 212, 216)
+        T[:, ::4] = (196, 204, 210)
+        xx = np.arange(w)[None, :]; yy2 = np.arange(hp)[:, None]
+        T[((xx + yy2) % 23) < 3] = dark(wall, 1.25)
+        T[hp - 1, :] = (90, 92, 96)
+        return T
+    if tp == 'canopy':                                                 # навіс (АЗС, зупинка): тонкий дах на колонах, під ним видно землю
+        T[:] = 0; T[0:2, :] = wall; T[2, :] = dark(wall, 0.6)
+        for q in range(1, w - 1, max(6, w // 3)): T[2:hp, q:q + 2] = (120, 124, 128)
+        return T
+    if tp == 'store':                                                  # торговий: світлі панелі, скляна вітрина знизу, пояс-вивіска
+        for y in range(3, hp, 4): T[y, :] = dark(wall, 0.93)
+        T[hp - FLOOR + 1:hp - 1, 1:w - 1] = GLASS
+        for q in range(2, w - 2, 6): T[hp - FLOOR + 1:hp - 1, q] = (200, 204, 206)
+        for q in range(0, w - 3, 11): T[hp - FLOOR + 2, q + 1:q + 3] = GLASS_HI
+        T[0:3, :] = shop if shop else (70, 110, 160); T[3, :] = dark(wall, 0.6)
+        T[hp - 1, :] = dark(wall, 0.5)
+        return T
     if tp == 'shed':                                                   # профнастил: вертикальні смуги
         T[:, ::2] = dk
         if w >= 8: T[hp - 5:hp, w // 2 - 3:w // 2 + 3] = dark(wall, 0.6); T[hp - 5:hp, w // 2 - 3:w // 2 + 3:2] = dark(wall, 0.5)
@@ -226,7 +280,9 @@ def blit_wall(canvas, a, c, T, shade):
         col = (T[:, u].astype(np.float32) * shade).clip(0, 255).astype(np.uint8)
         y0_ = yb - hp
         s0, s1 = max(0, y0_), min(H, yb)
-        if s1 > s0: canvas[s0:s1, X] = col[s0 - y0_:s1 - y0_]
+        if s1 > s0:
+            seg = col[s0 - y0_:s1 - y0_]; op = T[s0 - y0_:s1 - y0_, u].any(1)        # чорне (0,0,0) — прозоре (навіси)
+            canvas[s0:s1, X][op] = seg[op]
 
 # ---------- піксельний шрифт 3×5 для вивісок (лише потрібні великі літери)
 F35 = {
@@ -455,7 +511,12 @@ def draw_tower(canvas, x, y, z0m=0.0, ang=0.0, side=None):
             for dx_ in (-1, 0, 1):
                 if 0 <= Y + dy_ < H and 0 <= X + dx_ < W: canvas[Y + dy_, X + dx_] = WH if dx_ < 1 else dark(WH, 0.8)
 
-B = stylize_ground(gnd)
+# B: земля й дерева — з нинішньої карти (палітра, розмітка, крони, ручні латки), під будинками — земля без дахів
+B = mapc.copy()
+foot = np.zeros((H, W), np.uint8)
+for i, b, pts, ptf in C['blds']: cv2.fillPoly(foot, [np.round(np.array(pts)).astype(np.int32)], 1)
+foot = foot.astype(bool); B[foot] = gnd[foot]
+ZB = np.full((H, W), -1e9, np.float32)                                 # «глибина»: нижній край будинку, що намалював піксель
 SHOP_COLS = [(190, 52, 48), (40, 104, 168), (228, 164, 36), (54, 132, 76), (132, 60, 140)]
 blist = []
 for i, b, pts in [(i, b, pts) for i, b, pts, ptf in C['blds']]:
@@ -468,6 +529,7 @@ for i, b, pts in [(i, b, pts) for i, b, pts, ptf in C['blds']]:
     floors = max(1, int(round(h / 3.0)))
     tp = btype(b, floors, am2)
     if tp == 'shed': floors = 1
+    if tp == 'canopy': floors = 2
     lm = None
     for lx_, ly_, lk in LMK:
         if lk == 'tower': continue
@@ -529,13 +591,15 @@ for base_y, kind, o in sorted(objs, key=lambda z: z[0]):
     if kind == 'tower':
         draw_tower(B, *o); continue
     if kind == 't':
+        continue                                                         # дерева — з карти (крони), див. нижче
         x, y, r, k = o
         if 1 <= x < W - 1 and 0 < y: B[max(0, int(y - r * 0.7)):min(H, int(y)), int(x) - 1:int(x) + 1] = (92, 70, 52)
         draw_tree(B, x, y, r, k, lift=r * 0.9); continue
+    _B0 = B.copy()
     if o.get('tower'):                                                   # вежа — частина складеної пам'ятки
         Pc = o['P']; cx_, cy_ = Pc.mean(0)
         side = np.sqrt(abs(cv2.contourArea(Pc)))
-        draw_tower(B, cx_, cy_, 0.0, o['ang'], side); continue
+        draw_tower(B, cx_, cy_, 0.0, o['ang'], side); ZB[(B != _B0).any(2)] = base_y; continue
     P, floors, tp, hp = o['P'], o['floors'], o['tp'], o['hp']
     rs = random.Random(o['i'])
     wall = jit(PAL[tp][rs.randrange(len(PAL[tp]))], rs, 6)
@@ -573,8 +637,17 @@ for base_y, kind, o in sorted(objs, key=lambda z: z[0]):
             X, Y = int(round(p_[0])), int(round(p_[1]))
             if 0 <= X < W: B[max(0, Y - hp):max(0, min(H, Y)), X] = dark(wall, 0.5)
     draw_roof_flat(B, o['b'], P, o['rb'], dy=hp)
+    ZB[(B != _B0).any(2)] = base_y
     # лінія карниза між дахом і стіною — у draw_roof_flat контур уже темний
 
+# крони з карти: поверх будинків, що стоять північніше (їхній низ вище за дерево), і під тими, що південніше
+_yy = np.arange(H, dtype=np.float32)[:, None] + 4
+cm = crownc & (ZB < _yy)
+B[cm] = mapc[cm]
+if os.environ.get('PSIZE'):                                             # для вставки в гру: увесь B і його початок
+    cv2.imwrite(os.path.join(OUT, 'ovr_%s.ppm' % tag), cv2.cvtColor(B, cv2.COLOR_RGB2BGR))
+    cv2.imwrite(os.path.join(OUT, 'ovrm_%s.pgm' % tag), (((ZB > -1e8) | cm) * 255).astype(np.uint8))   # над машинами: будинки й крони
+    json.dump({'x0': int(x0), 'y0': int(y0), 'w': int(W), 'h': int(H)}, open(os.path.join(OUT, 'ovr_%s.json' % tag), 'w'))
 for name, im in (('A', A), ('B', B)):
     crop = im[PADT:PADT + SH, :W]
     crop = ((crop.astype(np.uint16) >> 3) << 3).astype(np.uint8)          # 15 біт, як на PSP

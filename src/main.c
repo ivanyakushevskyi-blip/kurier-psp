@@ -170,11 +170,41 @@ static int pick_slot(void) {
     if (cache_key[best] >= 0) slot_of[cache_key[best]] = -1;
     return best;
 }
+#ifdef HOST
+/* 22.11.2026: прототип стилю — вставка готової картинки (tools/proto_style.py, PSIZE) поверх карти в ділянці:
+   MAPOVR=build/proto2/ovr_X.ppm MAPOVR_XY=x0,y0. Колір замінюється, біти даху (паралакс) і крон знімаються; колізія стара. */
+static struct { int on, x0, y0, w, h; u8 *rgb, *over; } ovr;
+static void ovr_init(void) {
+    const char *f = getenv("MAPOVR"), *xy = getenv("MAPOVR_XY"); if (!f || !xy) return;
+    FILE *fp = fopen(f, "rb"); if (!fp) return;
+    int mx; if (fscanf(fp, "P6 %d %d %d", &ovr.w, &ovr.h, &mx) != 3) { fclose(fp); return; } fgetc(fp);
+    ovr.rgb = malloc((size_t)ovr.w * ovr.h * 3); if (fread(ovr.rgb, 3, (size_t)ovr.w * ovr.h, fp) != (size_t)ovr.w * ovr.h) { fclose(fp); return; }
+    fclose(fp); sscanf(xy, "%d,%d", &ovr.x0, &ovr.y0); ovr.on = 1;
+    const char *fm = getenv("MAPOVR_M");                               /* маска «над машинами» (будинки 3/4, крони) */
+    if (fm && (fp = fopen(fm, "rb"))) { int w_, h_; if (fscanf(fp, "P5 %d %d %d", &w_, &h_, &mx) == 3 && w_ == ovr.w && h_ == ovr.h) { fgetc(fp); ovr.over = malloc((size_t)w_ * h_); if (fread(ovr.over, 1, (size_t)w_ * h_, fp) != (size_t)w_ * h_) ovr.over = NULL; } fclose(fp); }
+}
+static void ovr_apply(int k, u8 *dst) {
+    if (!ovr.on) return;
+    int cx = k % NCX, cy = k / NCX;
+    uint16_t *px = (uint16_t *)dst; u8 *sf = dst + CPX + CSB;
+    for (int ly = 0; ly < CS; ly++) for (int lx = 0; lx < CS; lx++) {
+        int X = cx * CS + lx - ovr.x0, Y = cy * CS + ly - ovr.y0;
+        if (X < 0 || Y < 0 || X >= ovr.w || Y >= ovr.h) continue;
+        const u8 *c = ovr.rgb + ((size_t)Y * ovr.w + X) * 3;
+        px[ly * CS + lx] = (uint16_t)((c[0] >> 3) | ((c[1] >> 3) << 5) | ((c[2] >> 3) << 10));
+        sf[ly * (CS / 2) + (lx >> 1)] &= (u8)~(8 << ((lx & 1) * 4));
+        if (ovr.over && ovr.over[(size_t)Y * ovr.w + X]) sf[ly * (CS / 2) + (lx >> 1)] |= (u8)(8 << ((lx & 1) * 4));
+    }
+}
+#else
+#define ovr_apply(k, d) ((void)0)
+#endif
 static void read_chunk(FILE *f, u8 *zb, int k, u8 *dst) {
     uint32_t n = moff[k + 1] - moff[k];
     uLongf len = CHB;
     if (!f || n > sizeof zbuf || fseek(f, (long)moff[k], SEEK_SET) || fread(zb, 1, n, f) != n || uncompress(dst, &len, zb, n) != Z_OK)
         memset(dst, 0, CHB);
+    ovr_apply(k, dst);
 }
 /* ---- вода (07.11.2026): для кожного блоку в кеші — відрізки рядків з водою й точки берега (рахуються при завантаженні) */
 #define WSPAN_MAX 160
@@ -3938,6 +3968,9 @@ static void game_update(unsigned btn, unsigned pressed, int lx, int ly) {
 }
 
 static void assets_init(void) {
+#ifdef HOST
+    ovr_init();
+#endif
     cache_init(); rg_init(); ped_tex_init();
 #ifdef HOST
     if (getenv("PEDTEX")) { FILE *f_ = fopen(getenv("PEDTEX"), "wb"); fprintf(f_, "P6 %d %d 255\n", PED_T * 6, PED_T * 6); for (int y = 0; y < PED_T * 6; y++) for (int x = 0; x < PED_T * 6; x++) { int fr = x / PED_T, rw = y / PED_T; uint32_t c = ped_tex[rw / 3][rw % 3][fr][(y % PED_T) * PED_T + x % PED_T]; float a = (c >> 24) / 255.0f; uint8_t o[3] = { (uint8_t)((c & 255) * a + 120 * (1 - a)), (uint8_t)(((c >> 8) & 255) * a + 140 * (1 - a)), (uint8_t)(((c >> 16) & 255) * a + 110 * (1 - a)) }; fwrite(o, 1, 3, f_); } fclose(f_); exit(0); }
