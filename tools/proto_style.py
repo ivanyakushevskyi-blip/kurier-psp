@@ -289,56 +289,109 @@ def lm_tex(kind, w, hp, main, rs):
             for q in range(6, w - 6, 26):
                 if abs(q - px_) > 20: T[hp - 8:hp - 1, q:q + 7] = (150, 154, 156); T[hp - 8:hp - 1, q:q + 7:2] = (132, 136, 138)   # ворота складу
         T[hp - 1] = dark(wall, 0.5); return T
-    if kind == 'depot':                                                # колишнє пожежне депо (1954): штукатурка, арки воріт, карниз
-        wall = (228, 206, 160)
-        T = np.zeros((hp, w, 3), np.uint8); T[:] = wall
-        n_ = max(1, w // 12)
-        for j in range(n_):
-            xc = int((j + 0.5) * w / n_)
-            if main and hp >= 2 * FLOOR:                               # ворота-арки на першому поверсі
-                a0, a1 = hp - FLOOR + 1, hp - 1
-                T[a0 + 1:a1, xc - 3:xc + 3] = (118, 84, 62); T[a0, xc - 2:xc + 2] = (118, 84, 62)
-                T[a0 - 1, xc - 3:xc + 3] = (246, 240, 226)
-            for f in range(1, hp // FLOOR):
-                yb = hp - f * FLOOR
-                T[yb - FLOOR + 2:yb - 2, xc - 1:xc + 2] = GLASS; T[yb - FLOOR + 1, xc - 1:xc + 2] = (246, 240, 226)
-        for q in range(0, w, 6): T[:, q] = dark(wall, 0.95)            # пілястри
-        T[0] = (246, 240, 226); T[1] = dark(wall, 0.7); T[hp - 1] = dark(wall, 0.5)
+    if kind == 'depot':
+        # За фото (Подільська, 39): вохристий фасад, білі руставані пілястри між прольотами, балюстрада з тумбами
+        # на даху, фриз з червоними літерами «КІНОТЕАТР ПЛАНЕТА», 2-й поверх — пари вікон з напівциркульними
+        # вікнами-люнетами над ними, 1-й — темно-червоні двері по краях і афіші в червоних рамах, темний цоколь.
+        OCH, WH, RF = (230, 196, 118), (244, 240, 230), (140, 58, 48)
+        T = np.zeros((hp, w, 3), np.uint8); T[:] = OCH
+        if w < 14:                                                       # вузька бічна смужка: лише балюстрада, руст, цоколь
+            T[0:4] = RF; T[0, :] = WH; T[3, :] = WH; T[4, :] = WH; T[5:hp - 2:2, :] = dark(OCH, 0.9); T[hp - 2:hp] = (88, 84, 80)
+            return T
+        # ряди згори вниз (hp = 4 поверхи «ігрових» = 28 пікс)
+        bal0, bal1 = 0, 4                                              # балюстрада на тлі даху
+        fr0, fr1 = bal1 + 1, bal1 + 8                                    # фриз з написом
+        f2_0, f2_1 = fr1 + 1, fr1 + 10                                   # 2-й поверх
+        f1_0 = f2_1 + 1                                                  # 1-й поверх до цоколя
+        T[bal0:bal1] = RF
+        T[bal1 - 4, :] = WH; T[bal1 - 1, :] = WH
+        T[bal1 - 3:bal1 - 1, ::2] = WH                                   # балясини
+        T[bal1, :] = WH; T[bal1 + 1, :] = dark(OCH, 0.75)                # карниз з тінню
+        nb = max(2, int(round(w / 13)))                                  # прольоти між пілястрами
+        piers = [int(round(j * (w - 3) / nb)) for j in range(nb + 1)]
+        for j in range(nb):
+            a_, b_ = piers[j] + 3, piers[j + 1]
+            cx_ = (a_ + b_) // 2
+            for xw in (cx_ - 3, cx_ + 1):                               # пара вікон 2-го поверху + люнети
+                if a_ <= xw and xw + 2 < b_:
+                    T[f2_0 + 4:f2_1, xw:xw + 3] = (54, 64, 70); T[f2_0 + 4:f2_1, xw + 1] = (70, 84, 92)
+                    T[f2_1, xw - 1:xw + 4] = WH                          # підвіконня
+                    T[f2_0 + 1:f2_0 + 3, xw:xw + 3] = (54, 64, 70); T[f2_0, xw + 1] = (54, 64, 70)   # люнет
+                    T[f2_0, xw] = WH; T[f2_0, xw + 2] = WH
+            T[f2_1 + 1, a_:b_] = dark(OCH, 0.85)                          # міжповерховий пояс
+            if main:                                                     # 1-й поверх: двері по краях, афіші посередині
+                if j in (0, nb - 1):
+                    T[hp - 9:hp - 2, cx_ - 2:cx_ + 2] = (124, 40, 34); T[hp - 9:hp - 2, cx_] = (104, 32, 28)
+                else:
+                    T[hp - 10:hp - 3, cx_ - 4:cx_ + 4] = (150, 36, 36)
+                    T[hp - 9:hp - 4, cx_ - 3:cx_ + 3] = [(60, 90, 140), (40, 46, 60), (120, 70, 50)][j % 3]
+                    T[hp - 9, cx_ - 3:cx_ + 3] = (232, 226, 214)
+        for px_ in piers:                                                # руставані пілястри + тумби над ними
+            T[fr0:hp - 2, px_:px_ + 3] = WH
+            T[fr0:hp - 2:2, px_:px_ + 3] = dark(WH, 0.86)
+            T[bal0:bal1, px_:px_ + 3] = WH; T[bal0, px_:px_ + 3] = dark(WH, 0.8)
+        T[hp - 2:hp] = (88, 84, 80)                                      # цоколь
         if main:
-            t = 'ПЛАНЕТА'
-            if text_w(t) < w - 4: draw_text(T, (w - text_w(t)) // 2, 3, t, (40, 70, 150))
+            for t, sc in (('КІНОТЕАТР ПЛАНЕТА', 1), ('ПЛАНЕТА', 1)):
+                if text_w(t, sc) < w - 8:
+                    T[fr0:fr1 - 1, 3:w - 3] = OCH
+                    draw_text(T, (w - text_w(t, sc)) // 2, fr0 + 1, t, (150, 42, 36), sc); break
         return T
     return None
 
 def zpx(m): return m / MPP * KV                                        # висота (м) -> зсув угору на екрані
 
 def tower_tex(w, hp, z0m, z_top, main):
-    wall, wh = (232, 212, 164), (248, 242, 228)
-    T = np.zeros((hp, w, 3), np.uint8); T[:] = wall
-    T[:, 0:2] = wh; T[:, w - 2:w] = wh                                  # кутові пілястри
-    def ry(m): return int(round(zpx(z_top - m)))                         # висота m -> рядок текстури
-    for m in (21.0, 17.0, 13.0):
-        r = ry(m); T[max(0, r - 1):r + 1] = wh
-        if r + 1 < hp: T[r + 1] = dark(wall, 0.7)
-    a0, a1 = ry(23.5), ry(21.0) - 1                                       # альтанка з арками (21–24 м)
-    for q in range(3, w - 3, 4): T[a0:a1, q:q + 2] = (52, 46, 44); T[a0, q:q + 2] = wall
-    if main and w >= 12:                                                 # годинник (17–21 м)
-        cy_ = (ry(20.6) + ry(17.4)) // 2; r_ = min(w // 2 - 3, 6)
-        yy, xx = np.ogrid[:hp, :w]; d = np.sqrt((yy - cy_) ** 2 + (xx - (w - 1) / 2) ** 2)
-        T[d <= r_ + 1] = (60, 50, 40); T[d <= r_] = (250, 248, 238)
-        T[cy_ - r_ + 2:cy_ + 1, w // 2] = (30, 30, 30); T[cy_, w // 2:w // 2 + r_ - 2] = (30, 30, 30)
-    for m in np.arange(15.5, z0m + 1.5, -3.2):                            # вузькі арочні вікна стовбура
+    """За фото: вохристий стовбур, білий руст на кутах унизу, одиночні вікна по осі в білих обрамленнях, балкон,
+    вікно з фронтончиком, білий карниз-пояс; годинник — жовта «сонце»-зірка з синім циферблатом під карнизом;
+    вгорі ярус-альтанка з арками в білих рамках і сильно винесений карниз; низ — вхід у крамницю."""
+    OCH, WH = (230, 196, 118), (244, 240, 230)
+    T = np.zeros((hp, w, 3), np.uint8); T[:] = OCH
+    def ry(m): return int(round(zpx(z_top - m)))
+    q0 = ry(12.0)                                                        # руст на кутах до 12 м
+    for r in range(q0, hp - 2):
+        if (r // 2) % 2 == 0: T[r, 0:3] = WH; T[r, w - 3:w] = WH
+        else: T[r, 0:2] = WH; T[r, w - 2:w] = WH
+    c = w // 2
+    if w < 10:                                                           # вузька бічна грань: пояси й карнизи без деталей
+        for m in (19.5, 20.5, 25.0): r = ry(m); T[max(0, r - 1):r + 1] = WH
+        T[hp - 2:hp] = (88, 84, 80); return T
+    for m, kind_ in ((4.5, 'win'), (8.5, 'balc'), (12.5, 'ped'), (15.0, 'win')):   # вікна по осі
         r = ry(m)
-        if 6 <= r < hp - 1 and w >= 6: T[r - 5:r, w // 2 - 1:w // 2 + 1] = GLASS; T[r - 6, w // 2 - 1:w // 2 + 1] = wh
-    T[hp - 1] = dark(wall, 0.55)
+        if r < 6 or r >= hp - 2: continue
+        T[r - 5:r, c - 2:c + 2] = WH; T[r - 4:r, c - 1:c + 1] = (54, 64, 70)
+        if kind_ == 'balc': T[r, c - 4:c + 4] = (60, 50, 46); T[r - 2, c - 4:c + 4] = (60, 50, 46); T[r - 2:r, c - 4] = (60, 50, 46); T[r - 2:r, c + 3] = (60, 50, 46)
+        if kind_ == 'ped': T[r - 6, c - 3:c + 3] = WH; T[r - 7, c - 1:c + 1] = WH
+    if main:                                                             # вхід у крамницю внизу
+        T[hp - 7:hp - 2, c - 3:c + 3] = (210, 216, 220); T[hp - 6:hp - 2, c - 2:c + 2] = (90, 120, 150)
+        T[hp - 8, c - 4:c + 4] = (200, 40, 40)
+    rc = ry(19.5); T[rc - 1:rc + 1] = WH; T[rc + 1] = dark(OCH, 0.75)    # карниз-пояс під годинником
+    if main and w >= 12:                                                 # годинник-«сонце»
+        cy_ = ry(17.2); r_ = min(w // 2 - 3, 5)
+        yy, xx = np.ogrid[:hp, :w]; dx_, dy_ = xx - (w - 1) / 2, yy - cy_
+        d = np.sqrt(dx_ ** 2 + dy_ ** 2); a = np.arctan2(dy_, dx_)
+        ray = d <= r_ + 2 + (np.cos(a * 12) > 0.3)
+        T[ray] = (238, 190, 40); T[d <= r_ + 1] = (200, 150, 30); T[d <= r_] = (60, 110, 190)
+        T[d <= r_ - 1] = (226, 232, 240)
+        T[cy_ - r_ + 2:cy_ + 1, w // 2] = (30, 40, 80); T[cy_, w // 2:w // 2 + r_ - 2] = (30, 40, 80)
+    a0, a1 = ry(25.0), ry(20.5)                                          # ярус-альтанка: арки в білих рамках
+    na = 3 if w >= 16 else 2; pw = w / na
+    for j in range(na):
+        x0_ = int(j * pw) + 2; x1_ = int((j + 1) * pw) - 1
+        T[a0 + 1:a1, x0_ - 1:x1_ + 1] = WH
+        T[a0 + 3:a1 - 1, x0_:x1_] = (60, 64, 70); T[a0 + 2, x0_ + 1:x1_ - 1] = (60, 64, 70)
+        T[a1 - 3, x0_:x1_] = WH                                          # перемичка-підвіконня
+    T[a0 - 1:a0 + 1] = WH; T[a0 - 2] = dark(WH, 0.8)                      # винесений карниз
+    T[a1:a1 + 1] = WH
+    T[hp - 2:hp] = (88, 84, 80)                                          # цоколь
     return T
 
 def draw_tower(canvas, x, y, z0m=0.0, ang=0.0):
     """Стара пожежна вежа — об'єм у проєкції 3/4, ПОВЕРНУТИЙ ЯК БУДИНОК, на якому стоїть (ang — напрям його стін):
     квадрат 6,5 м на даху депо (z0m), стовбур до 24 м, шатро до 31 м. Видимі стіни (нормаль до камери) —
     текстурою в площині стіни; шатро — чотири грані піраміди від дальньої до ближньої."""
-    hw = 6.5 / MPP / 2
-    z_top, z_roof = 24.0, 31.0
+    hw = 6.0 / MPP / 2
+    z_top, z_roof = 25.5, 27.5                                           # стовбур+альтанка до 25,5 м, парапет до 27,5
     hp = int(round(zpx(z_top - z0m)))
     c, s_ = np.cos(ang), np.sin(ang)
     loc = [(-hw, -hw), (hw, -hw), (hw, hw), (-hw, hw)]
@@ -363,24 +416,26 @@ def draw_tower(canvas, x, y, z0m=0.0, ang=0.0):
         for p_ in (aa, bb):
             X, Y = int(round(p_[0])), int(round(p_[1] - lift))
             if 0 <= X < W: canvas[max(0, Y - hp):max(0, Y), X] = (150, 132, 100)
-    zt, zr = zpx(z_top), zpx(z_roof)
-    top = [(p_[0], p_[1] - zt) for p_ in G_]
-    apex = (x, y - zr)
-    roof = (78, 100, 96)
-    faces = []
-    for k in range(4):
-        p1, p2 = top[k], top[(k + 1) % 4]
-        mx, my = (p1[0] + p2[0]) / 2 - x, (p1[1] + p2[1]) / 2 - (y - zt)  # напрям грані від центру
-        k_ = 1.0 + 0.22 * (-mx - my) / hw / 1.4                           # світло з північного заходу
-        faces.append(((p1[1] + p2[1]) / 2, p1, p2, k_))
-    for _, p1, p2, k_ in sorted(faces, key=lambda f: f[0]):
-        tri = np.round(np.array([p1, p2, apex])).astype(np.int32)
-        cv2.fillPoly(canvas, [tri], dark(roof, k_))
-        cv2.polylines(canvas, [tri], True, dark(roof, 0.5), 1)
-    ax, ay = int(round(apex[0])), int(round(apex[1]))                 # шпиль з кулькою
-    if 0 <= ax < W:
-        canvas[max(0, ay - 9):max(0, ay), ax] = (64, 66, 64)
-        if 0 <= ay - 10 < H: canvas[ay - 10, ax] = (226, 186, 60)
+    # верх (за фото): пласка покрівля, парапет-балюстрада по периметру, тумби-пінаклі на кутах
+    zt, zp = zpx(z_top), zpx(z_roof)
+    top = np.array([(p_[0], p_[1] - zt) for p_ in G_])
+    WH = (244, 240, 230)
+    cv2.fillPoly(canvas, [np.round(top).astype(np.int32)], (150, 146, 136))          # покрівля
+    for k in range(4):                                                    # парапет: дальні сторони спершу
+        pass
+    order = sorted(range(4), key=lambda k: (top[k][1] + top[(k + 1) % 4][1]))
+    for k in order:
+        a, b = top[k], top[(k + 1) % 4]
+        hpp = int(round(zp - zt))
+        Tp = np.zeros((hpp, max(1, int(round(abs(b[0] - a[0])))), 3), np.uint8); Tp[:] = WH
+        Tp[1:hpp - 1, ::2] = (150, 146, 136)                               # балясини
+        aa, bb = (a, b) if b[0] > a[0] else (b, a)
+        if abs(b[0] - a[0]) >= 1: blit_wall(canvas, aa, bb, Tp, 0.92 if k in order[:2] else 1.0)
+    for p_ in top:                                                        # пінаклі
+        X, Y = int(round(p_[0])), int(round(p_[1] - zp))
+        for dy_ in range(0, 5):
+            for dx_ in (-1, 0, 1):
+                if 0 <= Y + dy_ < H and 0 <= X + dx_ < W: canvas[Y + dy_, X + dx_] = WH if dx_ < 1 else dark(WH, 0.8)
 
 B = stylize_ground(gnd)
 SHOP_COLS = [(190, 52, 48), (40, 104, 168), (228, 164, 36), (54, 132, 76), (132, 60, 140)]
@@ -401,7 +456,7 @@ for i, b, pts in [(i, b, pts) for i, b, pts, ptf in C['blds']]:
         if cv2.pointPolygonTest(P, (float(lx_ - x0), float(ly_ - y0)), True) > -25: lm = lk
     if lm == 'cinema': floors = 4
     if lm == 'mall': floors = 6
-    if lm == 'depot': floors = 2
+    if lm == 'depot': floors = 4
     blist.append(dict(i=i, b=b, P=P, rb=rb, floors=floors, tp=tp, hp=floors * FLOOR, lm=lm))
 # тіні будинків на землю (світло з північного заходу: тінь праворуч-вниз)
 for o in blist:
@@ -414,7 +469,7 @@ for lx_, ly_, lk in LMK:                                                # веж
     by_ = ly_ - y0 + 12; z0 = 0.0; ang = 0.0
     for o in blist:
         if cv2.pointPolygonTest(o['P'], (float(lx_ - x0), float(ly_ - y0)), True) > -30:
-            by_ = max(by_, o['P'][:, 1].max() + 0.5); z0 = max(z0, o['floors'] * 3.0)   # стоїть на даху депо
+            by_ = max(by_, o['P'][:, 1].max() + 0.5)   # за фото вежа росте від землі на розі, малюємо після депо
             Pp = o['P']; e = [(np.hypot(*(Pp[(k + 1) % len(Pp)] - Pp[k])), Pp[(k + 1) % len(Pp)] - Pp[k]) for k in range(len(Pp))]
             d_ = max(e, key=lambda t: t[0])[1]; ang = float(np.arctan2(d_[1], d_[0])) % (np.pi / 2)   # напрям стін депо
     objs.append((by_, 'tower', (lx_ - x0, ly_ - y0, z0, ang)))
