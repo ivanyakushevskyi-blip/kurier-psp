@@ -1,0 +1,371 @@
+<title>Редактор карти Проскурова</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+/* Карта на весь екран; праворуч (на телефоні — знизу) панель вибраної будівлі або списку позначок. */
+:root {
+  --bg: #eef0ee; --surface: #ffffff; --surface-2: #f4f6f4; --line: #d5dad6; --fg: #1d2422; --muted: #5b6763;
+  --accent: #d9542b; --accent-fg: #ffffff; --ok: #2f8a55; --warn: #c98512; --danger: #c0392b;
+  --font: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #141917; --surface: #1d2321; --surface-2: #252c29; --line: #34403b; --fg: #e8ecea; --muted: #9aa6a1;
+  --accent: #f07049; --accent-fg: #1a0d08; --ok: #4fb37a; --warn: #e0a43a; --danger: #ef6b5b; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #141917; --surface: #1d2321; --surface-2: #252c29; --line: #34403b; --fg: #e8ecea; --muted: #9aa6a1;
+  --accent: #f07049; --accent-fg: #1a0d08; --ok: #4fb37a; --warn: #e0a43a; --danger: #ef6b5b; color-scheme: dark }
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 14px; overflow: hidden; }
+* { box-sizing: border-box; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Leaflet: потрібний мінімум стилів (його CSS із CDN не завантажити) */
+.leaflet-pane, .leaflet-tile, .leaflet-marker-icon, .leaflet-tile-container, .leaflet-pane > svg, .leaflet-pane > canvas, .leaflet-image-layer, .leaflet-layer, .leaflet-zoom-box { position: absolute; left: 0; top: 0; }
+.leaflet-container { overflow: hidden; background: var(--bg); -webkit-tap-highlight-color: transparent; touch-action: none; outline: none; }
+.leaflet-container img.leaflet-tile, .leaflet-container img.leaflet-image-layer { max-width: none !important; max-height: none !important; padding: 0; }
+.leaflet-tile { visibility: hidden; user-select: none; } .leaflet-tile-loaded { visibility: inherit; }
+.leaflet-pane { z-index: 400; } .leaflet-tile-pane { z-index: 200; } .leaflet-overlay-pane { z-index: 400; } .leaflet-marker-pane { z-index: 600; }
+.leaflet-zoom-animated { transform-origin: 0 0; }
+.leaflet-zoom-anim .leaflet-zoom-animated { transition: transform .25s cubic-bezier(0,0,.25,1); }
+.leaflet-zoom-anim .leaflet-tile, .leaflet-pan-anim .leaflet-tile { transition: none; }
+.leaflet-interactive { cursor: pointer; } .leaflet-grab { cursor: grab; } .leaflet-dragging .leaflet-grab { cursor: grabbing; }
+.leaflet-crosshair, .leaflet-crosshair .leaflet-grab { cursor: crosshair; }
+.leaflet-overlay-pane svg { max-width: none !important; }
+.leaflet-control-container { display: none; }
+
+.app { position: fixed; inset: 0; display: grid; grid-template-columns: 1fr 380px; grid-template-rows: auto 1fr; }
+.bar { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding-block: calc(8px + env(safe-area-inset-top, 0px)) 8px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: var(--surface); border-bottom: 1px solid var(--line); z-index: 5; }
+.brand { font-weight: 600; letter-spacing: .01em; white-space: nowrap; }
+.brand small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+.search { flex: 1 1 200px; min-width: 0; position: relative; }
+.search input { width: 100%; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+.results { position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; max-height: 300px; overflow: auto; z-index: 20; }
+.results button { display: block; width: 100%; text-align: left; padding: 8px 10px; border: 0; background: none; }
+.results button:hover { background: var(--surface-2); }
+.btn { padding: 7px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface-2); white-space: nowrap; }
+.btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }
+.btn.on { background: var(--fg); color: var(--surface); border-color: var(--fg); }
+.btn:disabled { opacity: .5; cursor: default; }
+.mapwrap { position: relative; min-width: 0; }
+#map { position: absolute; inset: 0; }
+.zoom { position: absolute; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); display: flex; flex-direction: column; gap: 6px; z-index: 900; }
+.zoom button { width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); font-size: 18px; line-height: 1; }
+.hint { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); background: var(--fg); color: var(--surface); padding: 6px 12px; border-radius: 999px; z-index: 900; font-size: 13px; }
+.legend { position: absolute; left: 12px; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; z-index: 900; font-size: 12px; display: grid; gap: 4px; }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; margin-right: 6px; border: 2px solid; }
+.attr { position: absolute; right: 60px; bottom: calc(4px + env(safe-area-inset-bottom, 0px)); font-size: 11px; color: var(--muted); z-index: 900; background: var(--surface); padding: 1px 6px; border-radius: 4px; opacity: .85; }
+
+.panel { background: var(--surface); border-left: 1px solid var(--line); overflow: auto; min-width: 0; padding-block: 14px calc(14px + env(safe-area-inset-bottom, 0px)); padding-left: 16px; padding-right: max(16px, env(safe-area-inset-right, 0px)); display: flex; flex-direction: column; gap: 14px; }
+.tabs { display: flex; gap: 6px; }
+.tabs .btn { flex: 1; }
+h2 { font-size: 17px; margin: 0; text-wrap: balance; }
+.meta { color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.chip { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); font-size: 12px; }
+.chip.kiosk { border-color: var(--danger); color: var(--danger); }
+.label { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 6px; }
+.acts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.acts .btn { text-align: left; }
+.field { display: grid; gap: 6px; }
+.field input, .field select, .field textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+textarea { min-height: 80px; resize: vertical; }
+.thumbs { display: flex; gap: 6px; flex-wrap: wrap; }
+.thumbs img { width: 72px; height: 72px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); }
+.note { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: grid; gap: 6px; background: var(--surface-2); }
+.note .top { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.note .what { font-weight: 600; }
+.st { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid; white-space: nowrap; }
+.st.new { color: var(--warn); } .st.done { color: var(--ok); } .st.question { color: var(--accent); }
+.reply { border-left: 3px solid var(--ok); padding-left: 8px; color: var(--muted); }
+.row { display: flex; gap: 6px; flex-wrap: wrap; }
+.empty { color: var(--muted); line-height: 1.5; }
+.err { color: var(--danger); font-size: 13px; }
+.tiny { font-size: 12px; color: var(--muted); }
+.list { display: grid; gap: 8px; }
+.list .note { cursor: pointer; }
+
+@media (max-width: 760px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
+  .panel { border-left: 0; border-top: 1px solid var(--line); max-height: 52vh; padding-left: max(16px, env(safe-area-inset-left, 0px)); }
+  .legend { display: none; }
+  .brand small { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .leaflet-zoom-anim .leaflet-zoom-animated { transition: none; } }
+</style>
+
+<div class="app">
+  <div class="bar">
+    <div class="brand">Проскурів Експрес<small>редактор карти</small></div>
+    <div class="search"><input id="q" type="search" placeholder="Адреса або назва будівлі" autocomplete="off"><div class="results" id="res" hidden></div></div>
+    <button class="btn" id="pinBtn" type="button">+ Позначка на карті</button>
+  </div>
+  <div class="mapwrap">
+    <div id="map"></div>
+    <div class="hint" id="hint" hidden>Торкніться місця на карті для позначки</div>
+    <div class="legend">
+      <div><i style="border-color:#ffffff;background:transparent"></i>будівля (натисніть)</div>
+      <div><i style="border-color:#e04b3a;border-style:dashed"></i>кіоск — генератор прибере</div>
+      <div><i style="border-color:#f0a030;background:#f0a03055"></i>є нова позначка</div>
+      <div><i style="border-color:#3aa66a;background:#3aa66a55"></i>зроблено</div>
+    </div>
+    <div class="zoom"><button type="button" id="zin" aria-label="Наблизити">+</button><button type="button" id="zout" aria-label="Віддалити">−</button></div>
+    <div class="attr">© OpenStreetMap contributors</div>
+  </div>
+  <aside class="panel" id="panel"></aside>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>
+const TYPES = { house: 'Приватний будинок', old: 'Старий, 2–3 поверхи', brick: 'Цегляний, 4–5 поверхів', panel: 'Панельний, 9+ поверхів',
+  store: 'Торговий / ТЦ', glass: 'Скляний офіс', shed: 'Гараж / сарай', canopy: 'Навіс (АЗС, ринок)', kiosk: 'Кіоск — прибрати', landmark: 'Пам’ятка — окрема модель' };
+const ACTIONS = { delete: 'Видалити', photo: 'Зробити як на фото', type: 'Інший тип', floors: 'Інша поверховість', keep: 'Залишити (не кіоск)', comment: 'Коментар' };
+const STATUS = { new: 'нова', done: 'зроблено', question: 'питання' };
+let META = null, BLD = [], GRID = new Map(), GC = 512, byId = new Map();
+let notes = [], db = null, assets = null, user = null, myId = null, canWrite = true;
+let sel = null, selLayer = null, pinMode = false, draft = null, view = 'list', filter = 'new';
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// ---- карта: CRS у пікселях карти гри (x праворуч, y вниз), плитки 1024 пікс = 2048 пікс карти
+const CRS = L.extend({}, L.CRS.Simple, { transformation: new L.Transformation(1, 0, 1, 0) });
+const map = L.map('map', { crs: CRS, minZoom: -5, maxZoom: 0, zoomSnap: 0.5, zoomControl: false, attributionControl: false, preferCanvas: true });
+$('#zin').onclick = () => map.zoomIn(); $('#zout').onclick = () => map.zoomOut();
+map.createPane('bld').style.zIndex = 350;
+map.createPane('ov').style.zIndex = 150;            // огляд — під детальними плитками
+
+async function boot() {
+  try {
+    META = await (await fetch('meta.json')).json();
+    const bounds = [[0, 0], [META.H, META.W]];
+    L.imageOverlay('overview.jpg', bounds, { pane: 'ov' }).addTo(map);
+    const tiles = L.tileLayer('t/{x}_{y}.jpg', { tileSize: 1024, minNativeZoom: -1, maxNativeZoom: -1, minZoom: -2.5, maxZoom: 0, bounds, noWrap: true, keepBuffer: 1 });
+    tiles.addTo(map);
+    map.setMaxBounds(L.latLngBounds(bounds).pad(0.1));
+    map.setView([11600, 12300], -2);
+    BLD = await (await fetch('buildings.json')).json();
+    for (const b of BLD) {
+      byId.set(String(b[0]), b);
+      const p = b[3]; let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+      for (let i = 0; i < p.length; i += 2) { x0 = Math.min(x0, p[i]); x1 = Math.max(x1, p[i]); y0 = Math.min(y0, p[i + 1]); y1 = Math.max(y1, p[i + 1]); }
+      b.bb = [x0, y0, x1, y1];
+      for (let gx = Math.floor(x0 / GC); gx <= Math.floor(x1 / GC); gx++) for (let gy = Math.floor(y0 / GC); gy <= Math.floor(y1 / GC); gy++) {
+        const k = gx + ',' + gy; if (!GRID.has(k)) GRID.set(k, []); GRID.get(k).push(b);
+      }
+    }
+    bldL.addTo(map);
+  } catch (e) { $('#panel').innerHTML = '<p class="err">Не вдалося завантажити карту: ' + esc(e.message) + '</p>'; }
+}
+
+// ---- шар контурів будівель (малюється плитками на canvas, лише при наближенні)
+const noteState = new Map();   // bid -> 'new' | 'done'
+const BldGrid = L.GridLayer.extend({
+  createTile(c) {
+    const t = document.createElement('canvas'); t.width = t.height = 256;
+    const z = c.z, s = Math.pow(2, z); if (z < -2.5) return t;
+    const ux0 = c.x * 256 / s, uy0 = c.y * 256 / s, ux1 = ux0 + 256 / s, uy1 = uy0 + 256 / s;
+    const g = t.getContext('2d'); const seen = new Set();
+    for (let gx = Math.floor(ux0 / GC); gx <= Math.floor(ux1 / GC); gx++) for (let gy = Math.floor(uy0 / GC); gy <= Math.floor(uy1 / GC); gy++) {
+      for (const b of GRID.get(gx + ',' + gy) || []) {
+        if (seen.has(b[0])) continue; seen.add(b[0]);
+        const bb = b.bb; if (bb[2] < ux0 || bb[0] > ux1 || bb[3] < uy0 || bb[1] > uy1) continue;
+        const st = noteState.get(String(b[0])), p = b[3];
+        g.beginPath();
+        for (let i = 0; i < p.length; i += 2) { const X = (p[i] - ux0) * s, Y = (p[i + 1] - uy0) * s; i ? g.lineTo(X, Y) : g.moveTo(X, Y); }
+        g.closePath();
+        if (st) { g.fillStyle = st === 'done' ? 'rgba(58,166,106,.35)' : 'rgba(240,160,48,.38)'; g.fill(); }
+        g.setLineDash(b[5] === 'kiosk' ? [3, 3] : []);
+        g.lineWidth = st ? 2 : 1;
+        g.strokeStyle = st === 'done' ? '#3aa66a' : st ? '#f0a030' : b[5] === 'kiosk' ? '#e04b3a' : 'rgba(255,255,255,.75)';
+        g.stroke();
+      }
+    }
+    return t;
+  }
+});
+const bldL = new BldGrid({ pane: 'bld', tileSize: 256, minZoom: -2.5 });
+
+function inPoly(x, y, p) {
+  let c = false;
+  for (let i = 0, j = p.length - 2; i < p.length; j = i, i += 2) {
+    const xi = p[i], yi = p[i + 1], xj = p[j], yj = p[j + 1];
+    if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) c = !c;
+  }
+  return c;
+}
+function findBld(x, y) {
+  let best = null;
+  for (const b of GRID.get(Math.floor(x / GC) + ',' + Math.floor(y / GC)) || [])
+    if (x >= b.bb[0] && x <= b.bb[2] && y >= b.bb[1] && y <= b.bb[3] && inPoly(x, y, b[3])) { if (!best || b[7] < best[7]) best = b; }
+  return best;
+}
+
+// ---- позначки-шпильки на карті
+const pinLayer = L.layerGroup().addTo(map);
+function drawPins() {
+  pinLayer.clearLayers(); noteState.clear();
+  for (const n of notes) {
+    if (n.kind === 'building' && n.bid) { const prev = noteState.get(n.bid); if (prev !== 'new') noteState.set(n.bid, n.status === 'done' ? (prev || 'done') : 'new'); }
+    if (n.kind === 'pin') {
+      const m = L.circleMarker([n.y, n.x], { radius: 7, weight: 2, color: '#ffffff', fillColor: n.status === 'done' ? '#3aa66a' : '#f0a030', fillOpacity: 1 }).addTo(pinLayer);
+      m.on('click', ev => { L.DomEvent.stopPropagation(ev); openPin(n); });
+    }
+  }
+  bldL.redraw();
+}
+
+map.on('click', e => {
+  const x = e.latlng.lng, y = e.latlng.lat;
+  if (pinMode) { setPin(false); openPinDraft(x, y); return; }
+  const b = map.getZoom() >= -2.5 ? findBld(x, y) : null;
+  if (b) openBld(b); else if (view !== 'list') showList();
+});
+function setPin(on) { pinMode = on; $('#pinBtn').classList.toggle('on', on); $('#hint').hidden = !on; map.getContainer().classList.toggle('leaflet-crosshair', on); }
+$('#pinBtn').onclick = () => setPin(!pinMode);
+
+function highlight(b) {
+  if (selLayer) { selLayer.remove(); selLayer = null; }
+  if (!b) return;
+  const p = b[3], ll = []; for (let i = 0; i < p.length; i += 2) ll.push([p[i + 1], p[i]]);
+  selLayer = L.polygon(ll, { color: '#d9542b', weight: 3, fill: false, interactive: false }).addTo(map);
+}
+
+// ---- панель
+const P = $('#panel');
+function tabs(active) {
+  const nNew = notes.filter(n => n.status !== 'done').length;
+  return `<div class="tabs"><button type="button" class="btn ${active === 'list' ? 'on' : ''}" data-go="list">Позначки (${nNew} нових)</button></div>`;
+}
+function noteCard(n, withPlace) {
+  const what = n.kind === 'pin' ? 'Позначка на місці' : (ACTIONS[n.action] || 'Коментар');
+  const extra = n.action === 'type' && n.type ? ': ' + (TYPES[n.type] || n.type) : n.action === 'floors' && n.floors ? ': ' + n.floors + ' пов.' : '';
+  const place = withPlace && n.kind === 'building' ? `<div class="tiny">${esc(n.label || 'будівля #' + n.bid)}</div>` : '';
+  const ph = (n.photos || []).map(p => `<img src="${esc(p.url)}" alt="Фото до позначки">`).join('');
+  return `<div class="note" data-id="${esc(n.id)}">
+    <div class="top"><span class="what">${esc(what + extra)}</span><span class="st ${esc(n.status)}">${esc(STATUS[n.status] || n.status)}</span></div>
+    ${place}${n.text ? `<div>${esc(n.text)}</div>` : ''}${ph ? `<div class="thumbs">${ph}</div>` : ''}
+    ${n.reply ? `<div class="reply">Claude: ${esc(n.reply)}</div>` : ''}
+    ${canWrite ? `<div class="row"><button type="button" class="btn" data-st="${n.status === 'done' ? 'new' : 'done'}" data-nid="${esc(n.id)}">${n.status === 'done' ? 'Повернути в роботу' : 'Позначити зробленим'}</button><button type="button" class="btn" data-del="${esc(n.id)}">Видалити</button></div>` : ''}
+  </div>`;
+}
+function showList() {
+  view = 'list'; sel = null; draft = null; highlight(null);
+  const list = notes.filter(n => filter === 'all' || (filter === 'done' ? n.status === 'done' : n.status !== 'done')).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  P.innerHTML = tabs('list') + `
+    <div class="row"><button type="button" class="btn ${filter === 'new' ? 'on' : ''}" data-f="new">Нові</button><button type="button" class="btn ${filter === 'done' ? 'on' : ''}" data-f="done">Зроблені</button><button type="button" class="btn ${filter === 'all' ? 'on' : ''}" data-f="all">Усі</button></div>
+    ${list.length ? `<div class="list">${list.map(n => noteCard(n, true)).join('')}</div>` :
+      `<p class="empty">${db ? 'Позначок ще немає.' : 'Позначки завантажуються…'}<br><br>Як працювати: наблизьте карту, натисніть на будівлю й виберіть, що з нею зробити — видалити, зробити як на фото, змінити тип чи поверхи. Для місця без будівлі натисніть «+ Позначка на карті». Claude читає ці позначки й відпрацьовує їх під час перемалювання карти.</p>`}
+    <p class="tiny">Пунктиром червоним — дрібні споруди (кіоски, будки), які генератор у новому стилі не малюватиме. Якщо якусь треба лишити — натисніть на неї і виберіть «Залишити».</p>`;
+}
+P.addEventListener('click', async e => {
+  const t = e.target.closest('button, .note'); if (!t) return;
+  if (t.dataset.go === 'list') return showList();
+  if (t.dataset.f) { filter = t.dataset.f; return showList(); }
+  if (t.dataset.st) { e.stopPropagation(); return setStatus(t.dataset.nid, t.dataset.st); }
+  if (t.dataset.del) { e.stopPropagation(); return askDelete(t, t.dataset.del); }
+  if (t.dataset.confirmdel) { e.stopPropagation(); return delNote(t.dataset.confirmdel); }
+  if (t.dataset.act) { draft.action = t.dataset.act; return renderForm(); }
+  if (t.dataset.save !== undefined) return save();
+  if (t.dataset.cancel !== undefined) return view === 'pin' ? showList() : openBld(sel);
+  if (t.classList.contains('note') && view === 'list') {
+    const n = notes.find(x => x.id === t.dataset.id); if (!n) return;
+    if (n.kind === 'building') { const b = byId.get(n.bid); if (b) { map.flyTo([b[2], b[1]], Math.max(map.getZoom(), -0.5)); openBld(b); } }
+    else { map.flyTo([n.y, n.x], Math.max(map.getZoom(), -0.5)); openPin(n); }
+  }
+});
+function askDelete(btn, id) {
+  btn.outerHTML = `<button type="button" class="btn" style="color:var(--danger)" data-confirmdel="${esc(id)}">Точно видалити?</button>`;
+}
+
+function openBld(b) {
+  sel = b; view = 'bld'; highlight(b);
+  draft = { kind: 'building', bid: String(b[0]), x: b[1], y: b[2], label: b[6] || '', action: b[5] === 'kiosk' ? 'keep' : 'comment', type: b[5], floors: b[4], text: '', photos: [] };
+  renderForm();
+}
+function openPinDraft(x, y) {
+  view = 'pin'; sel = null; highlight(null);
+  draft = { kind: 'pin', x: Math.round(x), y: Math.round(y), action: 'comment', text: '', photos: [] };
+  renderForm();
+}
+function openPin(n) {
+  view = 'pinview'; highlight(null);
+  P.innerHTML = tabs() + `<h2>Позначка на карті</h2>` + noteCard(n, false);
+}
+function renderForm() {
+  const d = draft, b = sel;
+  const mine = d.kind === 'building' ? notes.filter(n => n.bid === d.bid) : [];
+  const head = d.kind === 'building'
+    ? `<div><h2>${esc(b[6] || 'Будівля без адреси')}</h2>
+       <div class="meta"><span class="chip ${b[5] === 'kiosk' ? 'kiosk' : ''}">генератор: ${esc(TYPES[b[5]] || b[5])}</span><span>${b[4]} пов.</span><span>${b[7]} м²</span><span class="tiny">#${esc(b[0])}</span></div></div>`
+    : `<div><h2>Нова позначка на місці</h2><div class="meta"><span>x ${d.x}, y ${d.y}</span></div></div>`;
+  const acts = d.kind === 'building'
+    ? `<div><div class="label">Що зробити</div><div class="acts">${Object.entries(ACTIONS).filter(([k]) => k !== 'keep' || b[5] === 'kiosk' || b[5] === 'shed')
+        .map(([k, v]) => `<button type="button" class="btn ${d.action === k ? 'on' : ''}" data-act="${k}">${v}</button>`).join('')}</div></div>` : '';
+  const typeF = d.action === 'type' ? `<div class="field"><label class="label" for="ftype">Тип будівлі</label><select id="ftype">${Object.entries(TYPES).map(([k, v]) => `<option value="${k}" ${d.type === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>` : '';
+  const flF = d.action === 'floors' ? `<div class="field"><label class="label" for="ffl">Поверхів</label><input id="ffl" type="number" min="1" max="40" value="${d.floors || 1}"></div>` : '';
+  const phF = (d.action === 'photo' || d.kind === 'pin' || d.action === 'comment') ? `<div class="field"><label class="label" for="fph">Фото ${d.action === 'photo' ? '(фасад з вулиці, бажано ще з кута)' : '(необов’язково)'}</label>
+      ${assets ? `<input id="fph" type="file" accept="image/*" multiple>` : `<p class="tiny">Додавати фото може лише власник редактора.</p>`}
+      <div class="thumbs" id="thumbs">${d.photos.map(p => `<img src="${esc(p.url)}" alt="Додане фото">`).join('')}</div></div>` : '';
+  const tF = `<div class="field"><label class="label" for="ftxt">${d.action === 'delete' ? 'Чому (необов’язково)' : 'Коментар'}</label><textarea id="ftxt" placeholder="${d.kind === 'pin' ? 'Наприклад: тут має бути вхід у парк' : 'Наприклад: це школа, 3 поверхи, жовта'}">${esc(d.text)}</textarea></div>`;
+  P.innerHTML = tabs() + head + acts + typeF + flF + phF + tF +
+    `<div class="row"><button type="button" class="btn primary" data-save ${canWrite ? '' : 'disabled'}>Зберегти позначку</button><button type="button" class="btn" data-cancel>Скасувати</button></div><div class="err" id="ferr"></div>` +
+    (mine.length ? `<div class="label">Позначки цієї будівлі</div><div class="list">${mine.map(n => noteCard(n, false)).join('')}</div>` : '');
+  const sync = () => { const t = $('#ftxt'); if (t) d.text = t.value; const s = $('#ftype'); if (s) d.type = s.value; const f = $('#ffl'); if (f) d.floors = +f.value; };
+  P.querySelectorAll('textarea, select, input[type=number]').forEach(el => el.addEventListener('input', sync));
+  const fi = $('#fph'); if (fi) fi.addEventListener('change', async () => {
+    const er = $('#ferr'); er.textContent = '';
+    for (const file of fi.files) {
+      try { er.textContent = 'Завантажую фото…'; const r = await assets.upload(file); d.photos.push({ id: r.id, url: r.url }); er.textContent = ''; }
+      catch (x) { er.textContent = 'Фото не завантажилось: ' + (x.message || x.code || x); }
+    }
+    $('#thumbs').innerHTML = d.photos.map(p => `<img src="${esc(p.url)}" alt="Додане фото">`).join('');
+  });
+}
+async function save() {
+  const d = draft, er = $('#ferr'); const t = $('#ftxt'); if (t) d.text = t.value.trim();
+  if (!db) { er.textContent = 'Сховище позначок недоступне — відкрийте сторінку, увійшовши в акаунт.'; return; }
+  if (d.action === 'comment' && !d.text && !d.photos.length) { er.textContent = 'Напишіть коментар або додайте фото.'; return; }
+  if (d.action === 'photo' && !d.photos.length && !d.text) { er.textContent = 'Додайте фото або опишіть, як має виглядати.'; return; }
+  const doc = { kind: d.kind, x: d.x, y: d.y, action: d.action, text: d.text, photos: d.photos, status: 'new', ts: Date.now(), author: myId || '', reply: '' };
+  if (d.kind === 'building') { doc.bid = d.bid; doc.label = d.label; if (d.action === 'type') doc.type = d.type; if (d.action === 'floors') doc.floors = d.floors; }
+  try { $('[data-save]').disabled = true; await db.collection('notes').add(doc); flash('Позначку збережено'); if (d.kind === 'building') openBld(sel); else showList(); }
+  catch (x) { er.textContent = 'Не збереглося: ' + (x.message || x.code || x); const s = $('[data-save]'); if (s) s.disabled = false; }
+}
+async function setStatus(id, st) { try { await db.collection('notes').doc(id).update({ status: st }); } catch (x) { flash('Не вдалося змінити статус'); } }
+async function delNote(id) { try { await db.collection('notes').doc(id).delete(); } catch (x) { flash('Не вдалося видалити'); } }
+function flash(msg) { const h = $('#hint'); h.textContent = msg; h.hidden = false; clearTimeout(flash.t); flash.t = setTimeout(() => { h.hidden = !pinMode; h.textContent = 'Торкніться місця на карті для позначки'; }, 1800); }
+function rerender() { if (view === 'list') showList(); else if (view === 'bld' && sel) { const keep = draft; renderFormKeep(keep); } }
+function renderFormKeep(keep) { const t = $('#ftxt'); if (t) keep.text = t.value; draft = keep; renderForm(); }
+
+// ---- пошук
+$('#q').addEventListener('input', () => {
+  const q = $('#q').value.trim().toLowerCase(), R = $('#res');
+  if (q.length < 2) { R.hidden = true; return; }
+  const hits = BLD.filter(b => b[6] && b[6].toLowerCase().includes(q)).slice(0, 30);
+  R.innerHTML = hits.length ? hits.map(b => `<button type="button" data-b="${esc(b[0])}">${esc(b[6])}</button>`).join('') : '<div class="tiny" style="padding:8px 10px">Нічого не знайдено</div>';
+  R.hidden = false;
+});
+$('#res').addEventListener('click', e => { const t = e.target.closest('[data-b]'); if (!t) return; const b = byId.get(t.dataset.b); $('#res').hidden = true; if (b) { map.flyTo([b[2], b[1]], -0.5); openBld(b); } });
+document.addEventListener('click', e => { if (!e.target.closest('.search')) $('#res').hidden = true; });
+
+// ---- сховище позначок
+showList();
+boot();
+(async () => {
+  const c = window.claude; if (!c?.use) return;
+  [db, assets, user] = await Promise.all([c.use('db'), c.use('assets'), c.use('user')]);
+  if (user) { try { myId = await user.id(); } catch (_) {} try { const w = await user.can('data.write'); canWrite = w !== false; } catch (_) {} }
+  if (!db) { showList(); return; }
+  const timer = setTimeout(() => { if (!notes.length && view === 'list') P.insertAdjacentHTML('afterbegin', '<p class="err">Позначки поки не завантажились — перевірте з’єднання.</p>'); }, 10000);
+  db.collection('notes').onSnapshot(snap => {
+    if (!snap.metadata?.fromCache) clearTimeout(timer);
+    notes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    drawPins(); rerender();
+  }, err => { clearTimeout(timer); P.insertAdjacentHTML('afterbegin', '<p class="err">Позначки недоступні: ' + esc(err.message || err.code) + '</p>'); });
+})();
+</script>
